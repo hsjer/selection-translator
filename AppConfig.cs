@@ -18,6 +18,8 @@ namespace SelectionTranslator
         public int MaxTextLength { get; set; }
         public string HotkeyTranslateSelection { get; set; }
         public string HotkeyManualInput { get; set; }
+        public string HotkeyScreenshot { get; set; }
+        public string ImageTargetLanguage { get; set; }
 
         public AppConfig()
         {
@@ -31,6 +33,8 @@ namespace SelectionTranslator
             MaxTextLength = 3000;
             HotkeyTranslateSelection = "Ctrl+Alt+T";
             HotkeyManualInput = "Ctrl+Alt+E";
+            HotkeyScreenshot = "Ctrl+Alt+S";
+            ImageTargetLanguage = "auto";
         }
 
         public string GetSecret()
@@ -92,6 +96,14 @@ namespace SelectionTranslator
                 if (string.IsNullOrEmpty(config.HotkeyManualInput))
                 {
                     config.HotkeyManualInput = "Ctrl+Alt+E";
+                }
+                if (string.IsNullOrEmpty(config.HotkeyScreenshot))
+                {
+                    config.HotkeyScreenshot = "Ctrl+Alt+S";
+                }
+                if (string.IsNullOrEmpty(config.ImageTargetLanguage))
+                {
+                    config.ImageTargetLanguage = "auto";
                 }
 
                 // 旧版本配置里没有这个字段，反序列化后为 false，

@@ -10,12 +10,14 @@ namespace SelectionTranslator
     {
         private const int HotkeyId = 1;
         private const int HotkeyIdManual = 2;
+        private const int HotkeyIdScreenshot = 3;
 
         private readonly NotifyIcon _trayIcon;
         private readonly ContextMenuStrip _trayMenu;
         private readonly ToolStripMenuItem _startupItem;
         private readonly ToolStripMenuItem _translateMenuItem;
         private readonly ToolStripMenuItem _manualMenuItem;
+        private readonly ToolStripMenuItem _screenshotMenuItem;
         private readonly Icon _trayIconImage;
         private readonly HotkeyWindow _hotkeyWindow;
         private readonly System.Windows.Forms.Timer _firstRunTimer;
@@ -25,10 +27,13 @@ namespace SelectionTranslator
         private Keys _hotkeyTranslateKey;
         private int _hotkeyManualModifiers;
         private Keys _hotkeyManualKey;
+        private int _hotkeyScreenshotModifiers;
+        private Keys _hotkeyScreenshotKey;
         private RightClickWatcher _rightClickWatcher;
         private SelectionMonitor _selectionMonitor;
         private TranslateBubbleForm _bubble;
         private TranslationForm _translationForm;
+        private ScreenshotEditorForm _screenshotEditor;
         private SettingsForm _settingsForm;
         private bool _started;
         private bool _busy;
@@ -68,6 +73,13 @@ namespace SelectionTranslator
                 _config.HotkeyManualInput;
             _manualMenuItem.Click += OnManualInputClicked;
             _trayMenu.Items.Add(_manualMenuItem);
+
+            _screenshotMenuItem =
+                new ToolStripMenuItem("截图翻译…");
+            _screenshotMenuItem.ShortcutKeyDisplayString =
+                _config.HotkeyScreenshot;
+            _screenshotMenuItem.Click += OnScreenshotClicked;
+            _trayMenu.Items.Add(_screenshotMenuItem);
 
             ToolStripMenuItem clipboardItem =
                 new ToolStripMenuItem("翻译剪贴板");
@@ -166,10 +178,29 @@ namespace SelectionTranslator
                         " 注册失败，可能已被其他程序占用。");
                 }
             }
+            if (HotkeyParser.TryParse(
+                _config.HotkeyScreenshot,
+                out modifiers,
+                out key))
+            {
+                _hotkeyScreenshotModifiers =
+                    modifiers | NativeMethods.MOD_NOREPEAT;
+                _hotkeyScreenshotKey = key;
+                bool ok = _hotkeyWindow.Register(
+                    HotkeyIdScreenshot,
+                    _hotkeyScreenshotModifiers,
+                    key);
+                if (!ok)
+                {
+                    Log.Info("全局快捷键 " +
+                        _config.HotkeyScreenshot +
+                        " 注册失败，可能已被其他程序占用。");
+                }
+            }
             else
             {
                 Log.Info("快捷键格式无效：" +
-                    _config.HotkeyManualInput);
+                    _config.HotkeyScreenshot);
             }
         }
 
@@ -180,6 +211,7 @@ namespace SelectionTranslator
         {
             _hotkeyWindow.Unregister(HotkeyId);
             _hotkeyWindow.Unregister(HotkeyIdManual);
+            _hotkeyWindow.Unregister(HotkeyIdScreenshot);
         }
 
         /// <summary>
@@ -193,6 +225,8 @@ namespace SelectionTranslator
                 _config.HotkeyTranslateSelection;
             _manualMenuItem.ShortcutKeyDisplayString =
                 _config.HotkeyManualInput;
+            _screenshotMenuItem.ShortcutKeyDisplayString =
+                _config.HotkeyScreenshot;
         }
 
         private void OnFirstIdle(object sender, EventArgs e)
@@ -561,12 +595,72 @@ namespace SelectionTranslator
                 OpenManualInput();
                 return;
             }
+            if (id == HotkeyIdScreenshot)
+            {
+                OpenScreenshotEditor();
+                return;
+            }
             await TranslateSelectionAsync();
         }
 
         private void OnManualInputClicked(object sender, EventArgs e)
         {
             OpenManualInput();
+        }
+
+        private void OnScreenshotClicked(object sender, EventArgs e)
+        {
+            OpenScreenshotEditor();
+        }
+
+        /// <summary>
+        /// 截屏选区窗口 → 截图编辑器。选区确认后进入编辑器，
+        /// 可继续标注、裁剪、保存，或调用百度图片翻译。
+        /// </summary>
+        private void OpenScreenshotEditor()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            // 已有编辑器在则先关闭，避免打开多个实例。
+            if (_screenshotEditor != null &&
+                !_screenshotEditor.IsDisposed)
+            {
+                _screenshotEditor.Close();
+            }
+
+            // 截图过程用户可能取消（Esc），任何异常都吞掉，不影响托盘。
+            try
+            {
+                using (ScreenshotCaptureForm capture =
+                    new ScreenshotCaptureForm())
+                {
+                    DialogResult result = capture.ShowDialog();
+                    if (result != DialogResult.OK ||
+                        capture.Captured == null)
+                    {
+                        return;
+                    }
+
+                    Bitmap image = capture.Captured;
+                    _screenshotEditor =
+                        new ScreenshotEditorForm(
+                            delegate { return _config; }, image);
+                    // 位图由编辑器在关闭时自行释放。
+                    _screenshotEditor.FormClosed += delegate
+                    {
+                        _screenshotEditor = null;
+                    };
+                    _screenshotEditor.Show();
+                    _screenshotEditor.Activate();
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("打开截图编辑器失败", ex);
+            }
         }
 
         /// <summary>
@@ -890,6 +984,11 @@ namespace SelectionTranslator
             {
                 _translationForm.Close();
                 _translationForm = null;
+            }
+            if (_screenshotEditor != null && !_screenshotEditor.IsDisposed)
+            {
+                _screenshotEditor.Close();
+                _screenshotEditor = null;
             }
             if (_settingsForm != null && !_settingsForm.IsDisposed)
             {

@@ -29,6 +29,8 @@ namespace SelectionTranslator
         private readonly NumericUpDown _maxTextBox;
         private readonly TextBox _hotkeyTranslateField;
         private readonly TextBox _hotkeyManualField;
+        private readonly TextBox _hotkeyScreenshotField;
+        private readonly ComboBox _imageLangBox;
         private TextBox _capturingField;
         private string _capturingFieldOriginal;
         private readonly Button _testButton;
@@ -42,7 +44,7 @@ namespace SelectionTranslator
             Text = "设置 - 选中文本翻译";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(480, 558);
+            ClientSize = new Size(480, 596);
             MaximizeBox = false;
             MinimizeBox = false;
             ShowInTaskbar = false;
@@ -119,6 +121,40 @@ namespace SelectionTranslator
             AddLanguage("vi", "越南语");
             SelectLanguage(config.TargetLanguage);
             Controls.Add(_languageBox);
+
+            Label imageLangLabel = new Label();
+            imageLangLabel.Text = "图片翻译目标语言";
+            imageLangLabel.AutoSize = true;
+            imageLangLabel.Location = new Point(248, 180);
+            Controls.Add(imageLangLabel);
+
+            _imageLangBox = new ComboBox();
+            _imageLangBox.DropDownStyle = ComboBoxStyle.DropDownList;
+            _imageLangBox.Location = new Point(248, 202);
+            _imageLangBox.Size = new Size(216, 24);
+            AddImageLang("auto", "自动");
+            AddImageLang("zh", "中文");
+            AddImageLang("en", "英语");
+            AddImageLang("jp", "日语");
+            AddImageLang("kor", "韩语");
+            AddImageLang("fra", "法语");
+            AddImageLang("spa", "西班牙语");
+            AddImageLang("ru", "俄语");
+            AddImageLang("pt", "葡萄牙语");
+            AddImageLang("de", "德语");
+            AddImageLang("it", "意大利语");
+            AddImageLang("dan", "丹麦语");
+            AddImageLang("nl", "荷兰语");
+            AddImageLang("may", "马来语");
+            AddImageLang("swe", "瑞典语");
+            AddImageLang("id", "印尼语");
+            AddImageLang("pl", "波兰语");
+            AddImageLang("rom", "罗马尼亚语");
+            AddImageLang("tr", "土耳其语");
+            AddImageLang("el", "希腊语");
+            AddImageLang("hu", "匈牙利语");
+            SelectImageLang(config.ImageTargetLanguage);
+            Controls.Add(_imageLangBox);
 
             _rightClickBox = new CheckBox();
             _rightClickBox.Text = "选中文本后右键显示「译」悬浮按钮";
@@ -201,34 +237,50 @@ namespace SelectionTranslator
             _hotkeyManualField.Leave += OnHotkeyFieldLeave;
             Controls.Add(_hotkeyManualField);
 
+            Label hotkeyScreenshotLabel = new Label();
+            hotkeyScreenshotLabel.Text = "截图翻译快捷键";
+            hotkeyScreenshotLabel.AutoSize = true;
+            hotkeyScreenshotLabel.Location = new Point(16, 470);
+            Controls.Add(hotkeyScreenshotLabel);
+
+            _hotkeyScreenshotField = new TextBox();
+            _hotkeyScreenshotField.ReadOnly = true;
+            _hotkeyScreenshotField.TextAlign = HorizontalAlignment.Center;
+            _hotkeyScreenshotField.Location = new Point(180, 470);
+            _hotkeyScreenshotField.Size = new Size(120, 24);
+            _hotkeyScreenshotField.Text = config.HotkeyScreenshot;
+            _hotkeyScreenshotField.Click += OnHotkeyFieldClicked;
+            _hotkeyScreenshotField.Leave += OnHotkeyFieldLeave;
+            Controls.Add(_hotkeyScreenshotField);
+
             KeyDown += OnSettingsKeyDown;
 
             Label hintLabel = new Label();
             hintLabel.Text =
                 "点击快捷键输入框后按下组合键即可自定义。\r\n" +
-                "超长文本会自动分段翻译。";
-            hintLabel.Location = new Point(16, 478);
+                "三个快捷键不能相同。超长文本会自动分段翻译。";
+            hintLabel.Location = new Point(16, 504);
             hintLabel.Size = new Size(448, 46);
             hintLabel.ForeColor = Color.FromArgb(90, 98, 112);
             Controls.Add(hintLabel);
 
             _testButton = new Button();
             _testButton.Text = "测试连接";
-            _testButton.Location = new Point(220, 528);
+            _testButton.Location = new Point(220, 554);
             _testButton.Size = new Size(84, 28);
             _testButton.Click += OnTestClicked;
             Controls.Add(_testButton);
 
             Button saveButton = new Button();
             saveButton.Text = "保存";
-            saveButton.Location = new Point(310, 528);
+            saveButton.Location = new Point(310, 554);
             saveButton.Size = new Size(68, 28);
             saveButton.Click += OnSaveClicked;
             Controls.Add(saveButton);
 
             Button cancelButton = new Button();
             cancelButton.Text = "取消";
-            cancelButton.Location = new Point(384, 528);
+            cancelButton.Location = new Point(384, 554);
             cancelButton.Size = new Size(64, 28);
             cancelButton.DialogResult = DialogResult.Cancel;
             Controls.Add(cancelButton);
@@ -243,6 +295,41 @@ namespace SelectionTranslator
             option.Code = code;
             option.Name = name;
             _languageBox.Items.Add(option);
+        }
+
+        private void AddImageLang(string code, string name)
+        {
+            LanguageOption option = new LanguageOption();
+            option.Code = code;
+            option.Name = name;
+            _imageLangBox.Items.Add(option);
+        }
+
+        private void SelectImageLang(string code)
+        {
+            for (int i = 0; i < _imageLangBox.Items.Count; i++)
+            {
+                LanguageOption option =
+                    _imageLangBox.Items[i] as LanguageOption;
+                if (option != null &&
+                    string.Equals(
+                        option.Code,
+                        code,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    _imageLangBox.SelectedIndex = i;
+                    return;
+                }
+            }
+            // 图片翻译接口不支持的目标语言退回自动。
+            _imageLangBox.SelectedIndex = 0;
+        }
+
+        private string GetSelectedImageLang()
+        {
+            LanguageOption option =
+                _imageLangBox.SelectedItem as LanguageOption;
+            return option == null ? "auto" : option.Code;
         }
 
         private void SelectLanguage(string code)
@@ -286,6 +373,9 @@ namespace SelectionTranslator
                 _hotkeyTranslateField.Text.Trim();
             edited.HotkeyManualInput =
                 _hotkeyManualField.Text.Trim();
+            edited.HotkeyScreenshot =
+                _hotkeyScreenshotField.Text.Trim();
+            edited.ImageTargetLanguage = GetSelectedImageLang();
             return edited;
         }
 
@@ -512,19 +602,53 @@ namespace SelectionTranslator
                 return;
             }
 
-            // 两个快捷键不能相同。
-            if (edited.HotkeyTranslateSelection.Equals(
-                edited.HotkeyManualInput,
-                StringComparison.OrdinalIgnoreCase))
+            if (!HotkeyParser.TryParse(
+                edited.HotkeyScreenshot,
+                out modifiers,
+                out key))
             {
                 MessageBox.Show(
                     this,
-                    "两个快捷键不能相同。\r\n" +
-                    "请修改其中一个。",
+                    "「截图翻译快捷键」格式无效。\r\n" +
+                    "请点击输入框后重新按下组合键。",
                     "保存设置",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
                 return;
+            }
+
+            // 三个快捷键不能相同。
+            string[] hotkeys = new string[]
+            {
+                edited.HotkeyTranslateSelection,
+                edited.HotkeyManualInput,
+                edited.HotkeyScreenshot
+            };
+            string[] hotkeyNames = new string[]
+            {
+                "翻译选中文本",
+                "手动翻译",
+                "截图翻译"
+            };
+            for (int i = 0; i < hotkeys.Length; i++)
+            {
+                for (int j = i + 1; j < hotkeys.Length; j++)
+                {
+                    if (hotkeys[i].Equals(
+                                hotkeys[j],
+                                StringComparison.OrdinalIgnoreCase))
+                    {
+                        MessageBox.Show(
+                            this,
+                            "「" + hotkeyNames[i] + "」与「" +
+                                  hotkeyNames[j] + "」快捷键不能相同。\r\n" +
+                            "请修改其中一个。",
+                            "保存设置",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                        return;
+                    }
+                }
             }
 
             Config = edited;
