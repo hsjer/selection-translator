@@ -26,6 +26,16 @@ namespace SelectionTranslator
                 return;
             }
 
+            int ocrTestIndex = Array.IndexOf(args, "--ocrtest");
+            if (ocrTestIndex >= 0)
+            {
+                string path = ocrTestIndex + 1 < args.Length
+                    ? args[ocrTestIndex + 1]
+                    : null;
+                ImageTest.RunOcr(path);
+                return;
+            }
+
             bool createdNew;
             using (Mutex mutex = new Mutex(
                 true,

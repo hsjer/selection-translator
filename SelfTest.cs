@@ -377,6 +377,60 @@ namespace SelectionTranslator
                             "True", "True");
                     }
                 }
+
+                // 只取 OCR 文本（不翻译）：rect 解析、阅读顺序拼接、
+                // sumSrc 优先与分段兜底，以及截图浮层的新结果枚举。
+                RectangleF ocrRect;
+                Check(output, ref ok, "ocr client rect parsed",
+                    BaiduImageTranslator.TryParseOcrRect(
+                        "79 23 246 43", out ocrRect).ToString(),
+                    "True");
+                Check(output, ref ok, "ocr client rect values",
+                    ocrRect.X + "," + ocrRect.Y + "," +
+                    ocrRect.Width + "," + ocrRect.Height,
+                    "79,23,246,43");
+                Check(output, ref ok, "ocr client rect rejects junk",
+                    BaiduImageTranslator.TryParseOcrRect(
+                        "junk", out ocrRect).ToString(), "False");
+
+                System.Collections.Generic.List<ImageSegmentInfo>
+                    ocrSegments =
+                        new System.Collections.Generic.List
+                            <ImageSegmentInfo>();
+                string[] ocrRects = new string[]
+                {
+                    "0 30 90 20", "50 0 40 20", "0 0 40 20"
+                };
+                string[] ocrSources = new string[] { "C", "B", "A" };
+                for (int i = 0; i < ocrRects.Length; i++)
+                {
+                    ImageSegmentInfo segment = new ImageSegmentInfo();
+                    segment.Src = ocrSources[i];
+                    segment.Dst = "ignored" + i;
+                    segment.Rect = ocrRects[i];
+                    ocrSegments.Add(segment);
+                }
+                Check(output, ref ok, "ocr reading order",
+                    BaiduImageTranslator.JoinOcrSegments(ocrSegments)
+                        .Replace("\r\n", "\\n"),
+                    "A B\\nC");
+
+                ImageTranslationResult ocrResult =
+                    new ImageTranslationResult();
+                ocrResult.SumSrc = "  full text  ";
+                ocrResult.Segments = ocrSegments;
+                Check(output, ref ok, "ocr prefers sumSrc",
+                    BaiduImageTranslator.BuildOcrText(ocrResult),
+                    "full text");
+                ocrResult.SumSrc = "";
+                Check(output, ref ok, "ocr falls back to segments",
+                    BaiduImageTranslator.BuildOcrText(ocrResult)
+                        .Replace("\r\n", "\\n"),
+                    "A B\\nC");
+                Check(output, ref ok, "ocr capture result exists",
+                    Enum.IsDefined(
+                        typeof(ScreenshotCaptureForm.CaptureResult),
+                        "Ocr").ToString(), "True");
             }
             catch (Exception ex)
             {

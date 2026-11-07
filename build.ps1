@@ -43,7 +43,12 @@ if ($sources.Count -eq 0) {
 
 $outputDirectory = Join-Path $root "dist"
 New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
-$output = Join-Path $outputDirectory "SelectionTranslator.exe"
+# 允许通过环境变量临时指定输出名，便于在程序运行时先编译到旁路口径做验证。
+$exeName = "SelectionTranslator.exe"
+if ($env:ST_OUTPUT_NAME) {
+    $exeName = $env:ST_OUTPUT_NAME
+}
+$output = Join-Path $outputDirectory $exeName
 $manifest = Join-Path $root "app.manifest"
 $icon = Join-Path $root "app.ico"
 

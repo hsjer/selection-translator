@@ -31,6 +31,8 @@ namespace SelectionTranslator
             /// <summary>「对号」：把合成图复制到剪贴板后直接结束，不打开任何窗口。</summary>
             Copy,
             Translate,
+            /// <summary>「取字」：只做 OCR，全文复制到剪贴板，不弹任何窗口。</summary>
+            Ocr,
             Save,
             Pin
         }
@@ -88,6 +90,7 @@ namespace SelectionTranslator
             Save,
             Pin,
             Translate,
+            Ocr,
             Cancel,
             Done
         }
@@ -784,6 +787,8 @@ namespace SelectionTranslator
                 "钉在桌面（贴图）", OnPinClicked);
             AddActionButton(panel, ref x, IconKind.Translate,
                 "翻译图片（译文直接显示在图上，可选中复制）", OnTranslateClicked);
+            AddActionButton(panel, ref x, IconKind.Ocr,
+                "只识别文字（不翻译，全文直接复制到剪贴板）", OnOcrClicked);
             AddActionButton(panel, ref x, IconKind.Cancel,
                 "取消 (Esc)", OnCancelClicked);
             AddActionButton(panel, ref x, IconKind.Done,
@@ -1711,6 +1716,11 @@ namespace SelectionTranslator
             Finish(CaptureResult.Translate);
         }
 
+        private void OnOcrClicked(object sender, EventArgs e)
+        {
+            Finish(CaptureResult.Ocr);
+        }
+
         private void OnCancelClicked(object sender, EventArgs e)
         {
             Finish(CaptureResult.None);
@@ -2266,6 +2276,21 @@ namespace SelectionTranslator
                         }
                         DrawUnitGlyph(g, "译", ink, 10.5f,
                             "Microsoft YaHei UI");
+                        break;
+
+                    case IconKind.Ocr:
+                        // 一页带横线的文档，表示「只把文字取出来」。
+                        using (GraphicsPath path = MakeRoundedRect(
+                            new RectangleF(2f, 1.6f, 14f, 14.8f), 2.4f))
+                        using (SolidBrush brush = new SolidBrush(
+                            Color.FromArgb(22, ink)))
+                        {
+                            g.FillPath(brush, path);
+                            g.DrawPath(pen, path);
+                        }
+                        g.DrawLine(pen, 4.8f, 5.4f, 13.2f, 5.4f);
+                        g.DrawLine(pen, 4.8f, 8.6f, 13.2f, 8.6f);
+                        g.DrawLine(pen, 4.8f, 11.8f, 10.6f, 11.8f);
                         break;
 
                     case IconKind.Cancel:

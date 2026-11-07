@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -177,6 +178,239 @@ namespace SelectionTranslator
                 }
             }
             return false;
+        }
+
+        /// <summary>
+        /// 只取 OCR 识别出的原文，不展示 / 不使用译文。
+        ///
+        /// 注意：百度图片翻译接口没有「仅 OCR」开关，from / to 都是必填，
+        /// 服务端每次都会照常翻译并按一次图片翻译调用计费。这里能做的是
+        /// 只读取 sumSrc / content[].src，并用 paste=0 跳过贴合译文图，
+        /// 让请求更轻、更快。真正不翻译需要另接独立 OCR 服务。
+        /// </summary>
+        public static async Task<string> RecognizeTextAsync(
+            AppConfig config, byte[] imageBytes)
+        {
+            if (config == null)
+            {
+                throw new TranslationException("配置为空", "NO_CONFIG");
+            }
+            if (imageBytes == null || imageBytes.Length == 0)
+            {
+                throw new TranslationException(
+                    "没有可识别的图片", "EMPTY_IMAGE");
+            }
+
+            string appId = (config.AppId ?? "").Trim();
+            string secret = config.GetSecret();
+            if (appId.Length == 0 || secret.Length == 0)
+            {
+                throw new TranslationException(
+                    "未配置百度翻译 AppID 或密钥。请右键托盘图标，打开「设置」填写。",
+                    "NO_CREDENTIALS");
+            }
+
+            // 目标语种只要是接口支持的合法值即可，译文会被忽略。
+            // auto 不能直传，沿用「中文→英文」的默认方向。
+            string target;
+            try
+            {
+                target = MapImageLanguage(config.ImageTargetLanguage);
+            }
+            catch (TranslationException)
+            {
+                target = "en";
+            }
+            if (target == "auto")
+            {
+                target = "en";
+            }
+
+            ImageTranslationResult result;
+            bool retryToChinese = false;
+            try
+            {
+                result = await PostImageAsync(
+                    appId, secret, imageBytes, "auto", target, 0);
+            }
+            catch (TranslationException ex)
+            {
+                // 源语种碰巧与目标语种相同等方向性错误时，换个方向重试一次。
+                if (target == "zh" ||
+                    (ex.Code != "58001" && ex.Code != "58002"))
+                {
+                    throw;
+                }
+                retryToChinese = true;
+                result = null;
+            }
+            // C# 5 不允许在 catch 块中 await，降级请求放到 catch 之外。
+            if (retryToChinese)
+            {
+                result = await PostImageAsync(
+                    appId, secret, imageBytes, "auto", "zh", 0);
+            }
+
+            string text = BuildOcrText(result);
+            if (text.Length == 0)
+            {
+                throw new TranslationException(
+                    "图片中没有识别到文字，请确认截图区域内有清晰文本。",
+                    "NO_TEXT");
+            }
+            return text;
+        }
+
+        /// <summary>
+        /// 从图片翻译结果里抽出纯 OCR 原文：优先用接口整理好的
+        /// sumSrc；缺失时按 rect 阅读顺序拼接各分段 src。
+        /// </summary>
+        public static string BuildOcrText(ImageTranslationResult result)
+        {
+            if (result == null)
+            {
+                return "";
+            }
+            string text = (result.SumSrc ?? "").Trim();
+            if (text.Length > 0)
+            {
+                return text;
+            }
+            return JoinOcrSegments(result.Segments);
+        }
+
+        private sealed class OcrBox
+        {
+            public string Text;
+            public float Left;
+            public float Top;
+            public float Height;
+            public int Index;
+        }
+
+        /// <summary>
+        /// 按阅读顺序（先上后下、同一行从左到右）拼接 OCR 分段原文。
+        /// 没有 rect 或 rect 无法解析时保持接口返回的原始顺序。
+        /// </summary>
+        public static string JoinOcrSegments(
+            List<ImageSegmentInfo> segments)
+        {
+            if (segments == null || segments.Count == 0)
+            {
+                return "";
+            }
+
+            List<OcrBox> boxes = new List<OcrBox>();
+            for (int i = 0; i < segments.Count; i++)
+            {
+                ImageSegmentInfo segment = segments[i];
+                if (segment == null)
+                {
+                    continue;
+                }
+                string source = (segment.Src ?? "").Trim();
+                if (source.Length == 0)
+                {
+                    continue;
+                }
+
+                OcrBox box = new OcrBox();
+                box.Text = source;
+                box.Index = i;
+                box.Left = i;
+                box.Top = i;
+                box.Height = 0;
+                RectangleF rect;
+                if (TryParseOcrRect(segment.Rect, out rect))
+                {
+                    box.Left = rect.X;
+                    box.Top = rect.Y;
+                    box.Height = rect.Height;
+                }
+                boxes.Add(box);
+            }
+
+            boxes.Sort(CompareOcrBoxes);
+
+            StringBuilder builder = new StringBuilder();
+            float lineTop = 0;
+            float lineHeight = 0;
+            bool hasLine = false;
+            for (int i = 0; i < boxes.Count; i++)
+            {
+                OcrBox box = boxes[i];
+                if (!hasLine)
+                {
+                    hasLine = true;
+                    lineTop = box.Top;
+                    lineHeight = box.Height;
+                }
+                else if (Math.Abs(box.Top - lineTop) <=
+                    Math.Max(6f, lineHeight * 0.6f))
+                {
+                    builder.Append(' ');
+                    lineHeight = Math.Max(lineHeight, box.Height);
+                }
+                else
+                {
+                    builder.AppendLine();
+                    lineTop = box.Top;
+                    lineHeight = box.Height;
+                }
+                builder.Append(box.Text);
+            }
+            return builder.ToString().Trim();
+        }
+
+        private static int CompareOcrBoxes(OcrBox a, OcrBox b)
+        {
+            int compared = a.Top.CompareTo(b.Top);
+            if (compared != 0)
+            {
+                return compared;
+            }
+            compared = a.Left.CompareTo(b.Left);
+            if (compared != 0)
+            {
+                return compared;
+            }
+            return a.Index.CompareTo(b.Index);
+        }
+
+        /// <summary>解析接口返回的 rect（"left top width height"）。</summary>
+        public static bool TryParseOcrRect(
+            string text, out RectangleF rect)
+        {
+            rect = RectangleF.Empty;
+            if (string.IsNullOrEmpty(text))
+            {
+                return false;
+            }
+            string[] parts = text.Trim().Split(
+                new char[] { ' ', '\t', ',' },
+                StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 4)
+            {
+                return false;
+            }
+            float left, top, width, height;
+            if (!float.TryParse(parts[0], NumberStyles.Float,
+                    CultureInfo.InvariantCulture, out left) ||
+                !float.TryParse(parts[1], NumberStyles.Float,
+                    CultureInfo.InvariantCulture, out top) ||
+                !float.TryParse(parts[2], NumberStyles.Float,
+                    CultureInfo.InvariantCulture, out width) ||
+                !float.TryParse(parts[3], NumberStyles.Float,
+                    CultureInfo.InvariantCulture, out height))
+            {
+                return false;
+            }
+            if (width <= 0 || height <= 0)
+            {
+                return false;
+            }
+            rect = new RectangleF(left, top, width, height);
+            return true;
         }
 
         /// <summary>

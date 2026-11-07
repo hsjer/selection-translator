@@ -37,6 +37,8 @@ namespace SelectionTranslator
         private ToolStripMenuItem _closePinsItem;
         // 防止热键在浮层显示期间重复触发、嵌套打开第二个截图会话。
         private bool _captureInProgress;
+        // 「取字」是异步网络请求，期间不允许重复发起。
+        private bool _ocrInProgress;
         private SettingsForm _settingsForm;
         private bool _started;
         private bool _busy;
@@ -733,6 +735,47 @@ namespace SelectionTranslator
                 return;
             }
 
+            // 「取字」：只做 OCR，把识别出的全文直接复制到剪贴板，
+            // 不显示译文、不打开任何窗口。识别在后台异步进行。
+            if (action == ScreenshotCaptureForm.CaptureResult.Ocr)
+            {
+                byte[] bytes = null;
+                string failure = "";
+                try
+                {
+                    // 用不含标注的原图识别，避免框线 / 马赛克干扰 OCR。
+                    Bitmap source = rawImage != null ? rawImage : image;
+                    string note;
+                    bytes = BaiduImageTranslator.PrepareImage(
+                        source, out note);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("准备 OCR 图片失败", ex);
+                    failure = ex.Message;
+                }
+                finally
+                {
+                    image.Dispose();
+                    image = null;
+                    if (rawImage != null)
+                    {
+                        rawImage.Dispose();
+                        rawImage = null;
+                    }
+                }
+
+                if (bytes == null)
+                {
+                    ShowOcrBalloon("取字失败", failure, ToolTipIcon.Error);
+                }
+                else
+                {
+                    RecognizeAndCopy(bytes);
+                }
+                return;
+            }
+
             // 「钉在桌面」：把合成图放进无边框置顶小窗，不打开编辑器。
             if (action == ScreenshotCaptureForm.CaptureResult.Pin)
             {
@@ -816,6 +859,65 @@ namespace SelectionTranslator
                     rawImage.Dispose();
                 }
             }
+        }
+
+        /// <summary>
+        /// 异步调用图片翻译接口，只取 OCR 原文写入剪贴板。
+        /// 接口本身仍会翻译并计费一次，这里只是忽略译文。
+        /// </summary>
+        private async void RecognizeAndCopy(byte[] imageBytes)
+        {
+            if (_ocrInProgress)
+            {
+                return;
+            }
+            _ocrInProgress = true;
+            ShowOcrBalloon("取字", "正在识别图片中的文字…",
+                ToolTipIcon.Info);
+            try
+            {
+                string text =
+                    await BaiduImageTranslator.RecognizeTextAsync(
+                        _config, imageBytes);
+                Clipboard.SetText(text);
+                string preview = text
+                    .Replace("\r", " ").Replace("\n", " ");
+                if (preview.Length > 60)
+                {
+                    preview = preview.Substring(0, 60) + "…";
+                }
+                Log.Info("OCR 取字成功，共 " + text.Length + " 字符");
+                ShowOcrBalloon("文字已复制到剪贴板",
+                    "共 " + text.Length + " 字符：" + preview,
+                    ToolTipIcon.Info);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("OCR 取字失败", ex);
+                ShowOcrBalloon("取字失败", ex.Message, ToolTipIcon.Error);
+            }
+            finally
+            {
+                _ocrInProgress = false;
+            }
+        }
+
+        private void ShowOcrBalloon(
+            string title, string text, ToolTipIcon icon)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+            if (string.IsNullOrEmpty(text))
+            {
+                text = "请稍后重试";
+            }
+            if (text.Length > 180)
+            {
+                text = text.Substring(0, 180) + "…";
+            }
+            _trayIcon.ShowBalloonTip(1800, title, text, icon);
         }
 
         /// <summary>
