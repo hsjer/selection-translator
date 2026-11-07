@@ -45,6 +45,33 @@ $outputDirectory = Join-Path $root "dist"
 New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
 $output = Join-Path $outputDirectory "SelectionTranslator.exe"
 $manifest = Join-Path $root "app.manifest"
+$icon = Join-Path $root "app.ico"
+
+# app.ico 缺失时用 tools\MakeIcon.cs 现场生成（不依赖任何第三方库）。
+if (-not (Test-Path $icon)) {
+    $generatorSource = Join-Path $root "tools\MakeIcon.cs"
+    if (-not (Test-Path $generatorSource)) {
+        throw "Missing app.ico and tools\MakeIcon.cs; cannot build with an icon."
+    }
+    Write-Host "Generating app.ico..."
+    $generatorExe = Join-Path $outputDirectory "MakeIcon.exe"
+    & $csc "/nologo" "/target:exe" "/out:$generatorExe" `
+        "/reference:$(Join-Path $framework 'System.dll')" `
+        "/reference:$(Join-Path $framework 'System.Drawing.dll')" `
+        $generatorSource
+    if ($LASTEXITCODE -ne 0) {
+        throw "Icon generator build failed with exit code $LASTEXITCODE"
+    }
+    & $generatorExe $icon
+    if ($LASTEXITCODE -ne 0) {
+        throw "Icon generation failed with exit code $LASTEXITCODE"
+    }
+    Remove-Item $generatorExe -Force
+}
+
+if (-not (Test-Path $icon)) {
+    throw "Missing icon file: $icon"
+}
 
 $arguments = @(
     "/nologo",
@@ -54,7 +81,9 @@ $arguments = @(
     "/codepage:65001",
     "/optimize+",
     "/out:$output",
-    "/win32manifest:$manifest"
+    "/win32manifest:$manifest",
+    "/win32icon:$icon",
+    "/resource:$icon,SelectionTranslator.app.ico"
 )
 
 foreach ($reference in $references) {

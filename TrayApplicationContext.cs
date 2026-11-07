@@ -33,7 +33,7 @@ namespace SelectionTranslator
         private SelectionMonitor _selectionMonitor;
         private TranslateBubbleForm _bubble;
         private TranslationForm _translationForm;
-        private ScreenshotEditorForm _screenshotEditor;
+        private ImageTranslationForm _translationWindow;
         private ToolStripMenuItem _closePinsItem;
         // 防止热键在浮层显示期间重复触发、嵌套打开第二个截图会话。
         private bool _captureInProgress;
@@ -602,7 +602,7 @@ namespace SelectionTranslator
             }
             if (id == HotkeyIdScreenshot)
             {
-                OpenScreenshotEditor();
+                StartScreenshot();
                 return;
             }
             await TranslateSelectionAsync();
@@ -615,14 +615,16 @@ namespace SelectionTranslator
 
         private void OnScreenshotClicked(object sender, EventArgs e)
         {
-            OpenScreenshotEditor();
+            StartScreenshot();
         }
 
         /// <summary>
-        /// 截屏浮层 → 截图编辑器。浮层内已完成框选与标注，
-        /// 「完成」进入编辑器，「翻译图片」进入编辑器并自动识别文字。
+        /// 截屏浮层 → 直接收尾，不再打开旧的截图编辑器。
+        /// 「对号」在浮层内已把合成图复制到剪贴板，这里只回收位图；
+        /// 「翻译图片」打开轻量结果窗口，译文直接显示在图上且可选中复制；
+        /// 「钉在桌面」打开贴图窗口。
         /// </summary>
-        private void OpenScreenshotEditor()
+        private void StartScreenshot()
         {
             // 一次快捷键只对应一次截图；浮层显示期间忽略重复触发。
             if (_disposed || _captureInProgress)
@@ -630,13 +632,6 @@ namespace SelectionTranslator
                 return;
             }
             _captureInProgress = true;
-
-            // 已有编辑器在则先关闭，避免打开多个实例。
-            if (_screenshotEditor != null &&
-                !_screenshotEditor.IsDisposed)
-            {
-                _screenshotEditor.Close();
-            }
 
             // 截图期间必须暂停全局右键钩子与选区监听：否则右键拖拽
             // 会触发「译」浮窗与 UIA 探测，导致画面闪烁甚至抢焦点。
@@ -715,6 +710,29 @@ namespace SelectionTranslator
                 return;
             }
 
+            // 「对号」：浮层在 Finish() 里已经 Clipboard.SetImage，
+            // 这里只回收位图并给一次轻提示，绝不再弹任何窗口。
+            if (action == ScreenshotCaptureForm.CaptureResult.Copy)
+            {
+                image.Dispose();
+                image = null;
+                if (rawImage != null)
+                {
+                    rawImage.Dispose();
+                    rawImage = null;
+                }
+                Log.Info("截图已复制到剪贴板");
+                if (!_disposed)
+                {
+                    _trayIcon.ShowBalloonTip(
+                        1200,
+                        "截图",
+                        "截图已复制到剪贴板",
+                        ToolTipIcon.Info);
+                }
+                return;
+            }
+
             // 「钉在桌面」：把合成图放进无边框置顶小窗，不打开编辑器。
             if (action == ScreenshotCaptureForm.CaptureResult.Pin)
             {
@@ -745,28 +763,54 @@ namespace SelectionTranslator
                 return;
             }
 
+            // 只有「翻译图片」才需要窗口；其余结果在浮层内已处理完。
+            if (action != ScreenshotCaptureForm.CaptureResult.Translate)
+            {
+                image.Dispose();
+                if (rawImage != null)
+                {
+                    rawImage.Dispose();
+                }
+                return;
+            }
+
             try
             {
-                _screenshotEditor =
-                    new ScreenshotEditorForm(
+                // 已有的结果窗口先关掉，避免同时开多个实例。
+                if (_translationWindow != null &&
+                    !_translationWindow.IsDisposed)
+                {
+                    _translationWindow.Close();
+                }
+
+                _translationWindow =
+                    new ImageTranslationForm(
                         delegate { return _config; },
                         image, rawImage);
-                // 位图由编辑器在关闭时自行释放。
-                _screenshotEditor.FormClosed += delegate
+                // 位图所有权移交给结果窗口，由它在关闭时释放。
+                image = null;
+                rawImage = null;
+                _translationWindow.FormClosed += delegate
                 {
-                    _screenshotEditor = null;
+                    _translationWindow = null;
                 };
-                if (action == ScreenshotCaptureForm.CaptureResult.Translate)
-                {
-                    _screenshotEditor.BeginTranslation();
-                }
-                _screenshotEditor.Show();
-                _screenshotEditor.Activate();
+                _translationWindow.BeginTranslation();
+                _translationWindow.Show();
+                _translationWindow.Activate();
             }
             catch (Exception ex)
             {
-                Log.Error("打开截图编辑器失败", ex);
-                image.Dispose();
+                Log.Error("打开图片翻译结果失败", ex);
+                if (_translationWindow != null &&
+                    !_translationWindow.IsDisposed)
+                {
+                    _translationWindow.Close();
+                    _translationWindow = null;
+                }
+                if (image != null)
+                {
+                    image.Dispose();
+                }
                 if (rawImage != null)
                 {
                     rawImage.Dispose();
@@ -1096,10 +1140,10 @@ namespace SelectionTranslator
                 _translationForm.Close();
                 _translationForm = null;
             }
-            if (_screenshotEditor != null && !_screenshotEditor.IsDisposed)
+            if (_translationWindow != null && !_translationWindow.IsDisposed)
             {
-                _screenshotEditor.Close();
-                _screenshotEditor = null;
+                _translationWindow.Close();
+                _translationWindow = null;
             }
             if (_settingsForm != null && !_settingsForm.IsDisposed)
             {

@@ -1,9 +1,11 @@
 using System;
 using System.Collections;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Reflection;
 using System.Text;
+using System.Windows.Forms;
 
 namespace SelectionTranslator
 {
@@ -188,8 +190,31 @@ namespace SelectionTranslator
                     }
                 }
 
-                // 图片选字复制：rect 解析 + 按阅读顺序拼接原文 / 译文。
-                Type editorType = typeof(ScreenshotEditorForm);
+                // 应用图标：exe 的 Win32 图标资源 + 供托盘复用的托管资源。
+                using (Icon exeIcon = Icon.ExtractAssociatedIcon(
+                    Application.ExecutablePath))
+                {
+                    Check(output, ref ok, "exe icon resource",
+                        (exeIcon != null).ToString(), "True");
+                }
+                using (Stream iconStream =
+                    Assembly.GetExecutingAssembly()
+                        .GetManifestResourceStream(
+                            "SelectionTranslator.app.ico"))
+                {
+                    Check(output, ref ok, "embedded icon resource",
+                        (iconStream != null && iconStream.Length > 0)
+                            .ToString(), "True");
+                }
+                using (Icon trayIcon = IconFactory.Create())
+                {
+                    Check(output, ref ok, "tray icon",
+                        (trayIcon != null && trayIcon.Width > 0)
+                            .ToString(), "True");
+                }
+
+                // 图片选字复制（结果窗口）：rect 解析 + 按阅读顺序拼接原文 / 译文。
+                Type editorType = typeof(ImageTranslationForm);
                 MethodInfo parseRect = editorType.GetMethod(
                     "TryParseOcrRect",
                     BindingFlags.NonPublic | BindingFlags.Static);
@@ -217,8 +242,8 @@ namespace SelectionTranslator
 
                 using (Bitmap stub = new Bitmap(120, 80))
                 using (Bitmap rawStub = new Bitmap(120, 80))
-                using (ScreenshotEditorForm editor =
-                    new ScreenshotEditorForm(
+                using (ImageTranslationForm editor =
+                    new ImageTranslationForm(
                         delegate { return new AppConfig(); },
                         stub, rawStub))
                 {
@@ -289,6 +314,68 @@ namespace SelectionTranslator
                         ((string)buildText.Invoke(editor, null))
                             .Replace("\r\n", "\\n"),
                         "甲 乙\\n丙");
+
+                    // 结果窗口渲染冒烟测试：假造一次带贴合图的翻译结果，
+                    // 验证解码、文字块构建、状态刷新与实际绘制都不抛异常。
+                    byte[] pastedBytes;
+                    using (MemoryStream png = new MemoryStream())
+                    {
+                        stub.Save(png, ImageFormat.Png);
+                        pastedBytes = png.ToArray();
+                    }
+                    ImageTranslationResult fake =
+                        new ImageTranslationResult();
+                    fake.SumSrc = "A B C";
+                    fake.SumDst = "甲 乙 丙";
+                    fake.PastedImage = pastedBytes;
+                    fake.Segments =
+                        new System.Collections.Generic.List<ImageSegmentInfo>();
+                    string[] rectTexts = new string[]
+                    {
+                        "0 0 40 20", "50 0 40 20", "0 30 90 20"
+                    };
+                    for (int i = 0; i < rectTexts.Length; i++)
+                    {
+                        ImageSegmentInfo segment =
+                            new ImageSegmentInfo();
+                        segment.Src = "src" + i;
+                        segment.Dst = "dst" + i;
+                        segment.Rect = rectTexts[i];
+                        fake.Segments.Add(segment);
+                    }
+                    editorType.GetMethod(
+                        "ApplyResult",
+                        BindingFlags.NonPublic |
+                        BindingFlags.Instance).Invoke(
+                            editor,
+                            new object[]
+                            {
+                                fake, new Size(120, 80)
+                            });
+                    IList blocksAfter = (IList)editorType.GetField(
+                        "_textBlocks",
+                        BindingFlags.NonPublic |
+                        BindingFlags.Instance).GetValue(editor);
+                    Check(output, ref ok, "result blocks",
+                        blocksAfter.Count.ToString(), "3");
+
+                    using (Bitmap surface = new Bitmap(320, 200))
+                    using (Graphics graphics =
+                        Graphics.FromImage(surface))
+                    {
+                        PaintEventArgs paintArgs =
+                            new PaintEventArgs(
+                                graphics,
+                                new Rectangle(0, 0, 320, 200));
+                        editorType.GetMethod(
+                            "OnCanvasPaint",
+                            BindingFlags.NonPublic |
+                            BindingFlags.Instance).Invoke(
+                                editor,
+                                new object[] { editor, paintArgs });
+                        Check(output, ref ok, "result render",
+                            "True", "True");
+                    }
                 }
             }
             catch (Exception ex)

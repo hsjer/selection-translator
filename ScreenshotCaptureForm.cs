@@ -28,7 +28,8 @@ namespace SelectionTranslator
         public enum CaptureResult
         {
             None,
-            Edit,
+            /// <summary>「对号」：把合成图复制到剪贴板后直接结束，不打开任何窗口。</summary>
+            Copy,
             Translate,
             Save,
             Pin
@@ -782,11 +783,11 @@ namespace SelectionTranslator
             AddActionButton(panel, ref x, IconKind.Pin,
                 "钉在桌面（贴图）", OnPinClicked);
             AddActionButton(panel, ref x, IconKind.Translate,
-                "翻译图片（打开编辑器并识别文字）", OnTranslateClicked);
+                "翻译图片（译文直接显示在图上，可选中复制）", OnTranslateClicked);
             AddActionButton(panel, ref x, IconKind.Cancel,
                 "取消 (Esc)", OnCancelClicked);
             AddActionButton(panel, ref x, IconKind.Done,
-                "完成（复制图片并进入编辑）", OnDoneClicked);
+                "完成（复制图片到剪贴板，Esc 取消）", OnDoneClicked);
 
             panel.Width = x + 5;
             return panel;
@@ -1223,7 +1224,7 @@ namespace SelectionTranslator
             base.OnDoubleClick(e);
             if (HasSelection())
             {
-                Finish(CaptureResult.Edit);
+                Finish(CaptureResult.Copy);
             }
         }
 
@@ -1717,7 +1718,7 @@ namespace SelectionTranslator
 
         private void OnDoneClicked(object sender, EventArgs e)
         {
-            Finish(CaptureResult.Edit);
+            Finish(CaptureResult.Copy);
         }
 
         // ------------------------------------------------------------------
@@ -1741,7 +1742,7 @@ namespace SelectionTranslator
             {
                 if (HasSelection())
                 {
-                    Finish(CaptureResult.Edit);
+                    Finish(CaptureResult.Copy);
                 }
             }
             else if (e.Control && e.KeyCode == Keys.Z)
@@ -1845,7 +1846,7 @@ namespace SelectionTranslator
                 return;
             }
 
-            if (result == CaptureResult.Edit)
+            if (result == CaptureResult.Copy)
             {
                 TryCopyToClipboard(_captured);
             }
@@ -1951,7 +1952,7 @@ namespace SelectionTranslator
             }
             catch
             {
-                // 剪贴板被其它程序占用时忽略，编辑器里仍可手动复制。
+                // 剪贴板被其它程序占用时忽略，用户仍可用工具条的「保存」按钮导出。
             }
         }
 
