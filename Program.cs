@@ -16,6 +16,16 @@ namespace SelectionTranslator
                 return;
             }
 
+            int imageTestIndex = Array.IndexOf(args, "--imagetest");
+            if (imageTestIndex >= 0)
+            {
+                string path = imageTestIndex + 1 < args.Length
+                    ? args[imageTestIndex + 1]
+                    : null;
+                ImageTest.Run(path);
+                return;
+            }
+
             bool createdNew;
             using (Mutex mutex = new Mutex(
                 true,

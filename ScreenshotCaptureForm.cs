@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Drawing.Text;
 using System.IO;
 using System.Windows.Forms;
 
@@ -18,7 +19,8 @@ namespace SelectionTranslator
     /// 与旧版的区别：
     /// - 抓取屏幕放在构造函数里（窗口尚未创建），避免把自己拍进去；
     /// - 遮罩预先合成为一张位图，且开启双缓冲，拖拽时不再闪烁；
-    /// - 右键与左键一视同仁，松开鼠标即进入可操作状态；
+    /// - 首次框选左右键一视同仁；松开后锁定选区（一次快捷键一张图），
+    ///   光标由十字变回箭头，右键只用于退出当前工具；
     /// - 所有标注工具直接浮在选区旁边，不再依赖第二个窗口才出现。
     /// </summary>
     internal sealed class ScreenshotCaptureForm : Form
@@ -28,7 +30,8 @@ namespace SelectionTranslator
             None,
             Edit,
             Translate,
-            Save
+            Save,
+            Pin
         }
 
         private enum Tool
@@ -82,6 +85,7 @@ namespace SelectionTranslator
             Color,
             Width,
             Save,
+            Pin,
             Translate,
             Cancel,
             Done
@@ -367,7 +371,7 @@ namespace SelectionTranslator
         }
 
         // ------------------------------------------------------------------
-        // 工具栏按钮：自绘矢量图标，不依赖外部图片资源。
+        // 工具栏按钮：统一 18×18 图标网格、圆角悬停态、抗锯齿线性图标。
         // ------------------------------------------------------------------
 
         private sealed class IconButton : Control
@@ -442,28 +446,63 @@ namespace SelectionTranslator
             {
                 Graphics g = e.Graphics;
                 g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
                 g.Clear(ToolbarBack);
 
-                if (_hover || _checked)
+                bool primary = _kind == IconKind.Done;
+                bool danger = _kind == IconKind.Cancel;
+                RectangleF inner = new RectangleF(
+                    2f, 2f, Width - 4f, Height - 4f);
+                Color fill = Color.Empty;
+
+                if (primary)
                 {
-                    Color fill = _checked
-                        ? Color.FromArgb(222, 236, 255)
-                        : Color.FromArgb(238, 241, 246);
+                    fill = _hover
+                        ? Color.FromArgb(0, 104, 220)
+                        : AccentColor;
+                }
+                else if (danger)
+                {
+                    fill = _hover
+                        ? Color.FromArgb(255, 223, 227)
+                        : Color.FromArgb(255, 239, 241);
+                }
+                else if (_checked)
+                {
+                    fill = Color.FromArgb(225, 238, 255);
+                }
+                else if (_hover)
+                {
+                    fill = Color.FromArgb(239, 243, 249);
+                }
+
+                if (fill != Color.Empty)
+                {
+                    using (GraphicsPath path = MakeRoundedRect(inner, 8f))
                     using (SolidBrush brush = new SolidBrush(fill))
                     {
-                        g.FillRectangle(brush,
-                            new Rectangle(2, 2, Width - 4, Height - 4));
+                        g.FillPath(brush, path);
                     }
                 }
 
-                Color ink = _checked
-                    ? AccentColor
-                    : (_kind == IconKind.Cancel
-                        ? Color.FromArgb(214, 69, 69)
-                        : (_kind == IconKind.Done
-                            ? Color.FromArgb(28, 158, 96)
-                            : Color.FromArgb(66, 76, 92)));
-
+                Color ink;
+                if (primary)
+                {
+                    ink = Color.White;
+                }
+                else if (danger)
+                {
+                    ink = Color.FromArgb(211, 60, 68);
+                }
+                else if (_checked)
+                {
+                    ink = AccentColor;
+                }
+                else
+                {
+                    ink = IconInk;
+                }
                 if (_kind == IconKind.Color)
                 {
                     ink = _swatch;
@@ -486,13 +525,49 @@ namespace SelectionTranslator
                 SetStyle(ControlStyles.Selectable, false);
             }
 
+            protected override void OnHandleCreated(EventArgs e)
+            {
+                base.OnHandleCreated(e);
+                ApplyShape();
+            }
+
+            protected override void OnResize(EventArgs e)
+            {
+                base.OnResize(e);
+                ApplyShape();
+            }
+
+            /// <summary>圆角外形，比直角工具条更接近主流截图工具。</summary>
+            private void ApplyShape()
+            {
+                if (Width < 2 || Height < 2)
+                {
+                    return;
+                }
+                Region previous = Region;
+                using (GraphicsPath path = MakeRoundedRect(
+                    new RectangleF(0f, 0f, Width, Height), 9f))
+                {
+                    Region = new Region(path);
+                }
+                if (previous != null)
+                {
+                    previous.Dispose();
+                }
+            }
+
             protected override void OnPaint(PaintEventArgs e)
             {
-                e.Graphics.Clear(ToolbarBack);
-                using (Pen pen = new Pen(Color.FromArgb(210, 216, 226)))
+                Graphics g = e.Graphics;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.Clear(ToolbarBack);
+                RectangleF frame = new RectangleF(
+                    0.5f, 0.5f, Width - 1f, Height - 1f);
+                using (GraphicsPath path = MakeRoundedRect(frame, 9f))
+                using (Pen pen = new Pen(
+                    Color.FromArgb(214, 222, 234), 1f))
                 {
-                    e.Graphics.DrawRectangle(pen,
-                        0, 0, Width - 1, Height - 1);
+                    g.DrawPath(pen, path);
                 }
                 base.OnPaint(e);
             }
@@ -501,7 +576,11 @@ namespace SelectionTranslator
         private static readonly Color AccentColor =
             Color.FromArgb(0, 122, 255);
         private static readonly Color ToolbarBack =
-            Color.FromArgb(252, 253, 255);
+            Color.FromArgb(255, 255, 255);
+        private static readonly Color IconInk =
+            Color.FromArgb(72, 84, 102);
+        private static readonly Color SeparatorColor =
+            Color.FromArgb(224, 230, 239);
         private static readonly Color[] Palette = new Color[]
         {
             Color.FromArgb(240, 62, 62),
@@ -534,12 +613,20 @@ namespace SelectionTranslator
         private float _stroke = Widths[0];
         private int _numberCounter = 1;
         private bool _finished;
+        // 选区一旦框定就锁定：同一次快捷键会话内不允许再框选第二次。
+        // 想重新截图需要再按一次快捷键（或 Esc 取消后重按）。
+        private bool _selectionLocked;
 
         private readonly ToolbarPanel _toolbar;
         private readonly List<IconButton> _buttons =
             new List<IconButton>();
         private readonly ToolTip _tips;
         private TextBox _textInput;
+        // 颜色 / 线宽下拉菜单复用同一个实例。以前每次点击都新建、
+        // 并在 Closed 事件里立即 Dispose，会与 WinForms 的
+        // ModalMenuFilter 冲突，抛 ObjectDisposedException 中断截图。
+        private ContextMenuStrip _colorMenu;
+        private ContextMenuStrip _widthMenu;
 
         /// <summary>
         /// 父窗口绘制时裁掉子控件区域，否则全屏位图会把浮动工具栏盖住。
@@ -602,6 +689,9 @@ namespace SelectionTranslator
 
         /// <summary>用户选择的结束方式，决定托盘侧的后续动作。</summary>
         public CaptureResult Result { get; private set; }
+
+        /// <summary>选区左上角对应的屏幕坐标（贴图窗口用它定位）。</summary>
+        public Point CaptureLocation { get; private set; }
 
         // ------------------------------------------------------------------
         // 初始化
@@ -689,6 +779,8 @@ namespace SelectionTranslator
 
             AddActionButton(panel, ref x, IconKind.Save,
                 "保存为 PNG", OnSaveClicked);
+            AddActionButton(panel, ref x, IconKind.Pin,
+                "钉在桌面（贴图）", OnPinClicked);
             AddActionButton(panel, ref x, IconKind.Translate,
                 "翻译图片（打开编辑器并识别文字）", OnTranslateClicked);
             AddActionButton(panel, ref x, IconKind.Cancel,
@@ -736,7 +828,7 @@ namespace SelectionTranslator
         private static int AddSeparator(ToolbarPanel panel, int x)
         {
             Panel line = new Panel();
-            line.BackColor = Color.FromArgb(222, 227, 234);
+            line.BackColor = SeparatorColor;
             line.Size = new Size(1, 22);
             line.Location = new Point(x + 4, 10);
             panel.Controls.Add(line);
@@ -948,47 +1040,59 @@ namespace SelectionTranslator
 
             RemoveTextInput(true);
 
+            // 选区已锁定后，右键不再「重新框选」，只退出当前标注工具。
+            // 这是用户反馈的核心问题：一次快捷键只应该产出一张截图。
+            if (_selectionLocked && e.Button == MouseButtons.Right)
+            {
+                if (_tool != Tool.None)
+                {
+                    _tool = Tool.None;
+                    SyncToolButtons();
+                }
+                UpdateCursor(new Point(e.X, e.Y));
+                return;
+            }
+
             _dragButton = e.Button;
             _dragStart = new Point(e.X, e.Y);
             _lastPoint = _dragStart;
             _dragOrigin = _selection;
             _handle = HitHandle(_dragStart);
 
-            // 右键一律表示「重新框选」，符合用户习惯；左键在已有选区上
-            // 则优先用于标注 / 移动 / 缩放。
-            bool forceSelect = _dragButton == MouseButtons.Right;
-
-            if (!forceSelect && _handle != HandleKind.None)
+            // 首次框选时左右键都可以；锁定后右键已在上面拦截，
+            // 左键只允许改手柄 / 移动 / 标注 / 裁剪，不允许开新选区。
+            if (_handle != HandleKind.None)
             {
                 _dragMode = DragMode.Resize;
                 PushUndo();
             }
-            else if (!forceSelect && _tool == Tool.Crop &&
-                HasSelection())
+            else if (_tool == Tool.Crop && HasSelection())
             {
                 _dragMode = DragMode.Select;
                 PushUndo();
             }
-            else if (!forceSelect && HasSelection() &&
-                _tool != Tool.None &&
+            else if (HasSelection() && _tool != Tool.None &&
                 _selection.Contains(_dragStart))
             {
                 BeginDraw(_dragStart);
             }
-            else if (!forceSelect && _tool == Tool.None &&
-                HasSelection() &&
+            else if (_tool == Tool.None && HasSelection() &&
                 _selection.Contains(_dragStart))
             {
                 _dragMode = DragMode.Move;
                 PushUndo();
             }
+            else if (_selectionLocked)
+            {
+                // 选区已定：点选区外不再触发第二次框选。
+                _dragMode = DragMode.None;
+                _dragButton = MouseButtons.None;
+                _handle = HandleKind.None;
+                return;
+            }
             else
             {
                 _dragMode = DragMode.Select;
-                if (_shapes.Count > 0 || HasSelection())
-                {
-                    PushUndo();
-                }
                 _shapes.Clear();
                 _numberCounter = 1;
                 _selection = new Rectangle(e.X, e.Y, 1, 1);
@@ -1093,6 +1197,11 @@ namespace SelectionTranslator
                     _tool = Tool.None;
                     SyncToolButtons();
                 }
+                // 松开鼠标即锁定选区：本次会话不再接受新的框选。
+                if (HasSelection())
+                {
+                    _selectionLocked = true;
+                }
                 PlaceToolbar();
             }
             else if (_dragMode == DragMode.Move ||
@@ -1104,6 +1213,8 @@ namespace SelectionTranslator
             _dragMode = DragMode.None;
             _handle = HandleKind.None;
             _dragButton = MouseButtons.None;
+            // 立刻刷新光标，不等下一次 MouseMove：松开右键后就该变回箭头。
+            UpdateCursor(PointToClient(MousePosition));
             Invalidate();
         }
 
@@ -1235,18 +1346,16 @@ namespace SelectionTranslator
                     Cursor = Cursors.SizeNS; return;
             }
 
+            // 只有正在标注时才用十字 / 工字光标；选区确定后回归普通
+            // 鼠标箭头（手柄上仍是缩放光标）。选区内拖动依旧可移动选区。
             if (_tool != Tool.None)
             {
                 Cursor = _tool == Tool.Text
                     ? Cursors.IBeam : Cursors.Cross;
             }
-            else if (_selection.Contains(p))
-            {
-                Cursor = Cursors.SizeAll;
-            }
             else
             {
-                Cursor = Cursors.Cross;
+                Cursor = Cursors.Arrow;
             }
         }
 
@@ -1520,37 +1629,29 @@ namespace SelectionTranslator
         private void OnColorClicked(object sender, EventArgs e)
         {
             IconButton owner = (IconButton)sender;
-            ContextMenuStrip menu = new ContextMenuStrip();
-            string[] names = new string[]
+            if (_colorMenu == null)
             {
-                "红色", "橙色", "黄色", "绿色", "蓝色", "深灰"
-            };
-            for (int i = 0; i < Palette.Length; i++)
-            {
-                Color c = Palette[i];
-                Bitmap swatch = new Bitmap(16, 16);
-                using (Graphics g = Graphics.FromImage(swatch))
+                _colorMenu = new ContextMenuStrip();
+                string[] names = new string[]
                 {
-                    g.Clear(c);
-                    g.DrawRectangle(Pens.Gray, 0, 0, 15, 15);
-                }
-                ToolStripMenuItem item = new ToolStripMenuItem(
-                    names[i], swatch, OnColorChosen);
-                item.Tag = c;
-                menu.Items.Add(item);
-            }
-            menu.Closed += delegate
-            {
-                foreach (ToolStripItem item in menu.Items)
+                    "红色", "橙色", "黄色", "绿色", "蓝色", "深灰"
+                };
+                for (int i = 0; i < Palette.Length; i++)
                 {
-                    if (item.Image != null)
+                    Color c = Palette[i];
+                    Bitmap swatch = new Bitmap(16, 16);
+                    using (Graphics g = Graphics.FromImage(swatch))
                     {
-                        item.Image.Dispose();
+                        g.Clear(c);
+                        g.DrawRectangle(Pens.Gray, 0, 0, 15, 15);
                     }
+                    ToolStripMenuItem item = new ToolStripMenuItem(
+                        names[i], swatch, OnColorChosen);
+                    item.Tag = c;
+                    _colorMenu.Items.Add(item);
                 }
-                menu.Dispose();
-            };
-            menu.Show(owner, new Point(0, owner.Height + 2));
+            }
+            _colorMenu.Show(owner, new Point(0, owner.Height + 2));
         }
 
         private void OnColorChosen(object sender, EventArgs e)
@@ -1567,17 +1668,20 @@ namespace SelectionTranslator
         private void OnWidthClicked(object sender, EventArgs e)
         {
             IconButton owner = (IconButton)sender;
-            ContextMenuStrip menu = new ContextMenuStrip();
-            string[] names = new string[] { "细 (2px)", "中 (4px)", "粗 (8px)" };
-            for (int i = 0; i < Widths.Length; i++)
+            if (_widthMenu == null)
             {
-                ToolStripMenuItem item = new ToolStripMenuItem(
-                    names[i], null, OnWidthChosen);
-                item.Tag = Widths[i];
-                menu.Items.Add(item);
+                _widthMenu = new ContextMenuStrip();
+                string[] names =
+                    new string[] { "细 (2px)", "中 (4px)", "粗 (8px)" };
+                for (int i = 0; i < Widths.Length; i++)
+                {
+                    ToolStripMenuItem item = new ToolStripMenuItem(
+                        names[i], null, OnWidthChosen);
+                    item.Tag = Widths[i];
+                    _widthMenu.Items.Add(item);
+                }
             }
-            menu.Closed += delegate { menu.Dispose(); };
-            menu.Show(owner, new Point(0, owner.Height + 2));
+            _widthMenu.Show(owner, new Point(0, owner.Height + 2));
         }
 
         private void OnWidthChosen(object sender, EventArgs e)
@@ -1594,6 +1698,11 @@ namespace SelectionTranslator
         private void OnSaveClicked(object sender, EventArgs e)
         {
             Finish(CaptureResult.Save);
+        }
+
+        private void OnPinClicked(object sender, EventArgs e)
+        {
+            Finish(CaptureResult.Pin);
         }
 
         private void OnTranslateClicked(object sender, EventArgs e)
@@ -1721,6 +1830,8 @@ namespace SelectionTranslator
             }
 
             Result = result;
+            // 窗体关闭后 PointToScreen 不可用，先把屏幕坐标记下来。
+            CaptureLocation = PointToScreen(_selection.Location);
 
             if (result == CaptureResult.Save)
             {
@@ -1868,6 +1979,10 @@ namespace SelectionTranslator
                     _raw = null;
                 }
             }
+            // 下拉菜单与 ToolTip 只在窗体真正关闭时统一释放，避免在
+            // 菜单 Closed 事件里 Dispose 触发 ModalMenuFilter 异常。
+            DisposePopupMenu(ref _colorMenu);
+            DisposePopupMenu(ref _widthMenu);
             if (_tips != null)
             {
                 _tips.Dispose();
@@ -1887,6 +2002,32 @@ namespace SelectionTranslator
         // ------------------------------------------------------------------
         // 工具方法
         // ------------------------------------------------------------------
+
+        private static void DisposePopupMenu(ref ContextMenuStrip menu)
+        {
+            if (menu == null)
+            {
+                return;
+            }
+            ContextMenuStrip target = menu;
+            menu = null;
+            try
+            {
+                target.Hide();
+                foreach (ToolStripItem item in target.Items)
+                {
+                    if (item.Image != null)
+                    {
+                        item.Image.Dispose();
+                    }
+                }
+                target.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Log.Error("释放工具栏下拉菜单失败", ex);
+            }
+        }
 
         private static RectangleF NormalizeRect(RectangleF r)
         {
@@ -1910,13 +2051,31 @@ namespace SelectionTranslator
         // 图标绘制
         // ------------------------------------------------------------------
 
+        /// <summary>
+        /// 所有图标都在同一个 18×18 逻辑网格内绘制，线宽 / 留白 / 圆角
+        /// 完全一致；再整体缩放贴到按钮中心，视觉上比逐图标手写坐标整齐。
+        /// </summary>
         private static void DrawIcon(
             Graphics g, IconKind kind, Rectangle box,
             Color ink, float stroke)
         {
-            Rectangle r = new Rectangle(
-                box.X + 9, box.Y + 9, box.Width - 18, box.Height - 18);
-            using (Pen pen = new Pen(ink, 1.8f))
+            float size = Math.Min(box.Width, box.Height) - 16f;
+            if (size < 8f)
+            {
+                size = 8f;
+            }
+            float scale = size / 18f;
+            float ox = box.X + (box.Width - size) / 2f;
+            float oy = box.Y + (box.Height - size) / 2f;
+
+            GraphicsState state = g.Save();
+            g.TranslateTransform(ox, oy);
+            g.ScaleTransform(scale, scale);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+
+            using (Pen pen = new Pen(ink, 1.55f))
             {
                 pen.StartCap = LineCap.Round;
                 pen.EndCap = LineCap.Round;
@@ -1925,226 +2084,259 @@ namespace SelectionTranslator
                 switch (kind)
                 {
                     case IconKind.Rect:
-                        g.DrawRectangle(pen, r);
+                        using (GraphicsPath path = MakeRoundedRect(
+                            new RectangleF(2f, 3.5f, 14f, 11f), 1.4f))
+                        {
+                            g.DrawPath(pen, path);
+                        }
                         break;
 
                     case IconKind.Ellipse:
-                        g.DrawEllipse(pen, r);
+                        g.DrawEllipse(pen, 2f, 3.5f, 14f, 11f);
                         break;
 
                     case IconKind.Arrow:
-                    {
-                        PointF a = new PointF(r.Left, r.Bottom - 1);
-                        PointF b = new PointF(r.Right - 1, r.Top + 1);
-                        g.DrawLine(pen, a, b);
-                        using (SolidBrush brush = new SolidBrush(ink))
-                        {
-                            g.FillPolygon(brush, new PointF[]
-                            {
-                                b,
-                                new PointF(b.X - 8, b.Y),
-                                new PointF(b.X - 3, b.Y + 6)
-                            });
-                        }
+                        g.DrawLine(pen, 2.5f, 15.5f, 15f, 3f);
+                        g.DrawLine(pen, 15f, 3f, 8.2f, 3f);
+                        g.DrawLine(pen, 15f, 3f, 15f, 9.8f);
                         break;
-                    }
 
                     case IconKind.Pen:
-                    {
-                        g.DrawLines(pen, new PointF[]
-                        {
-                            new PointF(r.Left, r.Bottom - 3),
-                            new PointF(r.Left + 5, r.Top + 5),
-                            new PointF(r.Left + 9, r.Bottom - 5),
-                            new PointF(r.Right - 2, r.Top + 2)
-                        });
+                        g.DrawBezier(pen,
+                            U(1.8f, 13.5f), U(5f, 2f),
+                            U(9.5f, 16f), U(16.2f, 4.5f));
                         using (SolidBrush brush = new SolidBrush(ink))
                         {
-                            g.FillEllipse(brush,
-                                r.Right - 4, r.Top, 4, 4);
+                            g.FillEllipse(brush, 14.4f, 2.6f, 3.2f, 3.2f);
                         }
                         break;
-                    }
 
                     case IconKind.Text:
-                        DrawGlyph(g, "A", ink, 15f, r);
+                        g.DrawLine(pen, 3f, 3.5f, 15f, 3.5f);
+                        g.DrawLine(pen, 9f, 3.5f, 9f, 15f);
+                        g.DrawLine(pen, 6f, 15f, 12f, 15f);
                         break;
 
                     case IconKind.Number:
-                    {
                         using (SolidBrush brush = new SolidBrush(ink))
                         {
-                            g.FillEllipse(brush, r);
+                            g.FillEllipse(brush, 1.5f, 1.5f, 15f, 15f);
                         }
-                        DrawGlyph(g, "1", Color.White, 12f, r);
+                        DrawUnitGlyph(g, "1", Color.White, 11f,
+                            "Segoe UI");
                         break;
-                    }
 
                     case IconKind.Highlight:
-                    {
-                        using (SolidBrush brush = new SolidBrush(
-                            Color.FromArgb(120, ink)))
+                        using (GraphicsPath path = MakeRoundedRect(
+                            new RectangleF(2f, 2.5f, 14f, 8f), 2f))
                         {
-                            g.FillRectangle(brush,
-                                r.Left, r.Top + r.Height - 7,
-                                r.Width, 7);
+                            g.DrawPath(pen, path);
                         }
-                        g.DrawLine(pen,
-                            r.Left, r.Top + 3,
-                            r.Right - 3, r.Top + 3);
+                        g.DrawLine(pen, 4f, 11f, 14f, 11f);
+                        using (SolidBrush brush = new SolidBrush(
+                            Color.FromArgb(150, ink)))
+                        {
+                            g.FillRectangle(brush, 1.5f, 13.5f, 15f, 3.5f);
+                        }
                         break;
-                    }
 
                     case IconKind.Mosaic:
-                    {
-                        int cell = r.Width / 3;
-                        for (int row = 0; row < 3; row++)
+                        using (GraphicsPath path = MakeRoundedRect(
+                            new RectangleF(1.5f, 1.5f, 15f, 15f), 1.8f))
                         {
-                            for (int col = 0; col < 3; col++)
-                            {
-                                Color c = (row + col) % 2 == 0
-                                    ? ink
-                                    : Color.FromArgb(70, ink);
-                                using (SolidBrush brush =
-                                    new SolidBrush(c))
-                                {
-                                    g.FillRectangle(brush,
-                                        r.Left + col * cell,
-                                        r.Top + row * cell,
-                                        cell - 1, cell - 1);
-                                }
-                            }
+                            g.DrawPath(pen, path);
+                        }
+                        g.DrawLine(pen, 6.5f, 1.5f, 6.5f, 16.5f);
+                        g.DrawLine(pen, 11.5f, 1.5f, 11.5f, 16.5f);
+                        g.DrawLine(pen, 1.5f, 6.5f, 16.5f, 6.5f);
+                        g.DrawLine(pen, 1.5f, 11.5f, 16.5f, 11.5f);
+                        using (SolidBrush brush = new SolidBrush(
+                            Color.FromArgb(115, ink)))
+                        {
+                            g.FillRectangle(brush, 2f, 2f, 4f, 4f);
+                            g.FillRectangle(brush, 7f, 7f, 4f, 4f);
+                            g.FillRectangle(brush, 12f, 12f, 4f, 4f);
                         }
                         break;
-                    }
 
                     case IconKind.Undo:
-                    {
-                        RectangleF arc = new RectangleF(
-                            r.Left + 1, r.Top + 2,
-                            r.Width - 2, r.Height - 2);
-                        g.DrawArc(pen, arc, 200f, 250f);
-                        PointF tip = new PointF(
-                            r.Left + 2, r.Top + r.Height / 2f + 2);
-                        using (SolidBrush brush = new SolidBrush(ink))
-                        {
-                            g.FillPolygon(brush, new PointF[]
-                            {
-                                tip,
-                                new PointF(tip.X + 6, tip.Y - 5),
-                                new PointF(tip.X + 7, tip.Y + 3)
-                            });
-                        }
+                        g.DrawArc(pen,
+                            new RectangleF(2f, 3f, 14f, 12f), 180f, 180f);
+                        g.DrawLine(pen, 2.3f, 9f, 7f, 5.5f);
+                        g.DrawLine(pen, 2.3f, 9f, 7f, 12.5f);
+                        g.DrawLine(pen, 16f, 9f, 16f, 13f);
                         break;
-                    }
 
                     case IconKind.Crop:
                         g.DrawLines(pen, new PointF[]
                         {
-                            new PointF(r.Left + 5, r.Top),
-                            new PointF(r.Left + 5, r.Bottom - 5),
-                            new PointF(r.Right, r.Bottom - 5)
+                            U(5f, 1.5f), U(5f, 13f), U(16.5f, 13f)
                         });
                         g.DrawLines(pen, new PointF[]
                         {
-                            new PointF(r.Left, r.Top + 5),
-                            new PointF(r.Right - 5, r.Top + 5),
-                            new PointF(r.Right - 5, r.Bottom)
+                            U(1.5f, 5f), U(13f, 5f), U(13f, 16.5f)
                         });
                         break;
 
                     case IconKind.Color:
-                    {
                         using (SolidBrush brush = new SolidBrush(ink))
                         using (Pen ring = new Pen(
-                            Color.FromArgb(110, 118, 132), 1.3f))
+                            Color.FromArgb(186, 197, 212), 1.1f))
                         {
-                            g.FillEllipse(brush, r);
-                            g.DrawEllipse(ring, r);
+                            g.FillEllipse(brush, 2f, 2f, 14f, 14f);
+                            g.DrawEllipse(ring, 2f, 2f, 14f, 14f);
+                        }
+                        using (SolidBrush gloss = new SolidBrush(
+                            Color.FromArgb(80, 255, 255, 255)))
+                        {
+                            g.FillEllipse(gloss, 4.6f, 4.4f, 4f, 3f);
                         }
                         break;
-                    }
 
                     case IconKind.Width:
                     {
-                        float[] widths = new float[] { 1.3f, 2.4f, 3.8f };
-                        for (int i = 0; i < 3; i++)
+                        float[] widths = new float[] { 1.2f, 2.2f, 3.4f };
+                        int active = Array.IndexOf(Widths, stroke);
+                        if (active < 0)
+                        {
+                            active = 0;
+                        }
+                        for (int i = 0; i < widths.Length; i++)
                         {
                             using (Pen line = new Pen(
-                                i == Array.IndexOf(Widths, stroke)
-                                    ? AccentColor : ink,
+                                i == active ? AccentColor : ink,
                                 widths[i]))
                             {
-                                float y = r.Top + 2 + i * 5;
-                                g.DrawLine(line,
-                                    r.Left, y, r.Right, y);
+                                line.StartCap = LineCap.Round;
+                                line.EndCap = LineCap.Round;
+                                float y = 4f + i * 5f;
+                                g.DrawLine(line, 2f, y, 16f, y);
                             }
                         }
                         break;
                     }
 
                     case IconKind.Save:
-                        g.DrawLine(pen,
-                            r.Left + r.Width / 2f, r.Top,
-                            r.Left + r.Width / 2f, r.Bottom - 5);
+                        g.DrawLine(pen, 9f, 2f, 9f, 11.5f);
+                        g.DrawLine(pen, 5f, 8f, 9f, 12f);
+                        g.DrawLine(pen, 9f, 12f, 13f, 8f);
                         g.DrawLines(pen, new PointF[]
                         {
-                            new PointF(r.Left + 3, r.Top + 7),
-                            new PointF(r.Left + r.Width / 2f, r.Bottom - 3),
-                            new PointF(r.Right - 3, r.Top + 7)
+                            U(3f, 12f), U(3f, 16f),
+                            U(15f, 16f), U(15f, 12f)
                         });
-                        g.DrawLine(pen,
-                            r.Left + 2, r.Bottom,
-                            r.Right - 2, r.Bottom);
                         break;
 
+                    case IconKind.Pin:
+                    {
+                        // 倾斜的图钉（通用「钉住」符号），比正立的针身更易辨认。
+                        GraphicsState pinState = g.Save();
+                        g.TranslateTransform(9f, 9f);
+                        g.RotateTransform(38f);
+                        g.TranslateTransform(-9f, -9f);
+
+                        using (GraphicsPath cap = MakeRoundedRect(
+                            new RectangleF(3f, 1.8f, 12f, 4f), 2f))
+                        using (SolidBrush brush = new SolidBrush(ink))
+                        {
+                            g.FillPath(brush, cap);
+                        }
+                        g.DrawLine(pen, 9f, 5.8f, 9f, 15f);
+                        using (SolidBrush brush = new SolidBrush(ink))
+                        {
+                            g.FillPolygon(brush, new PointF[]
+                            {
+                                U(7.7f, 13.5f), U(10.3f, 13.5f),
+                                U(9f, 16.6f)
+                            });
+                        }
+                        g.Restore(pinState);
+                        break;
+                    }
+
                     case IconKind.Translate:
-                        DrawGlyph(g, "译", ink, 15f, r);
+                        using (GraphicsPath path = MakeRoundedRect(
+                            new RectangleF(0.8f, 1.8f, 16.4f, 14.4f), 3.5f))
+                        using (SolidBrush brush = new SolidBrush(
+                            Color.FromArgb(22, ink)))
+                        {
+                            g.FillPath(brush, path);
+                            g.DrawPath(pen, path);
+                        }
+                        DrawUnitGlyph(g, "译", ink, 10.5f,
+                            "Microsoft YaHei UI");
                         break;
 
                     case IconKind.Cancel:
-                        using (Pen thick = new Pen(ink, 2f))
+                        using (Pen thick = new Pen(ink, 1.9f))
                         {
-                            g.DrawLine(thick,
-                                r.Left + 2, r.Top + 2,
-                                r.Right - 2, r.Bottom - 2);
-                            g.DrawLine(thick,
-                                r.Right - 2, r.Top + 2,
-                                r.Left + 2, r.Bottom - 2);
+                            thick.StartCap = LineCap.Round;
+                            thick.EndCap = LineCap.Round;
+                            g.DrawLine(thick, 6f, 6f, 12f, 12f);
+                            g.DrawLine(thick, 12f, 6f, 6f, 12f);
                         }
                         break;
 
                     case IconKind.Done:
-                        using (Pen thick = new Pen(ink, 2.4f))
+                        using (Pen thick = new Pen(ink, 2.1f))
                         {
+                            thick.StartCap = LineCap.Round;
+                            thick.EndCap = LineCap.Round;
                             thick.LineJoin = LineJoin.Round;
                             g.DrawLines(thick, new PointF[]
                             {
-                                new PointF(r.Left + 1, r.Top + r.Height / 2f),
-                                new PointF(r.Left + r.Width / 2.6f, r.Bottom - 2),
-                                new PointF(r.Right - 1, r.Top + 2)
+                                U(4f, 9.2f), U(7.6f, 12.8f),
+                                U(14f, 5.2f)
                             });
                         }
                         break;
                 }
             }
+
+            g.Restore(state);
         }
 
-        private static void DrawGlyph(
-            Graphics g, string text, Color ink, float size, Rectangle r)
+        private static PointF U(float x, float y)
+        {
+            return new PointF(x, y);
+        }
+
+        /// <summary>在 18×18 图标网格中居中绘制一个字符。</summary>
+        private static void DrawUnitGlyph(
+            Graphics g, string text, Color ink,
+            float size, string family)
         {
             using (Font font = new Font(
-                "Microsoft YaHei UI", size, FontStyle.Bold,
-                GraphicsUnit.Pixel))
+                family, size, FontStyle.Bold, GraphicsUnit.Pixel))
             using (SolidBrush brush = new SolidBrush(ink))
             using (StringFormat format = new StringFormat())
             {
                 format.Alignment = StringAlignment.Center;
                 format.LineAlignment = StringAlignment.Center;
-                RectangleF target = new RectangleF(
-                    r.X - 2, r.Y - 2, r.Width + 4, r.Height + 4);
-                g.DrawString(text, font, brush, target, format);
+                g.DrawString(text, font, brush,
+                    new RectangleF(-1f, -1f, 20f, 20f), format);
             }
+        }
+
+        private static GraphicsPath MakeRoundedRect(
+            RectangleF r, float radius)
+        {
+            GraphicsPath path = new GraphicsPath();
+            float d = radius * 2f;
+            if (d > r.Width)
+            {
+                d = r.Width;
+            }
+            if (d > r.Height)
+            {
+                d = r.Height;
+            }
+            path.AddArc(r.Left, r.Top, d, d, 180f, 90f);
+            path.AddArc(r.Right - d, r.Top, d, d, 270f, 90f);
+            path.AddArc(r.Right - d, r.Bottom - d, d, d, 0f, 90f);
+            path.AddArc(r.Left, r.Bottom - d, d, d, 90f, 90f);
+            path.CloseFigure();
+            return path;
         }
     }
 }

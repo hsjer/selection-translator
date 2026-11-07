@@ -16,13 +16,16 @@ Windows 没有公开接口可以往**所有应用**的文本右键菜单里统�
 
 按 `Ctrl+Alt+S`（或托盘菜单「截图翻译…」）进入全屏截图浮层：
 
-1. **框选**：按住鼠标**左键或右键**拖拽即可，松开后选区出现蓝色边框、8 个缩放手柄和 `宽 × 高` 尺寸标签，下方自动浮出图标工具栏。拖手柄可调整范围，在选区内拖动可移动选区。
-2. **就地标注**：工具栏从左到右是矩形、椭圆、箭头、画笔、文字、序号、高亮、马赛克、撤销、裁剪、颜色、线宽、保存、翻译、取消、完成。`Ctrl+Z` 撤销，数字键 `1`–`8` 快速切换工具；颜色有 6 种、线宽 3 档。
+1. **框选**：按住鼠标**左键或右键**拖拽。松开后选区锁定（一次快捷键只截一张图），光标由十字变回普通箭头，选区出现蓝色边框、8 个缩放手柄和 `宽 × 高` 尺寸标签，下方自动浮出图标工具栏。手柄上仍显示缩放光标，选区内拖动可移动选区；右键单击只退出当前标注工具，不会重新框选。想再截一张请重按 `Ctrl+Alt+S`。
+2. **就地标注**：工具栏从左到右是矩形、椭圆、箭头、画笔、文字、序号、高亮、马赛克、撤销、裁剪、颜色、线宽、保存、钉在桌面、翻译、取消、完成。`Ctrl+Z` 撤销，数字键 `1`–`8` 快速切换工具；颜色有 6 种、线宽 3 档。
 3. **结束方式**：
    - **完成 ✓**：合成图复制进剪贴板，并打开截图编辑器继续精细编辑；
    - **译**：打开编辑器并立即调用百度图片翻译；
+   - **钉 📌**：把合成图钉在桌面上（无边框置顶小窗）；
    - **保存 ↓**：直接导出 PNG 并退出；
    - **取消 ✕ / Esc**：放弃本次截图。
+
+**桌面贴图**：左键拖动移动、`Ctrl` + 滚轮缩放、右键菜单可复制 / 保存 / 调整透明度 / 切换置顶 / 缩放 / 关闭，`Esc` 或双击关闭；鼠标悬停时右上角出现关闭按钮。托盘菜单「关闭所有桌面贴图」可一次清理。再次按截图快捷键时贴图会临时隐藏，不会被拍进新截图。编辑器底部也有「钉在桌面」按钮。
 
 截图编辑器内仍可裁剪、撤销、复制合成图，并展示 OCR 原文、分段译文、汇总译文及「整图贴合」译文图，可分别复制译文和译文图。
 
@@ -36,9 +39,10 @@ Windows 没有公开接口可以往**所有应用**的文本右键菜单里统�
 - 全局快捷键翻译选中文本（默认 `Ctrl+Alt+T`，可在设置中自定义）
 - 全局快捷键打开手动翻译窗口（默认 `Ctrl+Alt+E`，可在设置中自定义）
 - 全局快捷键截图翻译（默认 `Ctrl+Alt+S`，可在设置中自定义）
-- 截图浮层：左键/右键框选、8 手柄调整、尺寸标签、16 个图标就地标注（含序号、马赛克、裁剪）
-- 截图编辑器：裁剪、撤销、保存、复制合成图、图片翻译结果面板
-- 托盘菜单：翻译选中文本、手动翻译、截图翻译…、翻译剪贴板、设置、开机启动、退出
+- 截图浮层：左键/右键框选、选区锁定、8 手柄调整、尺寸标签、17 个线性图标就地标注（含序号、马赛克、裁剪、贴图）
+- 桌面贴图：置顶无边框小窗，可拖动、缩放、调透明度，托盘菜单一键关闭全部
+- 截图编辑器：裁剪、撤销、保存、复制合成图、贴图、图片翻译结果面板
+- 托盘菜单：翻译选中文本、手动翻译、截图翻译…、翻译剪贴板、关闭所有桌面贴图、设置、开机启动、退出
 - 百度翻译 API（通用翻译 + 图片翻译）
 - 自动目标语言：中文→英文，其他→中文；也可固定目标语言（文本与图片分别设置）
 - 密钥使用 Windows DPAPI 加密后保存在当前用户目录
@@ -110,7 +114,7 @@ POST https://fanyi-api.baidu.com/api/trans/sdk/picture
 Content-Type: multipart/form-data
 ```
 
-图片以 `image` 字段上传，其他表单字段：`from`、`to`、`appid`、`salt`、`cuid=APICUID`、`mac=mac`、`version=3`、`paste`、`sign`。
+**参数位置很关键**：按官方文档的请求示例，`from`、`to`、`appid`、`salt`、`cuid=APICUID`、`mac=mac`、`version=3`、`paste`、`sign` 必须放在 **URL 查询串**上；只有 `image` 通过 `multipart/form-data` 上传，且该 part 必须带 `filename`（否则服务端不把它当作文件）。把这些参数塞进表单体、或图片 part 缺 `filename`，服务端都会返回 `54001 Invalid Sign`。
 
 签名规则（注意 `md5(image)` 是**原始图片字节**的 MD5，32 位小写，不做 hex/base64 编码）：
 
@@ -141,6 +145,15 @@ Get-Content "$env:APPDATA\SelectionTranslator\selftest.txt"
 
 自检覆盖文本翻译 MD5 签名、自动目标语言判断、DPAPI 加解密、文本分段，图片翻译的 MD5 签名、固定参数（cuid/mac）、语种映射（ja→jp 等）与目标语种校验，以及截图浮层的构造与选区导出冒烟测试。
 
+图片翻译报 `54001`、`52003` 等错误时，可用真实请求诊断（使用当前已保存的 AppID / 密钥，结果写入 `imagetest.txt`，不输出密钥）：
+
+```powershell
+.\dist\SelectionTranslator.exe --imagetest "C:\path\to\screenshot.png"
+Get-Content "$env:APPDATA\SelectionTranslator\imagetest.txt"
+```
+
+返回 `RESULT: OK` 即凭证、签名与图片翻译服务都正常；失败时文件里会有完整异常信息。
+
 ## 已知限制
 
 - 「选中即显示」依赖 UI Automation 读取焦点元素选区；如果应用不暴露选区（部分游戏、远程桌面、Electron 应用等），请改用 `Ctrl+Alt+T` 或 `Ctrl+Alt+E`。
@@ -160,11 +173,13 @@ Get-Content "$env:APPDATA\SelectionTranslator\selftest.txt"
 ```text
 BaiduTranslator.cs            文本翻译 API
 BaiduImageTranslator.cs       图片翻译 API（签名/multipart/预处理/解析）
-ScreenshotCaptureForm.cs      全屏框选取景窗口
+ScreenshotCaptureForm.cs      一体化截图浮层（框选/标注/工具栏）
 ScreenshotEditorForm.cs       截图编辑器（标注/裁剪/翻译结果）
+PinnedImageForm.cs            桌面贴图窗口（置顶/拖动/缩放）
 AppConfig.cs / SettingsForm.cs 配置与设置界面
 TrayApplicationContext.cs     托盘、全局热键与流程编排
 SelfTest.cs                    自检用例
+ImageTest.cs                   图片翻译真实请求诊断（--imagetest）
 build.ps1                     使用系统 csc.exe 编译
 app.manifest                  DPI 与 Windows 兼容性声明
 dist/                         编译输出（已 gitignore）

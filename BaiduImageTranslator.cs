@@ -290,6 +290,13 @@ namespace SelectionTranslator
             string imageMd5 = Md5OfBytes(imageBytes);
             string sign = BuildImageSign(appId, imageMd5, salt, secret);
 
+            // 便于排查 54001：只记录非敏感字段，绝不写入密钥。
+            Log.Info("图片翻译请求：appid=" + appId +
+                " salt=" + salt + " imageMd5=" + imageMd5 +
+                " imageBytes=" + imageBytes.Length +
+                " from=" + from + " to=" + to +
+                " paste=" + paste + " sign=" + sign);
+
             Dictionary<string, string> fields = new Dictionary<string, string>();
             fields["from"] = from;
             fields["to"] = to;
@@ -315,6 +322,12 @@ namespace SelectionTranslator
             Exception lastError = null;
             bool timedOut = false;
 
+            // 官方文档的请求示例把 appid/salt/sign/cuid/mac/version 等
+            // 参数全部放在 URL query 上，只有 image 通过 multipart 上传。
+            // 若把参数塞进表单体，服务端验签时取到的值与签名时对不上，
+            // 会直接返回 54001 Invalid Sign。
+            string url = Endpoint + "?" + BuildQuery(fields);
+
             for (int attempt = 0; attempt < 2; attempt++)
             {
                 try
@@ -326,17 +339,20 @@ namespace SelectionTranslator
                             new ByteArrayContent(imageBytes);
                         imageContent.Headers.ContentType =
                             MediaTypeHeaderValue.Parse(contentType);
-                        content.Add(imageContent, "image");
-
-                        foreach (KeyValuePair<string, string> pair in fields)
-                        {
-                            content.Add(
-                                new StringContent(pair.Value ?? ""),
-                                pair.Key);
-                        }
+                        // 必须带 filename，否则服务端不会把它当作上传文件，
+                        // md5(image) 会算成空值，同样导致 54001。
+                        // 手写 Content-Disposition，避免框架额外附加
+                        // filename*= 造成服务端解析差异。
+                        imageContent.Headers.ContentDisposition =
+                            new ContentDispositionHeaderValue("form-data")
+                            {
+                                Name = "\"image\"",
+                                FileName = "\"image.png\""
+                            };
+                        content.Add(imageContent);
 
                         using (HttpResponseMessage response =
-                            await Client.PostAsync(Endpoint, content))
+                            await Client.PostAsync(url, content))
                         {
                             string json =
                                 await response.Content.ReadAsStringAsync();
@@ -430,6 +446,10 @@ namespace SelectionTranslator
                     {
                         errorMessage = Convert.ToString(errorMessageObject);
                     }
+                    Log.Info("图片翻译返回错误码 " + errorCode +
+                        "：" + errorMessage +
+                        "；原始响应：" +
+                        (json.Length > 600 ? json.Substring(0, 600) : json));
                     throw new TranslationException(
                         DescribeError(errorCode, errorMessage), errorCode);
                 }
@@ -648,7 +668,9 @@ namespace SelectionTranslator
                     friendly = "缺少必填参数或固定参数有误。";
                     break;
                 case "54001":
-                    friendly = "签名错误：请检查密钥是否填写正确。";
+                    friendly = "签名错误（Invalid Sign）：" +
+                        "请确认已在百度翻译开放平台开通「图片翻译」服务，" +
+                        "且设置中的 AppID / 密钥与控制台一致（修改密钥后需重启程序）。";
                     break;
                 case "54003":
                     friendly = "访问频率受限，请稍后重试。";
@@ -706,6 +728,23 @@ namespace SelectionTranslator
                 friendly += "（" + message + "）";
             }
             return friendly;
+        }
+
+        private static string BuildQuery(
+            Dictionary<string, string> fields)
+        {
+            StringBuilder builder = new StringBuilder();
+            foreach (KeyValuePair<string, string> pair in fields)
+            {
+                if (builder.Length > 0)
+                {
+                    builder.Append('&');
+                }
+                builder.Append(Uri.EscapeDataString(pair.Key));
+                builder.Append('=');
+                builder.Append(Uri.EscapeDataString(pair.Value ?? ""));
+            }
+            return builder.ToString();
         }
 
         private static string Md5Hex(string text)

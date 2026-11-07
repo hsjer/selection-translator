@@ -910,6 +910,48 @@ namespace SelectionTranslator
             saveButton.Click += OnSaveClicked;
             _actionBar.Controls.Add(saveButton);
             _rightButtons.Add(saveButton);
+
+            Button pinButton = new Button
+            {
+                Text = "钉在桌面",
+                Size = new Size(92, 30),
+                Anchor = AnchorStyles.Top | AnchorStyles.Right
+            };
+            pinButton.Click += OnPinClicked;
+            _actionBar.Controls.Add(pinButton);
+            _rightButtons.Add(pinButton);
+        }
+
+        /// <summary>把当前合成图钉成一个置顶无边框小窗。</summary>
+        private void OnPinClicked(object sender, EventArgs e)
+        {
+            Bitmap composite = CreateCompositeWithShapes();
+            if (composite == null)
+            {
+                return;
+            }
+
+            try
+            {
+                PinnedImageForm pin = new PinnedImageForm(
+                    composite,
+                    new Point(
+                        Math.Min(Right + 16, Screen.PrimaryScreen.WorkingArea.Right - 200),
+                        Math.Max(Top, Screen.PrimaryScreen.WorkingArea.Top)));
+                composite = null; // 所有权交给贴图窗口
+                pin.Show();
+            }
+            catch (Exception ex)
+            {
+                Log.Error("贴图失败", ex);
+            }
+            finally
+            {
+                if (composite != null)
+                {
+                    composite.Dispose();
+                }
+            }
         }
 
         /// <summary>

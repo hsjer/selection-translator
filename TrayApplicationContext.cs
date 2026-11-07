@@ -34,6 +34,9 @@ namespace SelectionTranslator
         private TranslateBubbleForm _bubble;
         private TranslationForm _translationForm;
         private ScreenshotEditorForm _screenshotEditor;
+        private ToolStripMenuItem _closePinsItem;
+        // 防止热键在浮层显示期间重复触发、嵌套打开第二个截图会话。
+        private bool _captureInProgress;
         private SettingsForm _settingsForm;
         private bool _started;
         private bool _busy;
@@ -98,6 +101,24 @@ namespace SelectionTranslator
             _startupItem.Checked = _config.StartWithWindows;
             _startupItem.Click += OnStartupClicked;
             _trayMenu.Items.Add(_startupItem);
+
+            _closePinsItem = new ToolStripMenuItem("关闭所有桌面贴图");
+            _closePinsItem.Enabled = false;
+            _closePinsItem.Click += delegate
+            {
+                PinnedImageForm.CloseAll();
+                _closePinsItem.Enabled = false;
+            };
+            _trayMenu.Items.Add(_closePinsItem);
+
+            // 贴图数量变化时同步菜单可用状态。
+            PinnedImageForm.CountChanged += delegate(int count)
+            {
+                if (_closePinsItem != null && !_closePinsItem.IsDisposed)
+                {
+                    _closePinsItem.Enabled = count > 0;
+                }
+            };
 
             _trayMenu.Items.Add(new ToolStripSeparator());
 
@@ -520,32 +541,16 @@ namespace SelectionTranslator
                 OnBubbleClicked);
             _bubble.FormClosed += delegate { _bubble = null; };
             _bubble.Show();
-            CloseNativeMenuSoon();
-        }
-
-        /// <summary>
-        /// 原生右键菜单会抢走第一次点击，导致“译”按钮点不动。
-        /// 气泡显示后主动关闭该菜单，让气泡可以直接点击。
-        /// </summary>
-        private async void CloseNativeMenuSoon()
-        {
-            for (int i = 0; i < 6; i++)
-            {
-                await Task.Delay(50);
-                if (_disposed)
-                {
-                    return;
-                }
-                if (NativeMethods.CloseActiveMenu())
-                {
-                    return;
-                }
-            }
+            // 不再主动关闭原生右键菜单：菜单会「闪一下就消失」，
+            // 用户也没法继续使用复制 / 粘贴等菜单项。气泡点击由
+            // 低级鼠标钩子直接拦截（OnLeftButtonDown），不需要关菜单。
         }
 
         private void OnBubbleClicked(string text, Point location)
         {
             Log.Info("气泡点击：窗口");
+            // 用户已明确选择翻译，此时才收起残留的原生菜单。
+            NativeMethods.CloseActiveMenu();
             ShowTranslation(text, location);
         }
 
@@ -619,10 +624,12 @@ namespace SelectionTranslator
         /// </summary>
         private void OpenScreenshotEditor()
         {
-            if (_disposed)
+            // 一次快捷键只对应一次截图；浮层显示期间忽略重复触发。
+            if (_disposed || _captureInProgress)
             {
                 return;
             }
+            _captureInProgress = true;
 
             // 已有编辑器在则先关闭，避免打开多个实例。
             if (_screenshotEditor != null &&
@@ -648,11 +655,16 @@ namespace SelectionTranslator
 
             Bitmap image = null;
             Bitmap rawImage = null;
+            Point pinLocation = Point.Empty;
             ScreenshotCaptureForm.CaptureResult action =
                 ScreenshotCaptureForm.CaptureResult.None;
+            // 贴图窗口在截图期间先隐藏，避免被拍进新截图（QQ 的行为）。
+            int hiddenPins = 0;
             try
             {
-                // 让托盘菜单先彻底收起，避免被拍进截图。
+                hiddenPins = PinnedImageForm.HideAllForCapture();
+
+                // 让托盘菜单 / 贴图窗口先彻底收起，避免被拍进截图。
                 Application.DoEvents();
 
                 using (ScreenshotCaptureForm capture =
@@ -665,6 +677,7 @@ namespace SelectionTranslator
                         image = capture.Captured;
                         rawImage = capture.RawCaptured;
                         action = capture.Result;
+                        pinLocation = capture.CaptureLocation;
                     }
                 }
             }
@@ -674,6 +687,10 @@ namespace SelectionTranslator
             }
             finally
             {
+                if (hiddenPins > 0)
+                {
+                    PinnedImageForm.ShowAllAfterCapture();
+                }
                 if (watcherRunning && !_disposed)
                 {
                     _rightClickWatcher.Start();
@@ -682,6 +699,7 @@ namespace SelectionTranslator
                 {
                     _selectionMonitor.Start();
                 }
+                _captureInProgress = false;
             }
 
             if (image == null || _disposed)
@@ -693,6 +711,36 @@ namespace SelectionTranslator
                 if (rawImage != null)
                 {
                     rawImage.Dispose();
+                }
+                return;
+            }
+
+            // 「钉在桌面」：把合成图放进无边框置顶小窗，不打开编辑器。
+            if (action == ScreenshotCaptureForm.CaptureResult.Pin)
+            {
+                try
+                {
+                    PinnedImageForm pin =
+                        new PinnedImageForm(image, pinLocation);
+                    image = null; // 位图所有权交给贴图窗口
+                    if (rawImage != null)
+                    {
+                        rawImage.Dispose();
+                        rawImage = null;
+                    }
+                    pin.Show();
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("贴图失败", ex);
+                    if (image != null)
+                    {
+                        image.Dispose();
+                    }
+                    if (rawImage != null)
+                    {
+                        rawImage.Dispose();
+                    }
                 }
                 return;
             }
@@ -1058,6 +1106,8 @@ namespace SelectionTranslator
                 _settingsForm.Close();
                 _settingsForm = null;
             }
+            // 贴图是独立顶层窗口，退出时一并清理，避免托盘消失后残留。
+            PinnedImageForm.CloseAll();
 
             ExitThread();
         }
