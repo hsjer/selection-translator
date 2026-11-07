@@ -614,8 +614,8 @@ namespace SelectionTranslator
         }
 
         /// <summary>
-        /// 截屏选区窗口 → 截图编辑器。选区确认后进入编辑器，
-        /// 可继续标注、裁剪、保存，或调用百度图片翻译。
+        /// 截屏浮层 → 截图编辑器。浮层内已完成框选与标注，
+        /// 「完成」进入编辑器，「翻译图片」进入编辑器并自动识别文字。
         /// </summary>
         private void OpenScreenshotEditor()
         {
@@ -631,35 +631,98 @@ namespace SelectionTranslator
                 _screenshotEditor.Close();
             }
 
-            // 截图过程用户可能取消（Esc），任何异常都吞掉，不影响托盘。
+            // 截图期间必须暂停全局右键钩子与选区监听：否则右键拖拽
+            // 会触发「译」浮窗与 UIA 探测，导致画面闪烁甚至抢焦点。
+            bool watcherRunning = _rightClickWatcher != null &&
+                _rightClickWatcher.IsRunning;
+            bool monitorRunning = _selectionMonitor != null &&
+                _selectionMonitor.IsRunning;
+            if (watcherRunning)
+            {
+                _rightClickWatcher.Stop();
+            }
+            if (monitorRunning)
+            {
+                _selectionMonitor.Stop();
+            }
+
+            Bitmap image = null;
+            Bitmap rawImage = null;
+            ScreenshotCaptureForm.CaptureResult action =
+                ScreenshotCaptureForm.CaptureResult.None;
             try
             {
+                // 让托盘菜单先彻底收起，避免被拍进截图。
+                Application.DoEvents();
+
                 using (ScreenshotCaptureForm capture =
                     new ScreenshotCaptureForm())
                 {
-                    DialogResult result = capture.ShowDialog();
-                    if (result != DialogResult.OK ||
-                        capture.Captured == null)
+                    DialogResult dialogResult = capture.ShowDialog();
+                    if (dialogResult == DialogResult.OK &&
+                        capture.Captured != null)
                     {
-                        return;
+                        image = capture.Captured;
+                        rawImage = capture.RawCaptured;
+                        action = capture.Result;
                     }
-
-                    Bitmap image = capture.Captured;
-                    _screenshotEditor =
-                        new ScreenshotEditorForm(
-                            delegate { return _config; }, image);
-                    // 位图由编辑器在关闭时自行释放。
-                    _screenshotEditor.FormClosed += delegate
-                    {
-                        _screenshotEditor = null;
-                    };
-                    _screenshotEditor.Show();
-                    _screenshotEditor.Activate();
                 }
             }
             catch (Exception ex)
             {
+                Log.Error("截图失败", ex);
+            }
+            finally
+            {
+                if (watcherRunning && !_disposed)
+                {
+                    _rightClickWatcher.Start();
+                }
+                if (monitorRunning && !_disposed)
+                {
+                    _selectionMonitor.Start();
+                }
+            }
+
+            if (image == null || _disposed)
+            {
+                if (image != null)
+                {
+                    image.Dispose();
+                }
+                if (rawImage != null)
+                {
+                    rawImage.Dispose();
+                }
+                return;
+            }
+
+            try
+            {
+                _screenshotEditor =
+                    new ScreenshotEditorForm(
+                        delegate { return _config; },
+                        image, rawImage);
+                // 位图由编辑器在关闭时自行释放。
+                _screenshotEditor.FormClosed += delegate
+                {
+                    _screenshotEditor = null;
+                };
+                if (action == ScreenshotCaptureForm.CaptureResult.Translate)
+                {
+                    _screenshotEditor.BeginTranslation();
+                }
+                _screenshotEditor.Show();
+                _screenshotEditor.Activate();
+            }
+            catch (Exception ex)
+            {
                 Log.Error("打开截图编辑器失败", ex);
+                image.Dispose();
+                if (rawImage != null)
+                {
+                    rawImage.Dispose();
+                }
             }
         }
 

@@ -1,5 +1,7 @@
 using System;
+using System.Drawing;
 using System.IO;
+using System.Reflection;
 using System.Text;
 
 namespace SelectionTranslator
@@ -146,6 +148,44 @@ namespace SelectionTranslator
                 }
                 Check(output, ref ok, "image lang th throws",
                     threwUnsupported.ToString(), "True");
+
+                // 截图浮层冒烟测试：构造过程（抓屏 / 遮罩 / 工具栏图标）
+                // 不抛异常，且给定选区后能真正导出一张位图。
+                using (ScreenshotCaptureForm capture =
+                    new ScreenshotCaptureForm())
+                {
+                    Check(output, ref ok, "capture initially empty",
+                        (capture.Captured == null).ToString(), "True");
+                    Check(output, ref ok, "capture initial result",
+                        capture.Result.ToString(), "None");
+
+                    FieldInfo selectionField =
+                        typeof(ScreenshotCaptureForm).GetField(
+                            "_selection",
+                            BindingFlags.NonPublic |
+                            BindingFlags.Instance);
+                    selectionField.SetValue(
+                        capture, new Rectangle(10, 10, 120, 80));
+
+                    MethodInfo buildMethod =
+                        typeof(ScreenshotCaptureForm).GetMethod(
+                            "BuildResult",
+                            BindingFlags.NonPublic |
+                            BindingFlags.Instance);
+                    using (Bitmap exported =
+                        (Bitmap)buildMethod.Invoke(capture, null))
+                    {
+                        Check(output, ref ok, "capture export not null",
+                            (exported != null).ToString(), "True");
+                        if (exported != null)
+                        {
+                            Check(output, ref ok, "capture export width",
+                                exported.Width.ToString(), "120");
+                            Check(output, ref ok, "capture export height",
+                                exported.Height.ToString(), "80");
+                        }
+                    }
+                }
             }
             catch (Exception ex)
             {

@@ -509,6 +509,7 @@ namespace SelectionTranslator
 
         private readonly Func<AppConfig> _configProvider;
         private Bitmap _image;
+        private Bitmap _sourceImage;
 
         /// <summary>始终取托盘当前配置，避免编辑器打开期间改设置后用旧密钥。</summary>
         private AppConfig Config
@@ -568,9 +569,21 @@ namespace SelectionTranslator
 
         public ScreenshotEditorForm(
             Func<AppConfig> configProvider, Bitmap image)
+            : this(configProvider, image, null)
+        {
+        }
+
+        /// <param name="sourceImage">
+        /// 不含标注的原图，翻译时优先使用它，避免 OCR 把标注当成正文。
+        /// </param>
+        public ScreenshotEditorForm(
+            Func<AppConfig> configProvider,
+            Bitmap image,
+            Bitmap sourceImage)
         {
             _configProvider = configProvider;
             _image = image;
+            _sourceImage = sourceImage;
 
             Text = "截图编辑器（Esc 取消 / Enter 确认裁剪 / Ctrl+Z 撤销）";
             FormBorderStyle = FormBorderStyle.Sizable;
@@ -1578,6 +1591,24 @@ namespace SelectionTranslator
 
         // ---------------- 翻译 ----------------
 
+        /// <summary>
+        /// 由截图浮层的「翻译图片」按钮调用：窗口显示后自动发起一次翻译。
+        /// 未配置密钥时静默跳过，不弹提示打断用户。
+        /// </summary>
+        public void BeginTranslation()
+        {
+            EventHandler handler = null;
+            handler = delegate
+            {
+                Shown -= handler;
+                if (HasCredentials())
+                {
+                    OnTranslateClicked(this, EventArgs.Empty);
+                }
+            };
+            Shown += handler;
+        }
+
         private async void OnTranslateClicked(
             object sender, EventArgs e)
         {
@@ -1610,11 +1641,14 @@ namespace SelectionTranslator
 
             try
             {
-                // 翻译原图（不含标注），避免标注干扰 OCR。
+                // 翻译未标注的原图，避免矩形框 / 马赛克干扰 OCR。
+                // 浮层会把标注合进 _image，所以优先用独立的原图通道。
+                Bitmap ocrSource = _sourceImage != null
+                    ? _sourceImage : _image;
                 string note;
                 byte[] bytes =
                     BaiduImageTranslator.PrepareImage(
-                        _image, out note);
+                        ocrSource, out note);
 
                 AppConfig config = Config;
                 ImageTranslationResult result =
@@ -1922,6 +1956,11 @@ namespace SelectionTranslator
                 }
             }
             _undo.Clear();
+            if (_sourceImage != null && _sourceImage != _image)
+            {
+                _sourceImage.Dispose();
+                _sourceImage = null;
+            }
             if (_image != null)
             {
                 _image.Dispose();
