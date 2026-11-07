@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
@@ -696,6 +697,12 @@ namespace SelectionTranslator
 
         /// <summary>选区左上角对应的屏幕坐标（贴图窗口用它定位）。</summary>
         public Point CaptureLocation { get; private set; }
+
+        /// <summary>
+        /// Finish() 中构建结果位图 + 关闭浮层的耗时（毫秒），
+        /// 供托盘侧统计「点按钮 → 剪贴板可用」的端到端耗时。
+        /// </summary>
+        public long FinishElapsedMs { get; private set; }
 
         // ------------------------------------------------------------------
         // 初始化
@@ -1807,6 +1814,7 @@ namespace SelectionTranslator
                 return;
             }
             _finished = true;
+            Stopwatch finishWatch = Stopwatch.StartNew();
 
             // 用户可能刚输入完文字就直接点「完成」，此时把文字落图；
             // 取消则不保留。
@@ -1860,6 +1868,9 @@ namespace SelectionTranslator
             {
                 TryCopyToClipboard(_captured);
             }
+
+            finishWatch.Stop();
+            FinishElapsedMs = finishWatch.ElapsedMilliseconds;
 
             DialogResult = DialogResult.OK;
             Close();

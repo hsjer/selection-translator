@@ -31,6 +31,13 @@ namespace SelectionTranslator
         private readonly TextBox _hotkeyManualField;
         private readonly TextBox _hotkeyScreenshotField;
         private readonly ComboBox _imageLangBox;
+        private readonly TextBox _tencentIdBox;
+        private readonly TextBox _tencentKeyBox;
+        private readonly CheckBox _tencentShowKeyBox;
+        private readonly CheckBox _useTencentBox;
+        private readonly ComboBox _tencentRegionBox;
+        private readonly ComboBox _tencentConfigBox;
+        private readonly Button _ocrTestButton;
         private TextBox _capturingField;
         private string _capturingFieldOriginal;
         private readonly Button _testButton;
@@ -44,7 +51,7 @@ namespace SelectionTranslator
             Text = "设置 - 选中文本翻译";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(480, 596);
+            ClientSize = new Size(480, 772);
             MaximizeBox = false;
             MinimizeBox = false;
             ShowInTaskbar = false;
@@ -123,7 +130,7 @@ namespace SelectionTranslator
             Controls.Add(_languageBox);
 
             Label imageLangLabel = new Label();
-            imageLangLabel.Text = "图片翻译目标语言";
+            imageLangLabel.Text = "图片文字 → 译文目标语言";
             imageLangLabel.AutoSize = true;
             imageLangLabel.Location = new Point(248, 180);
             Controls.Add(imageLangLabel);
@@ -132,27 +139,29 @@ namespace SelectionTranslator
             _imageLangBox.DropDownStyle = ComboBoxStyle.DropDownList;
             _imageLangBox.Location = new Point(248, 202);
             _imageLangBox.Size = new Size(216, 24);
+            // 新管道走百度「文本翻译」，这里用文本翻译的语种代码；
+            // 回退到百度图片翻译时由 PicturePipeline 负责映射。
             AddImageLang("auto", "自动");
             AddImageLang("zh", "中文");
             AddImageLang("en", "英语");
-            AddImageLang("jp", "日语");
-            AddImageLang("kor", "韩语");
-            AddImageLang("fra", "法语");
-            AddImageLang("spa", "西班牙语");
+            AddImageLang("ja", "日语");
+            AddImageLang("ko", "韩语");
+            AddImageLang("fr", "法语");
+            AddImageLang("es", "西班牙语");
             AddImageLang("ru", "俄语");
             AddImageLang("pt", "葡萄牙语");
             AddImageLang("de", "德语");
             AddImageLang("it", "意大利语");
-            AddImageLang("dan", "丹麦语");
+            AddImageLang("ar", "阿拉伯语");
+            AddImageLang("th", "泰语");
+            AddImageLang("vi", "越南语");
             AddImageLang("nl", "荷兰语");
-            AddImageLang("may", "马来语");
-            AddImageLang("swe", "瑞典语");
-            AddImageLang("id", "印尼语");
             AddImageLang("pl", "波兰语");
-            AddImageLang("rom", "罗马尼亚语");
             AddImageLang("tr", "土耳其语");
             AddImageLang("el", "希腊语");
-            AddImageLang("hu", "匈牙利语");
+            AddImageLang("sv", "瑞典语");
+            AddImageLang("da", "丹麦语");
+            AddImageLang("id", "印尼语");
             SelectImageLang(config.ImageTargetLanguage);
             Controls.Add(_imageLangBox);
 
@@ -264,23 +273,141 @@ namespace SelectionTranslator
             hintLabel.ForeColor = Color.FromArgb(90, 98, 112);
             Controls.Add(hintLabel);
 
+            // --------------------------------------------------------------
+            // 文字识别（腾讯云 OCR）
+            // --------------------------------------------------------------
+            GroupBox tencentGroup = new GroupBox();
+            tencentGroup.Text = "文字识别（腾讯云 OCR · GeneralAccurateOCR）";
+            tencentGroup.Location = new Point(12, 552);
+            tencentGroup.Size = new Size(456, 168);
+            tencentGroup.Font = Font;
+            Controls.Add(tencentGroup);
+
+            _useTencentBox = new CheckBox();
+            _useTencentBox.Text = "用腾讯云识别图中文字（推荐，取字更快）";
+            _useTencentBox.AutoSize = true;
+            _useTencentBox.Location = new Point(12, 22);
+            _useTencentBox.Checked = config.UseTencentOcr;
+            tencentGroup.Controls.Add(_useTencentBox);
+
+            LinkLabel tencentLink = new LinkLabel();
+            tencentLink.Text = "获取 SecretId / SecretKey";
+            tencentLink.AutoSize = true;
+            tencentLink.Location = new Point(300, 24);
+            tencentLink.LinkClicked += OnTencentLinkClicked;
+            tencentGroup.Controls.Add(tencentLink);
+
+            Label tencentIdLabel = new Label();
+            tencentIdLabel.Text = "SecretId";
+            tencentIdLabel.AutoSize = true;
+            tencentIdLabel.Location = new Point(12, 52);
+            tencentGroup.Controls.Add(tencentIdLabel);
+
+            _tencentIdBox = new TextBox();
+            _tencentIdBox.Location = new Point(96, 48);
+            _tencentIdBox.Size = new Size(344, 23);
+            _tencentIdBox.Text = config.TencentSecretId ?? "";
+            tencentGroup.Controls.Add(_tencentIdBox);
+
+            Label tencentKeyLabel = new Label();
+            tencentKeyLabel.Text = "SecretKey";
+            tencentKeyLabel.AutoSize = true;
+            tencentKeyLabel.Location = new Point(12, 80);
+            tencentGroup.Controls.Add(tencentKeyLabel);
+
+            _tencentKeyBox = new TextBox();
+            _tencentKeyBox.Location = new Point(96, 76);
+            _tencentKeyBox.Size = new Size(240, 23);
+            _tencentKeyBox.UseSystemPasswordChar = true;
+            _tencentKeyBox.Text = config.GetTencentSecretKey();
+            tencentGroup.Controls.Add(_tencentKeyBox);
+
+            _tencentShowKeyBox = new CheckBox();
+            _tencentShowKeyBox.Text = "显示";
+            _tencentShowKeyBox.AutoSize = true;
+            _tencentShowKeyBox.Location = new Point(342, 79);
+            _tencentShowKeyBox.CheckedChanged +=
+                OnTencentShowKeyChanged;
+            tencentGroup.Controls.Add(_tencentShowKeyBox);
+
+            Label regionLabel = new Label();
+            regionLabel.Text = "地域";
+            regionLabel.AutoSize = true;
+            regionLabel.Location = new Point(12, 108);
+            tencentGroup.Controls.Add(regionLabel);
+
+            _tencentRegionBox = new ComboBox();
+            _tencentRegionBox.DropDownStyle =
+                ComboBoxStyle.DropDownList;
+            _tencentRegionBox.Location = new Point(96, 104);
+            _tencentRegionBox.Size = new Size(112, 23);
+            _tencentRegionBox.Items.AddRange(new object[]
+            {
+                "ap-guangzhou", "ap-shanghai", "ap-beijing",
+                "ap-hongkong", "ap-singapore"
+            });
+            SelectCombo(_tencentRegionBox,
+                string.IsNullOrEmpty(config.TencentRegion)
+                    ? TencentOcr.DefaultRegion
+                    : config.TencentRegion);
+            tencentGroup.Controls.Add(_tencentRegionBox);
+
+            Label configLabel = new Label();
+            configLabel.Text = "识别模式";
+            configLabel.AutoSize = true;
+            configLabel.Location = new Point(218, 108);
+            tencentGroup.Controls.Add(configLabel);
+
+            _tencentConfigBox = new ComboBox();
+            _tencentConfigBox.DropDownStyle =
+                ComboBoxStyle.DropDownList;
+            _tencentConfigBox.Location = new Point(286, 104);
+            _tencentConfigBox.Size = new Size(154, 23);
+            _tencentConfigBox.Items.AddRange(new object[]
+            {
+                "MulOCR（多语种）", "OCR（通用）"
+            });
+            _tencentConfigBox.SelectedIndex =
+                string.Equals(config.TencentOcrConfigId, "OCR",
+                    StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+            tencentGroup.Controls.Add(_tencentConfigBox);
+
+            Label tencentHint = new Label();
+            tencentHint.Text =
+                "识别用腾讯云，翻译仍用百度文本翻译；关闭开关则回退百度图片翻译。\r\n" +
+                "SecretKey 用 Windows DPAPI 加密保存在本机，不会随 exe 拷走。";
+            tencentHint.Location = new Point(12, 134);
+            tencentHint.Size = new Size(432, 30);
+            tencentHint.ForeColor = Color.FromArgb(90, 98, 112);
+            tencentGroup.Controls.Add(tencentHint);
+
+            // --------------------------------------------------------------
+            // 底部按钮
+            // --------------------------------------------------------------
+            _ocrTestButton = new Button();
+            _ocrTestButton.Text = "测试 OCR";
+            _ocrTestButton.Location = new Point(16, 734);
+            _ocrTestButton.Size = new Size(88, 28);
+            _ocrTestButton.Click += OnOcrTestClicked;
+            Controls.Add(_ocrTestButton);
+
             _testButton = new Button();
-            _testButton.Text = "测试连接";
-            _testButton.Location = new Point(220, 554);
-            _testButton.Size = new Size(84, 28);
+            _testButton.Text = "测试翻译";
+            _testButton.Location = new Point(112, 734);
+            _testButton.Size = new Size(88, 28);
             _testButton.Click += OnTestClicked;
             Controls.Add(_testButton);
 
             Button saveButton = new Button();
             saveButton.Text = "保存";
-            saveButton.Location = new Point(310, 554);
+            saveButton.Location = new Point(310, 734);
             saveButton.Size = new Size(68, 28);
             saveButton.Click += OnSaveClicked;
             Controls.Add(saveButton);
 
             Button cancelButton = new Button();
             cancelButton.Text = "取消";
-            cancelButton.Location = new Point(384, 554);
+            cancelButton.Location = new Point(384, 734);
             cancelButton.Size = new Size(64, 28);
             cancelButton.DialogResult = DialogResult.Cancel;
             Controls.Add(cancelButton);
@@ -307,6 +434,8 @@ namespace SelectionTranslator
 
         private void SelectImageLang(string code)
         {
+            // 兼容旧配置里的图片翻译语种（jp/kor/fra/spa…）。
+            string normalized = PicturePipeline.MapTextTarget(code);
             for (int i = 0; i < _imageLangBox.Items.Count; i++)
             {
                 LanguageOption option =
@@ -314,14 +443,13 @@ namespace SelectionTranslator
                 if (option != null &&
                     string.Equals(
                         option.Code,
-                        code,
+                        normalized,
                         StringComparison.OrdinalIgnoreCase))
                 {
                     _imageLangBox.SelectedIndex = i;
                     return;
                 }
             }
-            // 图片翻译接口不支持的目标语言退回自动。
             _imageLangBox.SelectedIndex = 0;
         }
 
@@ -376,12 +504,176 @@ namespace SelectionTranslator
             edited.HotkeyScreenshot =
                 _hotkeyScreenshotField.Text.Trim();
             edited.ImageTargetLanguage = GetSelectedImageLang();
+            edited.TencentSecretId = _tencentIdBox.Text.Trim();
+            edited.SetTencentSecretKey(_tencentKeyBox.Text.Trim());
+            edited.TencentRegion = GetSelectedTencentRegion();
+            edited.TencentOcrConfigId =
+                _tencentConfigBox.SelectedIndex == 1
+                    ? "OCR" : "MulOCR";
+            edited.UseTencentOcr = _useTencentBox.Checked;
             return edited;
+        }
+
+        private static void SelectCombo(ComboBox combo, string value)
+        {
+            for (int i = 0; i < combo.Items.Count; i++)
+            {
+                if (string.Equals(
+                    Convert.ToString(combo.Items[i]),
+                    value,
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    combo.SelectedIndex = i;
+                    return;
+                }
+            }
+            combo.SelectedIndex = 0;
+        }
+
+        private string GetSelectedTencentRegion()
+        {
+            string value = Convert.ToString(
+                _tencentRegionBox.SelectedItem);
+            return string.IsNullOrEmpty(value)
+                ? TencentOcr.DefaultRegion : value;
         }
 
         private void OnShowSecretChanged(object sender, EventArgs e)
         {
             _secretBox.UseSystemPasswordChar = !_showSecretBox.Checked;
+        }
+
+        private void OnTencentShowKeyChanged(object sender, EventArgs e)
+        {
+            _tencentKeyBox.UseSystemPasswordChar =
+                !_tencentShowKeyBox.Checked;
+        }
+
+        private void OnTencentLinkClicked(
+            object sender,
+            LinkLabelLinkClickedEventArgs e)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo(
+                    "https://console.cloud.tencent.com/cam/capi")
+                {
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    this,
+                    "无法打开浏览器：" + ex.Message,
+                    "选中文本翻译",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+        }
+
+        /// <summary>
+        /// 用一张程序生成的含文字小图验证腾讯云凭证与签名。
+        /// 只要不是鉴权类错误就认为凭证有效（测试图可能识别不出文字）。
+        /// </summary>
+        private async void OnOcrTestClicked(object sender, EventArgs e)
+        {
+            AppConfig edited = BuildEditedConfig();
+            if (!edited.HasTencentCredentials())
+            {
+                MessageBox.Show(
+                    this,
+                    "请先填写腾讯云 SecretId 和 SecretKey。",
+                    "测试 OCR",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            _ocrTestButton.Enabled = false;
+            _ocrTestButton.Text = "测试中…";
+            try
+            {
+                byte[] bytes;
+                Size size = new Size(520, 160);
+                using (Bitmap bitmap = new Bitmap(
+                    size.Width, size.Height))
+                {
+                    using (Graphics graphics =
+                        Graphics.FromImage(bitmap))
+                    {
+                        graphics.Clear(Color.White);
+                        using (Font font = new Font(
+                            "Microsoft YaHei UI", 34F,
+                            FontStyle.Bold, GraphicsUnit.Pixel))
+                        using (SolidBrush brush =
+                            new SolidBrush(Color.Black))
+                        {
+                            graphics.DrawString(
+                                "OCR TEST 123", font, brush, 18f, 50f);
+                        }
+                    }
+                    string note;
+                    Size sentSize;
+                    bytes = TencentOcr.PrepareImage(
+                        bitmap, out note, out sentSize);
+                    size = sentSize;
+                }
+
+                OcrResult result =
+                    await TencentOcr.RecognizeAsync(
+                        edited, bytes, size);
+                MessageBox.Show(
+                    this,
+                    "腾讯云凭证有效，签名通过。\r\n\r\n" +
+                    "识别行数：" + result.Lines.Count +
+                    "\r\nRequestId：" + result.RequestId +
+                    (result.SumText.Length > 0
+                        ? "\r\n识别内容：" + result.SumText
+                        : ""),
+                    "测试 OCR",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            catch (TranslationException ex)
+            {
+                // 只要不是鉴权 / 网络类错误，就说明凭证与签名已被服务端接受；
+                // 测试小图识别不出文字（ImageNoText）不影响这个结论。
+                bool credentialsAccepted =
+                    !ex.Code.StartsWith("AuthFailure") &&
+                    ex.Code != "NETWORK" &&
+                    ex.Code != "TIMEOUT" &&
+                    !ex.Code.StartsWith("HTTP_") &&
+                    ex.Code != "NO_TENCENT_CREDENTIALS";
+                MessageBox.Show(
+                    this,
+                    credentialsAccepted
+                        ? "腾讯云凭证有效，签名通过。\r\n\r\n" +
+                          "服务端已受理请求，返回业务结果：" + ex.Message
+                        : ex.Message,
+                    credentialsAccepted
+                        ? "测试 OCR"
+                        : "测试 OCR 失败",
+                    MessageBoxButtons.OK,
+                    credentialsAccepted
+                        ? MessageBoxIcon.Information
+                        : MessageBoxIcon.Warning);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("测试腾讯云 OCR 失败", ex);
+                MessageBox.Show(
+                    this,
+                    "测试失败：" + ex.Message,
+                    "测试 OCR 失败",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                _ocrTestButton.Enabled = true;
+                _ocrTestButton.Text = "测试 OCR";
+            }
         }
 
         /// <summary>

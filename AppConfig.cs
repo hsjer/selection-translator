@@ -21,6 +21,17 @@ namespace SelectionTranslator
         public string HotkeyScreenshot { get; set; }
         public string ImageTargetLanguage { get; set; }
 
+        // ---- 文字识别（腾讯云 OCR）----
+        /// <summary>SecretId 本身不是机密，明文保存即可。</summary>
+        public string TencentSecretId { get; set; }
+        /// <summary>SecretKey 用 DPAPI 加密后保存，与百度密钥同样处理。</summary>
+        public string TencentSecretKeyProtected { get; set; }
+        public string TencentRegion { get; set; }
+        /// <summary>OCR=通用场景，MulOCR=多语种场景。</summary>
+        public string TencentOcrConfigId { get; set; }
+        /// <summary>关闭时图片文字处理回退到百度图片翻译接口。</summary>
+        public bool UseTencentOcr { get; set; }
+
         public AppConfig()
         {
             AppId = "";
@@ -35,6 +46,11 @@ namespace SelectionTranslator
             HotkeyManualInput = "Ctrl+Alt+E";
             HotkeyScreenshot = "Ctrl+Alt+S";
             ImageTargetLanguage = "auto";
+            TencentSecretId = "";
+            TencentSecretKeyProtected = "";
+            TencentRegion = TencentOcr.DefaultRegion;
+            TencentOcrConfigId = "MulOCR";
+            UseTencentOcr = true;
         }
 
         public string GetSecret()
@@ -45,6 +61,23 @@ namespace SelectionTranslator
         public void SetSecret(string secret)
         {
             SecretProtected = ConfigStore.Protect(secret);
+        }
+
+        public string GetTencentSecretKey()
+        {
+            return ConfigStore.Unprotect(TencentSecretKeyProtected);
+        }
+
+        public void SetTencentSecretKey(string key)
+        {
+            TencentSecretKeyProtected = ConfigStore.Protect(key);
+        }
+
+        public bool HasTencentCredentials()
+        {
+            return !string.IsNullOrEmpty(
+                    (TencentSecretId ?? "").Trim()) &&
+                !string.IsNullOrEmpty(GetTencentSecretKey());
         }
     }
 
@@ -105,6 +138,19 @@ namespace SelectionTranslator
                 {
                     config.ImageTargetLanguage = "auto";
                 }
+                if (string.IsNullOrEmpty(config.TencentRegion))
+                {
+                    config.TencentRegion = TencentOcr.DefaultRegion;
+                }
+                if (string.IsNullOrEmpty(config.TencentOcrConfigId))
+                {
+                    config.TencentOcrConfigId = "MulOCR";
+                }
+                // 旧版本配置没有这个开关时默认启用腾讯云 OCR。
+                if (!HasUseTencentOcrSetting(json))
+                {
+                    config.UseTencentOcr = true;
+                }
 
                 // 旧版本配置里没有这个字段，反序列化后为 false，
                 // 这里按默认开启处理。
@@ -125,6 +171,14 @@ namespace SelectionTranslator
                 Log.Error("加载配置失败", ex);
                 return new AppConfig();
             }
+        }
+
+        private static bool HasUseTencentOcrSetting(string json)
+        {
+            return json != null &&
+                json.IndexOf(
+                    "\"UseTencentOcr\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static bool HasClipboardFallbackSetting(string json)

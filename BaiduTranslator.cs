@@ -27,6 +27,24 @@ namespace SelectionTranslator
         }
     }
 
+    /// <summary>
+    /// 逐行翻译结果。Lines 与输入行一一对应，供「腾讯云 OCR → 百度文本翻译」
+    /// 管道把译文贴回每个文字块。
+    /// </summary>
+    public class LineTranslationResult
+    {
+        public List<string> Lines { get; set; }
+        public string From { get; set; }
+        public string To { get; set; }
+
+        public LineTranslationResult()
+        {
+            Lines = new List<string>();
+            From = "";
+            To = "";
+        }
+    }
+
     public static class BaiduTranslator
     {
         private const string Endpoint =
@@ -157,6 +175,277 @@ namespace SelectionTranslator
             result.Text = combined.ToString();
             result.From = from;
             result.To = to;
+            return result;
+        }
+
+        /// <summary>
+        /// 逐行翻译。百度文本翻译会把 q 里的换行拆成多条 trans_result，
+        /// 顺序与输入行一致，因此整张图的 OCR 文字通常一次请求即可翻完。
+        /// 超过 6000 字节时自动分批，最终仍按输入行数一一对齐返回。
+        /// </summary>
+        public static async Task<LineTranslationResult> TranslateLinesAsync(
+            AppConfig config,
+            List<string> lines,
+            string targetLanguage)
+        {
+            if (config == null)
+            {
+                throw new TranslationException("配置为空", "NO_CONFIG");
+            }
+            if (lines == null || lines.Count == 0)
+            {
+                return new LineTranslationResult();
+            }
+            string appId = (config.AppId ?? "").Trim();
+            string secret = config.GetSecret();
+            if (appId.Length == 0 || secret.Length == 0)
+            {
+                throw new TranslationException(
+                    "未配置百度翻译 AppID 或密钥。请右键托盘图标，打开「设置」填写。",
+                    "NO_CREDENTIALS");
+            }
+
+            // 展开：过长的单行先切成多段，各自记住归属的原始行号。
+            List<LineSlot> slots = ExpandLines(lines);
+            List<List<LineSlot>> batches =
+                SplitSlots(slots, MaxByteLength - 64);
+
+            List<string> translatedSlots = new List<string>();
+            string from = "";
+            string to = "";
+            for (int i = 0; i < batches.Count; i++)
+            {
+                LineBatchResult batchResult =
+                    await TranslateLineBatchAsync(
+                        config, batches[i], targetLanguage);
+                translatedSlots.AddRange(batchResult.Lines);
+                if (from.Length == 0)
+                {
+                    from = batchResult.From;
+                    to = batchResult.To;
+                }
+            }
+
+            // 按归属行号把多段译文拼回去，保证与输入行数严格一致。
+            LineTranslationResult result = new LineTranslationResult();
+            result.From = from;
+            result.To = to;
+            for (int i = 0; i < lines.Count; i++)
+            {
+                StringBuilder builder = new StringBuilder();
+                for (int j = 0; j < slots.Count; j++)
+                {
+                    if (slots[j].Owner != i ||
+                        j >= translatedSlots.Count)
+                    {
+                        continue;
+                    }
+                    string part = translatedSlots[j] ?? "";
+                    if (part.Length == 0)
+                    {
+                        continue;
+                    }
+                    if (builder.Length > 0)
+                    {
+                        builder.Append(' ');
+                    }
+                    builder.Append(part);
+                }
+                result.Lines.Add(builder.ToString());
+            }
+            return result;
+        }
+
+        private sealed class LineSlot
+        {
+            public string Text;
+            public int Owner;
+        }
+
+        private sealed class LineBatchResult
+        {
+            public List<string> Lines = new List<string>();
+            public string From = "";
+            public string To = "";
+        }
+
+        private static List<LineSlot> ExpandLines(List<string> lines)
+        {
+            List<LineSlot> slots = new List<LineSlot>();
+            for (int i = 0; i < lines.Count; i++)
+            {
+                string text = lines[i] ?? "";
+                if (Encoding.UTF8.GetByteCount(text) >
+                    MaxByteLength - 64)
+                {
+                    List<string> pieces = SplitForTranslation(
+                        text, MaxByteLength - 64);
+                    for (int j = 0; j < pieces.Count; j++)
+                    {
+                        LineSlot piece = new LineSlot();
+                        piece.Text = pieces[j];
+                        piece.Owner = i;
+                        slots.Add(piece);
+                    }
+                }
+                else
+                {
+                    LineSlot slot = new LineSlot();
+                    slot.Text = text;
+                    slot.Owner = i;
+                    slots.Add(slot);
+                }
+            }
+            return slots;
+        }
+
+        /// <summary>按换行拼接后的 UTF-8 字节上限分批。</summary>
+        private static List<List<LineSlot>> SplitSlots(
+            List<LineSlot> slots, int maxBytes)
+        {
+            List<List<LineSlot>> batches =
+                new List<List<LineSlot>>();
+            List<LineSlot> current = new List<LineSlot>();
+            int bytes = 0;
+            for (int i = 0; i < slots.Count; i++)
+            {
+                int size = Encoding.UTF8.GetByteCount(
+                    slots[i].Text ?? "") + 1;
+                if (current.Count > 0 &&
+                    bytes + size > maxBytes)
+                {
+                    batches.Add(current);
+                    current = new List<LineSlot>();
+                    bytes = 0;
+                }
+                current.Add(slots[i]);
+                bytes += size;
+            }
+            if (current.Count > 0)
+            {
+                batches.Add(current);
+            }
+            return batches;
+        }
+
+        private static async Task<LineBatchResult> TranslateLineBatchAsync(
+            AppConfig config,
+            List<LineSlot> batch,
+            string targetLanguage)
+        {
+            string[] texts = new string[batch.Count];
+            for (int i = 0; i < batch.Count; i++)
+            {
+                texts[i] = batch[i].Text ?? "";
+            }
+            string query = string.Join("\n", texts);
+            string target = ResolveTarget(query, targetLanguage);
+
+            string appId = (config.AppId ?? "").Trim();
+            string secret = config.GetSecret();
+            string salt = DateTime.UtcNow.Ticks.ToString();
+            string sign = BuildSign(appId, query, salt, secret);
+
+            Dictionary<string, string> form =
+                new Dictionary<string, string>();
+            form["q"] = query;
+            form["from"] = "auto";
+            form["to"] = target;
+            form["appid"] = appId;
+            form["salt"] = salt;
+            form["sign"] = sign;
+
+            string json = await PostFormAsync(form);
+
+            Dictionary<string, object> root;
+            try
+            {
+                JavaScriptSerializer serializer =
+                    new JavaScriptSerializer();
+                root = serializer.Deserialize<
+                    Dictionary<string, object>>(json);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("解析百度逐行翻译响应失败", ex);
+                throw new TranslationException(
+                    "百度翻译返回了无法解析的数据。", "BAD_RESPONSE");
+            }
+            if (root == null)
+            {
+                throw new TranslationException(
+                    "百度翻译返回了空数据。", "BAD_RESPONSE");
+            }
+
+            object errorCodeObject;
+            if (root.TryGetValue("error_code", out errorCodeObject))
+            {
+                string errorMessage = "";
+                object errorMessageObject;
+                if (root.TryGetValue(
+                    "error_msg", out errorMessageObject))
+                {
+                    errorMessage = Convert.ToString(
+                        errorMessageObject);
+                }
+                throw new TranslationException(
+                    DescribeError(
+                        Convert.ToString(errorCodeObject),
+                        errorMessage),
+                    Convert.ToString(errorCodeObject));
+            }
+
+            LineBatchResult result = new LineBatchResult();
+            result.From = GetString(root, "from");
+            result.To = GetString(root, "to");
+            if (result.To.Length == 0)
+            {
+                result.To = target;
+            }
+
+            object transResultObject;
+            System.Collections.IList items = null;
+            if (root.TryGetValue(
+                "trans_result", out transResultObject))
+            {
+                items = transResultObject
+                    as System.Collections.IList;
+            }
+            if (items != null)
+            {
+                for (int i = 0; i < items.Count; i++)
+                {
+                    Dictionary<string, object> row =
+                        items[i] as Dictionary<string, object>;
+                    string dst = "";
+                    if (row != null)
+                    {
+                        object dstObject;
+                        if (row.TryGetValue(
+                            "dst", out dstObject))
+                        {
+                            dst = Convert.ToString(dstObject);
+                        }
+                    }
+                    result.Lines.Add(dst ?? "");
+                }
+            }
+
+            // 接口偶尔会把多行合并成一条；此时保证输出槽位数与输入一致，
+            // 让结果窗口至少能展示整段译文，不至于整体错位。
+            if (result.Lines.Count == 0)
+            {
+                result.Lines.Add(query);
+            }
+            while (result.Lines.Count < batch.Count)
+            {
+                result.Lines.Add("");
+            }
+            if (result.Lines.Count > batch.Count)
+            {
+                result.Lines.RemoveRange(
+                    batch.Count, result.Lines.Count - batch.Count);
+            }
             return result;
         }
 

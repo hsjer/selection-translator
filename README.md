@@ -2,6 +2,8 @@
 
 一个轻量的 Windows 托盘小工具：在任意应用里选中文字，旁边会自动浮出一个「译」按钮，点击即可用百度翻译 API 翻译。也支持右键、全局快捷键，以及**截图翻译**（框选屏幕 → 就地标注 → 识别图中文字并把译文直接显示在图片上，可选中复制）。截图后也可以**只取文字**：一键把 OCR 识别出的原文复制到剪贴板，不弹窗口、不显示译文。
 
+图片文字处理采用**双服务分工**：**腾讯云 GeneralAccurateOCR** 负责识别文字和坐标，**百度通用文本翻译**负责把识别出的文字逐行翻译；两者拼在一起把译文叠加回原图。只取字时只调腾讯云 OCR，完全不调用翻译接口。未配置腾讯云凭证（或在设置里关闭开关）时自动回退到百度图片翻译接口。
+
 ## 为什么不是系统右键菜单
 
 Windows 没有公开接口可以往**所有应用**的文本右键菜单里统一插入菜单项。各应用的右键菜单由应用自己绘制，无法安全地全局注入。
@@ -20,8 +22,8 @@ Windows 没有公开接口可以往**所有应用**的文本右键菜单里统�
 2. **就地标注**：工具栏从左到右是矩形、椭圆、箭头、画笔、文字、序号、高亮、马赛克、撤销、裁剪、颜色、线宽、保存、钉在桌面、翻译、取字、取消、完成。`Ctrl+Z` 撤销，数字键 `1`–`8` 快速切换工具；颜色有 6 种、线宽 3 档。
 3. **结束方式**：
    - **完成 ✓（对号）**：合成图（含标注）直接复制到剪贴板，浮层随即关闭，**不弹出任何窗口**；
-   - **译**：立即调用百度图片翻译，打开一个轻量的「图片翻译」结果窗口，译文直接显示在图片上，可在图上选字复制；
-   - **取字 📄**：只做 OCR，把识别出的全文直接复制到剪贴板，**不翻译、不弹窗口**，托盘气泡提示识别到多少字符；
+   - **译**：腾讯云 OCR 识别 → 百度文本翻译逐行翻译 → 打开轻量结果窗口，译文按坐标叠加在图片上，可在图上选字复制；
+   - **取字 📄**：只用腾讯云 OCR，把识别出的全文直接复制到剪贴板，**不调用任何翻译接口、不弹窗口**，托盘气泡提示识别到多少字符；
    - **钉 📌**：把合成图钉在桌面上（无边框置顶小窗）；
    - **保存 ↓**：直接导出 PNG 并退出；
    - **取消 ✕ / Esc**：放弃本次截图。
@@ -30,9 +32,9 @@ Windows 没有公开接口可以往**所有应用**的文本右键菜单里统�
 
 **桌面贴图**：左键拖动移动、`Ctrl` + 滚轮缩放、右键菜单可复制 / 保存 / 调整透明度 / 切换置顶 / 缩放 / 关闭，`Esc` 或双击关闭；鼠标悬停时右上角出现关闭按钮。托盘菜单「关闭所有桌面贴图」可一次清理。再次按截图快捷键时贴图会临时隐藏，不会被拍进新截图。翻译结果窗口的工具条里也有「钉在桌面」。
 
-**图片翻译结果窗口**：默认显示百度返回的整图贴合译文图（接口没给贴合图时，直接在原图的文字块上叠加译文）。窗口里没有任何标注 / 裁剪工具，工具条只有：显示译文图 / 原图对照、选字复制：原文 / 译文、复制选中、复制全部译文、复制图片、钉在桌面、保存 PNG、重新翻译、适应窗口、关闭。
+**图片翻译结果窗口**：腾讯云路径没有整图贴合译文图，窗口按腾讯云返回的文字坐标把逐行译文直接绘制到每个文字块上；回退百度图片翻译路径时则优先显示接口返回的 `pasteImg` 贴合译文图。窗口里没有任何标注 / 裁剪工具，工具条只有：显示译文图 / 原图对照、选字复制：原文 / 译文、复制选中、复制全部译文、复制图片、钉在桌面、保存 PNG、重新翻译、适应窗口、关闭。
 
-**在图片上直接选字复制**：接口为每段识别结果返回 `rect`（`left top width height`），结果窗口把每段做成一个可点选 / 可框选的热区：
+**在图片上直接选字复制**：腾讯云 `TextDetections[].ItemPolygon`（缺失时用 `Polygon` 四点求外接矩形）会被转换成统一的 `rect`（`left top width height`），结果窗口把每段做成一个可点选 / 可框选的热区：
 
 - **单击**某个文字块 → 选中并立即复制该段文字；
 - **拖拽框选**多个文字块 → 按阅读顺序（先分行、再从左到右）拼接后复制；
@@ -45,17 +47,17 @@ Windows 没有公开接口可以往**所有应用**的文本右键菜单里统�
 
 ### 只识别文字（不翻译）
 
-点工具栏的「取字 📄」即进入 OCR 取字：发送**未标注的原图**，只读取接口返回的 `sumSrc`（缺失时按 `rect` 阅读顺序拼接 `content[].src`），写入系统剪贴板，全程不弹窗口。适合「截图只是为了把图里的字抠出来」的场景（复制报错信息、提取文档段落、抄一段不能选中的文字等）。
+点工具栏的「取字 📄」即进入 OCR 取字：把**未标注的原图**编码后送腾讯云 `GeneralAccurateOCR`，按阅读顺序拼接 `TextDetections[].DetectedText`，写入系统剪贴板，全程不弹窗口、不显示译文。适合「截图只是为了把图里的字抠出来」的场景（复制报错信息、提取文档段落、抄一段不能选中的文字等）。
 
-> **接口限制**：百度图片翻译接口**没有「仅 OCR」开关**，`from` / `to` 必填，服务端每次仍会照常翻译并按一次「图片翻译」调用计费，本工具只是忽略 `dst` / `pasteImg`，并用 `paste=0` 跳过贴合译文图让请求更轻。也就是说：**界面上不翻译，但额度照扣、仍需联网**。真正做到不翻译、不占翻译额度需要另接百度「通用文字识别」或 Windows 内置离线 OCR（另一套凭证，本项目暂未接入）。
+> **这一次是真的不翻译**：取字只调用腾讯云 OCR，**不发任何翻译请求**，也不消耗百度翻译额度。回退到百度图片翻译时才是旧行为（接口没有纯 OCR 开关，服务端仍会翻译并计费一次，只是忽略译文）。
 
-> 百度返回的 `sumSrc` 里偶尔会在换行处留下空格（例如「编 辑器」），这是接口原始输出，程序不做改写以保持原文忠实。
+**速度**：新管道把「OCR + 翻译」拆成两个独立服务，取字只发 1 次纯 OCR 请求；翻译则在 OCR 之后把全部文字行用**一次**百度文本翻译请求翻完（百度会把 `q` 里的换行拆成逐条 `trans_result`，行数一一对应），不再需要 `paste=1` 贴合图。
 
-**速度**：「取字」只发 **1 次 `paste=0`** 请求；「译」通常要发 **1~2 次 `paste=1`** 请求（自动目标语种时可能 `en` + `zh` 各一次）并解码整图贴合译文图，所以取字实测反而略快（约 1.1s vs 1.3s）。感觉「取字慢」多半是**没有窗口反馈**造成的：现在 PNG 编码放在线程池、识别期间托盘图标提示变为「正在识别文字…」，且只在结果就绪时弹**一次**气泡（连续两次气泡会被 Windows 通知排队或折叠进通知中心，反而像卡住）。文字在气泡出现前就已写入剪贴板，**直接 `Ctrl+V` 即可，不必等提示**。`app.log` 会记录每次取字的耗时（`耗时 N ms`），便于量化排查。
+体验上的细节：PNG/JPEG 编码放在线程池，浮层点击后立即返回；识别期间托盘图标提示变为「正在识别文字…」；只在结果就绪时弹**一次**气泡（连续两次气泡会被 Windows 通知排队或折叠进通知中心，反而像卡住）。文字在气泡出现前就已写入剪贴板，**直接 `Ctrl+V` 即可，不必等提示**。`app.log` 会记录「引擎 / 请求耗时 / 浮层收尾耗时 / 端到端耗时」，便于量化排查慢在哪一段。
 
-> 翻译时发送的是**未标注的原图**（浮层会单独保留一份干净裁剪图），避免矩形框、马赛克、文字被当成正文识别。图片会自动缩放到长边 ≤4096px、体积 ≤4M；整图贴合失败时自动降级为仅返回文本结果。
+> 识别与翻译时发送的都是**未标注的原图**（浮层会单独保留一份干净裁剪图），避免矩形框、马赛克、文字被当成正文识别。腾讯云路径尽量不缩放以保证文字坐标一一对应，仅在超过 7M / 长边 4096px 时才降 JPEG 质量或等比缩放，并用实际上传尺寸做坐标映射；百度图片翻译路径沿用 ≤4M、长边 ≤4096px 的限制。
 
-> 图片翻译服务需在百度翻译开放平台单独开通，与「通用翻译」是不同的服务。图片接口的目标语种代码与文本接口不同（日语 `jp`、韩语 `kor`、法语 `fra`、西班牙语 `spa`），设置界面已按图片接口列出可用语种；图片接口不支持 `auto`，本工具会自动按「中文→英文，其他→中文」处理。
+> **凭证**：腾讯云需在控制台开通「文字识别 OCR」并创建 SecretId / SecretKey（在设置里填写，SecretKey 用 DPAPI 加密保存）；百度只需「通用翻译」的 AppID / 密钥。只有回退到百度图片翻译时才需要单独开通百度的「图片翻译」服务。设置里的目标语言使用**文本翻译**语种代码（`ja`/`ko`/`fr`/`es`…），回退时会自动映射为图片接口的 `jp`/`kor`/`fra`/`spa`。
 
 ## 功能
 
@@ -66,13 +68,15 @@ Windows 没有公开接口可以往**所有应用**的文本右键菜单里统�
 - 截图浮层：左键/右键框选、选区锁定、8 手柄调整、尺寸标签、18 个线性图标就地标注（含序号、马赛克、裁剪、贴图、取字）
 - 桌面贴图：置顶无边框小窗，可拖动、缩放、调透明度，托盘菜单一键关闭全部
 - 截图就地标注完成后「对号」直接复制到剪贴板，不再弹出编辑窗口
-- 「取字」一键 OCR：只把图中文字复制到剪贴板，不翻译、不弹窗口
+- 「取字」一键 OCR：只用腾讯云识别文字并复制到剪贴板，不调用任何翻译接口、不弹窗口
+- 「译」：腾讯云 OCR 出文字 + 坐标 → 百度文本翻译逐行翻译 → 译文叠加到原图上
 - 图片翻译结果窗口：译文直接显示在图片上，可选字复制 / 复制图片 / 贴图 / 保存 / 重新翻译
 - 翻译后在图片上点选 / 框选文字直接复制（原文或译文，按阅读顺序拼接）
+- 未配置腾讯云凭证时自动回退百度图片翻译，功能不中断
 - 托盘菜单：翻译选中文本、手动翻译、截图翻译…、翻译剪贴板、关闭所有桌面贴图、设置、开机启动、退出
-- 百度翻译 API（通用翻译 + 图片翻译）
+- 百度翻译 API（通用文本翻译，回退时含图片翻译）+ 腾讯云 OCR（GeneralAccurateOCR，TC3-HMAC-SHA256 签名）
 - 自动目标语言：中文→英文，其他→中文；也可固定目标语言（文本与图片分别设置）
-- 密钥使用 Windows DPAPI 加密后保存在当前用户目录
+- 百度密钥、腾讯云 SecretKey 都用 Windows DPAPI 加密后保存在当前用户目录
 - 翻译结果窗口支持一键复制原文/译文，并可编辑原文后重新翻译
 - 超长文本自动分段翻译（6000 UTF-8 字节上限）
 - 可在设置中开关「选中即显示」和「右键显示」两种触发方式
@@ -111,10 +115,10 @@ $env:ST_OUTPUT_NAME = "_next.exe"; .\build.ps1
 
 ## 首次使用
 
-1. 打开 [百度翻译开放平台](https://fanyi-api.baidu.com/manage/developer)，注册并创建应用。
-2. 开通「通用翻译」服务，拿到 **AppID** 和 **密钥**；如需截图翻译，再开通「图片翻译」服务。
+1. 打开 [百度翻译开放平台](https://fanyi-api.baidu.com/manage/developer)，注册并创建应用，开通「通用翻译」，拿到 **AppID** 和 **密钥**。
+2. （推荐，用于截图识别）打开 [腾讯云访问密钥控制台](https://console.cloud.tencent.com/cam/capi)，在 [文字识别 OCR](https://console.cloud.tencent.com/ocr) 开通服务，创建 **SecretId** 和 **SecretKey**。不填也能用，但截图识别会回退到百度图片翻译（需在百度侧单独开通该服务）。
 3. 运行 `SelectionTranslator.exe`。
-4. 右键托盘图标 →「设置…」，填入 AppID、密钥，选择图片翻译目标语言，点击「测试连接」确认可用后保存。
+4. 右键托盘图标 →「设置…」，填入百度 AppID / 密钥，以及腾讯云 SecretId / SecretKey；选择目标语言后，可分别点「测试翻译」「测试 OCR」确认可用，再保存。
 5. （可选）在设置中自定义快捷键：点击任一快捷键输入框，按下想要的组合键即可。
 6. 在任意应用中选中文字：
    - 选中后自动浮出「译」按钮，点击即可翻译；
@@ -123,9 +127,9 @@ $env:ST_OUTPUT_NAME = "_next.exe"; .\build.ps1
 
    没有现成文本可选中时，按快捷键（默认 `Ctrl+Alt+E`）打开手动翻译窗口，输入文本后回车即翻译。
 
-   文字在图片里、无法选中时，按 `Ctrl+Alt+S`，用左键或右键拖拽框选，松开后点浮层工具栏里的「译」即可识别并把译文显示在图片上；只想把图里的字复制出来就点「取字 📄」，点「完成 ✓（对号）」则直接把截图复制到剪贴板 —— 这两个都不弹窗口，也不会再出现旧的编辑器。
+   文字在图片里、无法选中时，按 `Ctrl+Alt+S`，用左键或右键拖拽框选，松开后点浮层工具栏里的「译」即可识别并在结果窗口里看到叠在图片上的译文；只想把图里的字复制出来就点「取字 📄」，点「完成 ✓（对号）」则直接把截图复制到剪贴板 —— 后两者都不弹窗口，也不会再出现旧的编辑器。
 
-## 百度翻译 API
+## 第三方接口
 
 请求地址：
 
@@ -141,7 +145,9 @@ sign = MD5(appid + q + salt + 密钥)
 
 本工具使用 `from=auto` 自动识别源语言，使用 `to` 指定目标语言。单次请求上限为 6000 UTF-8 字节；超长文本会自动在换行或句末标点处分段翻译，无需手动处理。可在「设置」中调整最大文本长度（字符数）。
 
-### 图片翻译接口
+### 百度图片翻译接口（回退路径）
+
+> 默认流程**不走这个接口**。只有「未配置腾讯云凭证」或「在设置里关闭腾讯云 OCR」时才回退到这里，因此需要先在百度开放平台单独开通「图片翻译」服务。
 
 请求地址（文档：[doc/26](https://fanyi-api.baidu.com/doc/26)）：
 
@@ -162,7 +168,34 @@ sign = MD5(appid + MD5(image_bytes) + salt + "APICUID" + "mac" + 密钥)
 - `paste=1` 返回整图贴合译文图（base64 `pasteImg`），异常时自动降级为 `paste=0` 仅返回文本。
 - 响应 `data` 含 `from`、`to`、`sumSrc`、`sumDst`、`content[]`（`src`/`dst`/`rect`/`lineCount`）、`pasteImg`。
 - 目标语种与文本接口不同：`jp`/`kor`/`fra`/`spa`，且不支持 `auto`、`ar`、`th`、`vi`。错误码 69001–69008、69012 为图片接口专属，已做中文友好提示。
-- 「取字」模式使用 `paste=0` 且忽略译文；`to` 仍须是合法语种（`auto` 时按 `en` 请求，遇到 58001/58002 方向性错误自动改用 `zh` 重试一次）。接口没有「仅 OCR」选项，调用仍计入图片翻译额度。
+- 回退路径下的「取字」使用 `paste=0` 且忽略译文（只读取 `sumSrc`，缺失时按 `rect` 阅读顺序拼接 `content[].src`）；`to` 仍须是合法语种（`auto` 时按 `en` 请求，遇到 58001/58002 方向性错误自动改用 `zh` 重试一次）。该接口没有「仅 OCR」选项，调用仍计入图片翻译额度。
+
+### 腾讯云 OCR 接口（GeneralAccurateOCR）
+
+请求地址（文档：[产品文档](https://cloud.tencent.com/document/product/866/33526)）：
+
+```text
+POST https://ocr.tencentcloudapi.com
+X-TC-Action: GeneralAccurateOCR
+X-TC-Version: 2018-11-19
+Content-Type: application/json; charset=utf-8
+```
+
+请求体只需 `ImageBase64` 与 `ConfigID`（默认 `MulOCR`，支持 100+ 语种；也可在设置里切到 `OCR` 通用模式）。不引入腾讯云 SDK，签名按云 API 3.0 的 **TC3-HMAC-SHA256** 自行实现：
+
+```text
+CanonicalRequest = POST\n/\n\ncontent-type:...\nhost:ocr.tencentcloudapi.com\n\ncontent-type;host\nSHA256(payload)
+StringToSign     = TC3-HMAC-SHA256\n<unix timestamp>\n<date>/ocr/tc3_request\nSHA256(CanonicalRequest)
+派生密钥          = HMAC("TC3"+SecretKey, date) → HMAC(·,"ocr") → HMAC(·,"tc3_request")
+Authorization    = TC3-HMAC-SHA256 Credential=<SecretId>/<scope>, SignedHeaders=content-type;host, Signature=<hex>
+```
+
+- 响应 `Response.TextDetections[]` 的 `DetectedText` 是每行文字，`ItemPolygon`（或 `Polygon` 四点外接矩形）给出坐标，统一转成 `left top width height`；`Confidence` 保留备用。
+- 按 Y 分行（容差 0.6 倍行高）、行内按 X 排序，得到阅读顺序；同一行用空格、不同行用换行拼接成全文。
+- 图片 Base64 后不超过 10M；程序优先 PNG，超大时降 JPEG 质量，仍超限才等比缩放到长边 4096px 并做坐标映射。
+- 常见错误码已做中文提示：`AuthFailure.*`（凭证/签名/时间）、`FailedOperation.UnOpenError`（未开通服务）、`ResourceUnavailable.InArrears`（欠费）、`FailedOperation.ImageNoText`（图中无文字）等。
+
+**为什么这样拆**：百度文本翻译比图片翻译轻得多（一次 HTTP 表单请求、无贴合图解码），而腾讯云高精度 OCR 在长串数字、小字、复杂版式上更准；「取字」因此不用再为「不翻译」付出一次翻译调用。代价是腾讯云 OCR 是另一套凭证、按 OCR 调用计费。
 
 ## 配置与日志
 
@@ -171,7 +204,9 @@ sign = MD5(appid + MD5(image_bytes) + salt + "APICUID" + "mac" + 密钥)
 %APPDATA%\SelectionTranslator\app.log
 ```
 
-`config.json` 中的密钥是 DPAPI 加密后的 Base64，只能由当前 Windows 用户解密。不要直接把该文件发给别人。
+`config.json` 中 `SecretProtected`（百度密钥）和 `TencentSecretKeyProtected`（腾讯云 SecretKey）是 DPAPI 加密后的 Base64，只能由当前 Windows 用户解密。不要直接把该文件发给别人。
+
+`dist\SelectionTranslator.exe` 是单文件、无第三方 DLL，可以单独拷到别的 Windows 电脑（需自带 .NET Framework 4.8，Win10/11 已内置）；但**密钥不会跟着走**：新机器上要在设置里重新填百度 AppID / 密钥，以及（可选）腾讯云 SecretId / SecretKey。
 
 ## 自检
 
@@ -180,19 +215,37 @@ sign = MD5(appid + MD5(image_bytes) + salt + "APICUID" + "mac" + 密钥)
 Get-Content "$env:APPDATA\SelectionTranslator\selftest.txt"
 ```
 
-自检覆盖文本翻译 MD5 签名、自动目标语言判断、DPAPI 加解密、文本分段，图片翻译的 MD5 签名、固定参数（cuid/mac）、语种映射（ja→jp 等）与目标语种校验，截图浮层的构造与选区导出冒烟测试，exe / 托盘图标资源，结果窗口的 OCR `rect` 解析、按阅读顺序拼接选字文本、贴合图解码与画布绘制冒烟测试，以及「取字」模式的 `rect` 解析、阅读顺序拼接、`sumSrc` 优先与分段兜底。
+自检（共 77 项）覆盖文本翻译 MD5 签名、自动目标语言判断、DPAPI 加解密、文本分段，图片翻译的 MD5 签名、固定参数（cuid/mac）、语种映射与目标语种校验，截图浮层的构造与选区导出冒烟测试，exe / 托盘图标资源，结果窗口的 `rect` 解析、按阅读顺序拼接选字文本、贴合图解码与画布绘制冒烟测试，以及新增的 **TC3-HMAC-SHA256 签名固定向量**、腾讯云 OCR 响应解析（含 `Polygon` 回退、鉴权错误映射）、阅读顺序、目标语种归一化、管道结果拼装、两套 `Prepare` 路径。
 
-图片翻译报 `54001`、`52003` 等错误、或「取字」没反应时，可用真实请求诊断（使用当前已保存的 AppID / 密钥，不输出密钥）：
+真实请求诊断（使用当前已保存的凭证，不输出密钥）：
 
 ```powershell
+# 只取字（自动选引擎）
+.\dist\SelectionTranslator.exe --ocrtest "C:\path\to\screenshot.png"
+Get-Content "$env:APPDATA\SelectionTranslator\ocrtest.txt"
+
+# 识别 + 翻译整条链路（自动选引擎）
 .\dist\SelectionTranslator.exe --imagetest "C:\path\to\screenshot.png"
 Get-Content "$env:APPDATA\SelectionTranslator\imagetest.txt"
 
-.\dist\SelectionTranslator.exe --ocrtest "C:\path\to\screenshot.png"
-Get-Content "$env:APPDATA\SelectionTranslator\ocrtest.txt"
+# 只调腾讯云 OCR，逐行打印坐标与原文
+.\dist\SelectionTranslator.exe --tencenttest "C:\path\to\screenshot.png"
+Get-Content "$env:APPDATA\SelectionTranslator\tencenttest.txt"
+
+# 验证百度「逐行文本翻译」通道（不需要腾讯云凭证）
+.\dist\SelectionTranslator.exe --linetest
+Get-Content "$env:APPDATA\SelectionTranslator\linetest.txt"
+
+# 验证腾讯云签名 / 公共参数格式（用假凭证，预期 AuthFailure.*）
+.\dist\SelectionTranslator.exe --tencentprobe
+Get-Content "$env:APPDATA\SelectionTranslator\tencentprobe.txt"
+
+# 强制走旧的百度图片翻译回退路径
+.\dist\SelectionTranslator.exe --baiduimagetest "C:\path\to\screenshot.png"
+Get-Content "$env:APPDATA\SelectionTranslator\imagetest.txt"
 ```
 
-`--imagetest` 验证翻译 + 贴合图，`--ocrtest` 验证「取字」使用的 `paste=0` 请求与 OCR 原文。返回 `RESULT: OK` 即凭证、签名与图片翻译服务都正常；失败时文件里会有完整异常信息。
+`RESULT: OK` 即该段链路正常；失败时文件里有完整异常信息。`--tencentprobe` 用一组无效凭证发一次真实请求，收到 `AuthFailure.SecretIdNotFound` 之类的鉴权错误反而说明**签名串与公共参数格式被服务端正确解析**，可用来在没填密钥时先排除代码问题。
 
 ## 已知限制
 
@@ -202,25 +255,28 @@ Get-Content "$env:APPDATA\SelectionTranslator\ocrtest.txt"
 - 远程桌面、部分游戏可能无法读取选区，请用 `Ctrl+Alt+T` 或 `Ctrl+Alt+E`。
 - 全局快捷键被其他程序占用时，托盘菜单仍可使用；日志会记录注册失败。可在设置中改为其他组合。
 - Win 键作为修饰符可能被系统拦截（如 Win+E 会打开资源管理器），建议使用 Ctrl+Alt+Shift 组合。
-- 翻译文本和图片会发送到百度翻译服务器，请勿翻译敏感内容。
-- 图片翻译是独立服务，需在开放平台单独开通；仅开通「通用翻译」时截图翻译会返回 52003 未授权。
-- 「取字」本质仍是图片翻译调用，接口没有纯 OCR 开关，因此照样消耗一次图片翻译额度、也必须联网；想完全不翻译需另接独立 OCR 服务。
-- 图片翻译目标语言不支持 `auto`，选择「自动」时本工具会先按中文→英文请求，识别到非中文源语言后再按其他→中文重试，因此自动模式可能产生两次请求。
-- 图片过窄（长宽比超过 3:1）、文字过小或倾斜、背景复杂时，OCR 与贴合效果会下降。
+- 翻译文本会发送到百度，截图会发送到腾讯云 OCR（回退时发送到百度图片翻译），请勿处理敏感内容。
+- 腾讯云 OCR 需在控制台开通并配置 SecretId / SecretKey；只填百度凭证时截图功能自动回退百度「图片翻译」，而该服务需在百度开放平台单独开通，仅开通「通用翻译」时会返回 52003 未授权。
+- 默认「取字」只调腾讯云 OCR，不消耗百度翻译额度，但仍需联网并按腾讯云 OCR 调用计费；关闭腾讯云开关后回退百度图片翻译，此时接口没有纯 OCR 开关，会照常计费一次翻译调用。
+- 「译」在腾讯云路径下需要两次串行请求（OCR + 文本翻译），网络较差时延迟会累加；自动目标语种在回退路径下可能产生两次百度图片翻译请求。
+- 逐行译文按 OCR 行一一对齐；如果接口把多行合并或某行过长，程序会做数量对齐，个别文字块可能回退显示原文而非译文。
+- 图片过窄、文字过小或倾斜、背景复杂时识别效果会下降；长宽比超过 3:1 的限制只存在于百度图片翻译回退路径。
 - 截图浮层中的马赛克仅作用于当前显示的截图，不会修改系统剪贴板中的原始内容。
 
 ## 文件结构
 
 ```text
-BaiduTranslator.cs            文本翻译 API
-BaiduImageTranslator.cs       图片翻译 API（签名/multipart/预处理/解析）
+BaiduTranslator.cs            百度文本翻译 API（含逐行翻译）
+BaiduImageTranslator.cs       百度图片翻译 API（回退路径）
+TencentOcr.cs                 腾讯云 GeneralAccurateOCR（TC3 签名/解析/预处理）
+PicturePipeline.cs            识别 + 翻译管道，统一产出结果结构
 ScreenshotCaptureForm.cs      一体化截图浮层（框选/标注/工具栏）
 ImageTranslationForm.cs       图片翻译结果窗口（译文贴图上/选字复制）
 PinnedImageForm.cs            桌面贴图窗口（置顶/拖动/缩放）
-AppConfig.cs / SettingsForm.cs 配置与设置界面
+AppConfig.cs / SettingsForm.cs 配置（两套凭证）与设置界面
 TrayApplicationContext.cs     托盘、全局热键与流程编排
-SelfTest.cs                    自检用例
-ImageTest.cs                   图片翻译真实请求诊断（--imagetest）
+SelfTest.cs                    自检用例（77 项）
+ImageTest.cs                   真实请求诊断（--imagetest / --tencenttest / --linetest 等）
 IconFactory.cs / app.ico      托盘与 exe 图标（多尺寸）
 build.ps1                     使用系统 csc.exe 编译并嵌入图标
 app.manifest                  DPI 与 Windows 兼容性声明

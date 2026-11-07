@@ -14,9 +14,10 @@ namespace SelectionTranslator
     /// 图片翻译结果窗口。
     ///
     /// 与旧的「截图编辑器」的区别：这里没有任何矩形 / 画笔 / 马赛克 /
-    /// 裁剪等编辑工具。翻译完成后译文直接显示在图片上（优先使用百度
-    /// 返回的整图贴合译文图），每个 OCR 分段是一块可点选、可框选的
-    /// 热区，选中即自动复制到剪贴板。
+    /// 裁剪等编辑工具。翻译完成后译文直接显示在图片上（腾讯云 OCR 给出
+    /// 文字坐标，百度文本翻译给出逐行译文，窗口把译文叠加到每个文字块），
+    /// 每个文字块是一块可点选、可框选的热区，选中即自动复制到剪贴板。
+    /// 回退到百度图片翻译时则优先显示接口返回的整图贴合译文图。
     ///
     /// 坐标约定：_textBlocks 保存 OCR 源图坐标；MapOcrRect 把它映射到
     /// 当前显示底图的像素坐标；绘制时再做一次 Translate + Scale 变换。
@@ -294,8 +295,10 @@ namespace SelectionTranslator
             bool hasBlocks = _textBlocks.Count > 0;
             if (_viewButton != null)
             {
-                _viewButton.Text = _viewPasted
-                    ? "显示：译文图" : "显示：原图对照";
+                _viewButton.Text = _pastedImage == null
+                    ? "译文已叠加到图上"
+                    : (_viewPasted
+                        ? "显示：译文图" : "显示：原图对照");
                 _viewButton.Enabled = _pastedImage != null;
             }
             if (_contentButton != null)
@@ -405,37 +408,36 @@ namespace SelectionTranslator
 
             _translating = true;
             _error = "";
-            SetStatus("正在识别并翻译图片…", false);
+            SetStatus(
+                PicturePipeline.UseTencent(Config)
+                    ? "正在识别（腾讯云）并翻译（百度）…"
+                    : "正在识别并翻译图片（百度图片翻译）…",
+                false);
 
             try
             {
                 Bitmap ocrSource = _sourceImage != null
                     ? _sourceImage : _image;
-                string note;
-                byte[] bytes = BaiduImageTranslator.PrepareImage(
-                    ocrSource, out note);
-
-                // rect 坐标是「实际上传的那张图」的像素坐标。
-                // PrepareImage 可能缩放/重编码，所以从最终字节流取尺寸，
-                // 而不是直接用 ocrSource.Size，避免文字块整体偏移。
-                Size sentSize;
-                using (MemoryStream stream = new MemoryStream(bytes))
-                using (Image sent = Image.FromStream(stream))
-                {
-                    sentSize = sent.Size;
-                }
-
                 AppConfig config = Config;
+
+                // PNG/JPEG 编码放线程池，避免窗口刚显示时卡顿。
+                PreparedPicture prepared =
+                    await System.Threading.Tasks.Task.Run(() =>
+                        PicturePipeline.Prepare(ocrSource, config));
+
+                // 腾讯云 OCR + 百度文本翻译；未配置腾讯云时自动回退
+                // 百度图片翻译。两条路径都返回同一结构。
                 ImageTranslationResult result =
-                    await BaiduImageTranslator.TranslateImageAsync(
-                        config, bytes, config.ImageTargetLanguage);
+                    await PicturePipeline.TranslateAsync(
+                        config, prepared);
 
                 if (IsDisposed)
                 {
                     return;
                 }
 
-                ApplyResult(result, sentSize);
+                // rect 以「实际上传的那张图」为基准，Prepare 可能缩放。
+                ApplyResult(result, prepared.Size);
             }
             catch (TranslationException ex)
             {
@@ -790,7 +792,7 @@ namespace SelectionTranslator
             }
             else if (_translating)
             {
-                message = "正在识别并翻译图片…";
+                message = _status;
             }
             else if (CurrentImage == null)
             {

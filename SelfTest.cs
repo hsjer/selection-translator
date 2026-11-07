@@ -431,6 +431,157 @@ namespace SelectionTranslator
                     Enum.IsDefined(
                         typeof(ScreenshotCaptureForm.CaptureResult),
                         "Ocr").ToString(), "True");
+
+                // ------------------------------------------------------
+                // 腾讯云 OCR + 百度逐行翻译管道
+                // ------------------------------------------------------
+                const string expectedAuth =
+                    "TC3-HMAC-SHA256 Credential=AKIDEXAMPLE/" +
+                    "2020-09-13/ocr/tc3_request, " +
+                    "SignedHeaders=content-type;host, Signature=" +
+                    "2a57b637010b6590b19bce624ad0c6aeb98f40228a" +
+                    "68f1f811c4810b0caeb4c6";
+                string actualAuth = TencentOcr.BuildAuthorization(
+                    "AKIDEXAMPLE", "EXAMPLEKEY", "ap-guangzhou",
+                    "{\"ImageBase64\":\"AA==\",\"ConfigID\":\"MulOCR\"}",
+                    1600000000L);
+                Check(output, ref ok, "tc3 sign vector",
+                    actualAuth, expectedAuth);
+
+                string ocrJson =
+                    "{\"Response\":{\"Angle\":0.5," +
+                    "\"RequestId\":\"req-123\",\"TextDetections\":[" +
+                    "{\"DetectedText\":\"B\",\"Confidence\":99," +
+                    "\"ItemPolygon\":{\"X\":50,\"Y\":0," +
+                    "\"Width\":40,\"Height\":20}}," +
+                    "{\"DetectedText\":\"A\",\"Confidence\":98," +
+                    "\"ItemPolygon\":{\"X\":0,\"Y\":0," +
+                    "\"Width\":40,\"Height\":20}}," +
+                    "{\"DetectedText\":\"C\",\"Confidence\":97," +
+                    "\"Polygon\":[{\"X\":0,\"Y\":30}," +
+                    "{\"X\":90,\"Y\":30},{\"X\":90,\"Y\":50}," +
+                    "{\"X\":0,\"Y\":50}]}]}}";
+                OcrResult tencentParsed = TencentOcr.ParseResponse(
+                    ocrJson, new Size(200, 100));
+                Check(output, ref ok, "tencent ocr line count",
+                    tencentParsed.Lines.Count.ToString(), "3");
+                Check(output, ref ok, "tencent ocr reading order",
+                    tencentParsed.SumText.Replace("\r\n", "\\n"),
+                    "A B\\nC");
+                Check(output, ref ok, "tencent ocr polygon rect",
+                    tencentParsed.Lines[2].Rect, "0.0 30.0 90.0 20.0");
+                Check(output, ref ok, "tencent ocr request id",
+                    tencentParsed.RequestId, "req-123");
+                Check(output, ref ok, "tencent ocr image size",
+                    tencentParsed.ImageSize.Width + "x" +
+                        tencentParsed.ImageSize.Height, "200x100");
+
+                string authError = "";
+                try
+                {
+                    TencentOcr.ParseResponse(
+                        "{\"Response\":{\"Error\":{\"Code\":" +
+                        "\"AuthFailure.SignatureFailure\"," +
+                        "\"Message\":\"bad\"}}}",
+                        new Size(10, 10));
+                }
+                catch (TranslationException ex)
+                {
+                    authError = ex.Code;
+                }
+                Check(output, ref ok, "tencent auth error mapped",
+                    authError, "AuthFailure.SignatureFailure");
+
+                Check(output, ref ok, "text target auto",
+                    PicturePipeline.MapTextTarget(""), "auto");
+                Check(output, ref ok, "text target jp -> ja",
+                    PicturePipeline.MapTextTarget("jp"), "ja");
+                Check(output, ref ok, "text target fra -> fr",
+                    PicturePipeline.MapTextTarget("fra"), "fr");
+                Check(output, ref ok, "text target passthrough",
+                    PicturePipeline.MapTextTarget("EN"), "en");
+
+                LineTranslationResult fakeLines =
+                    new LineTranslationResult();
+                fakeLines.From = "zh";
+                fakeLines.To = "en";
+                fakeLines.Lines =
+                    new System.Collections.Generic.List<string>(
+                        new string[] { "甲", "乙", "丙" });
+                ImageTranslationResult pipelineResult =
+                    PicturePipeline.BuildResult(tencentParsed, fakeLines);
+                Check(output, ref ok, "pipeline segment count",
+                    pipelineResult.Segments.Count.ToString(), "3");
+                Check(output, ref ok, "pipeline segment dst",
+                    pipelineResult.Segments[0].Dst, "甲");
+                Check(output, ref ok, "pipeline segment rect",
+                    pipelineResult.Segments[0].Rect,
+                    "0.0 0.0 40.0 20.0");
+                Check(output, ref ok, "pipeline sum dst",
+                    pipelineResult.SumDst.Replace("\r\n", "\\n"),
+                    "甲 乙\\n丙");
+                Check(output, ref ok, "pipeline no pasted image",
+                    (pipelineResult.PastedImage == null)
+                        .ToString(), "True");
+
+                AppConfig fresh = new AppConfig();
+                Check(output, ref ok, "config tencent on by default",
+                    fresh.UseTencentOcr.ToString(), "True");
+                Check(output, ref ok, "config tencent region",
+                    fresh.TencentRegion, "ap-guangzhou");
+                Check(output, ref ok, "config tencent config id",
+                    fresh.TencentOcrConfigId, "MulOCR");
+                Check(output, ref ok, "engine fallback without keys",
+                    PicturePipeline.UseTencent(fresh).ToString(),
+                    "False");
+
+                AppConfig withKeys = new AppConfig();
+                withKeys.TencentSecretId = "AKIDTEST";
+                withKeys.SetTencentSecretKey("test-key");
+                Check(output, ref ok, "engine tencent with keys",
+                    PicturePipeline.UseTencent(withKeys).ToString(),
+                    "True");
+                Check(output, ref ok, "tencent secret roundtrip",
+                    withKeys.GetTencentSecretKey(), "test-key");
+
+                // Prepare 两条路径都要能编码图片并给出正确尺寸。
+                using (Bitmap sample = new Bitmap(120, 80))
+                {
+                    using (Graphics graphics =
+                        Graphics.FromImage(sample))
+                    {
+                        graphics.Clear(Color.White);
+                    }
+                    PreparedPicture fallback =
+                        PicturePipeline.Prepare(sample, fresh);
+                    Check(output, ref ok, "prepare fallback engine",
+                        fallback.UseTencent.ToString(), "False");
+                    Check(output, ref ok, "prepare fallback size",
+                        fallback.Size.Width + "x" +
+                            fallback.Size.Height, "120x80");
+                    Check(output, ref ok, "prepare fallback bytes",
+                        (fallback.Bytes.Length > 0).ToString(),
+                        "True");
+
+                    PreparedPicture tencent =
+                        PicturePipeline.Prepare(sample, withKeys);
+                    Check(output, ref ok, "prepare tencent engine",
+                        tencent.UseTencent.ToString(), "True");
+                    Check(output, ref ok, "prepare tencent size",
+                        tencent.Size.Width + "x" +
+                            tencent.Size.Height, "120x80");
+                    Check(output, ref ok, "prepare tencent bytes",
+                        (tencent.Bytes.Length > 0).ToString(),
+                        "True");
+                }
+
+                LineTranslationResult emptyLines =
+                    BaiduTranslator.TranslateLinesAsync(
+                        fresh,
+                        new System.Collections.Generic.List<string>(),
+                        "auto").GetAwaiter().GetResult();
+                Check(output, ref ok, "empty line translation",
+                    emptyLines.Lines.Count.ToString(), "0");
             }
             catch (Exception ex)
             {

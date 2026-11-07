@@ -36,6 +36,40 @@ namespace SelectionTranslator
                 return;
             }
 
+            int tencentTestIndex = Array.IndexOf(
+                args, "--tencenttest");
+            if (tencentTestIndex >= 0)
+            {
+                string path = tencentTestIndex + 1 < args.Length
+                    ? args[tencentTestIndex + 1]
+                    : null;
+                ImageTest.RunTencent(path);
+                return;
+            }
+
+            int baiduImageIndex = Array.IndexOf(
+                args, "--baiduimagetest");
+            if (baiduImageIndex >= 0)
+            {
+                string path = baiduImageIndex + 1 < args.Length
+                    ? args[baiduImageIndex + 1]
+                    : null;
+                ImageTest.RunBaiduImage(path);
+                return;
+            }
+
+            if (Array.IndexOf(args, "--linetest") >= 0)
+            {
+                ImageTest.RunLineTest();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--tencentprobe") >= 0)
+            {
+                ImageTest.RunTencentProbe(null);
+                return;
+            }
+
             bool createdNew;
             using (Mutex mutex = new Mutex(
                 true,

@@ -654,6 +654,7 @@ namespace SelectionTranslator
             Bitmap image = null;
             Bitmap rawImage = null;
             Point pinLocation = Point.Empty;
+            long finishMs = 0;
             ScreenshotCaptureForm.CaptureResult action =
                 ScreenshotCaptureForm.CaptureResult.None;
             // 贴图窗口在截图期间先隐藏，避免被拍进新截图（QQ 的行为）。
@@ -676,6 +677,7 @@ namespace SelectionTranslator
                         rawImage = capture.RawCaptured;
                         action = capture.Result;
                         pinLocation = capture.CaptureLocation;
+                        finishMs = capture.FinishElapsedMs;
                     }
                 }
             }
@@ -750,7 +752,7 @@ namespace SelectionTranslator
                 }
                 image = null;
                 rawImage = null;
-                RecognizeAndCopy(source);
+                RecognizeAndCopy(source, finishMs);
                 return;
             }
 
@@ -840,14 +842,15 @@ namespace SelectionTranslator
         }
 
         /// <summary>
-        /// 异步调用图片翻译接口，只取 OCR 原文写入剪贴板。
-        /// 接口本身仍会翻译并计费一次，这里只是忽略译文。
+        /// 只识别图中文字并写入剪贴板。默认走腾讯云 GeneralAccurateOCR，
+        /// 完全不调用翻译接口；未配置腾讯云时回退百度图片翻译。
         ///
         /// 体验要点：PNG 编码放线程池；识别期间不再弹「正在识别…」气泡
         /// （两次气泡会被 Windows 通知排队 / 折叠，反而让人以为卡住）；
         /// 只在结果就绪时弹一次，且文字此时已可直接 Ctrl+V。
         /// </summary>
-        private async void RecognizeAndCopy(Bitmap source)
+        private async void RecognizeAndCopy(
+            Bitmap source, long finishMs)
         {
             if (_ocrInProgress)
             {
@@ -872,13 +875,12 @@ namespace SelectionTranslator
                 }
 
                 // GDI+ 的 PNG 编码在线程池里做，UI 线程保持流畅。
-                byte[] imageBytes = await Task.Run(() =>
+                PreparedPicture prepared = await Task.Run(() =>
                 {
                     try
                     {
-                        string note;
-                        return BaiduImageTranslator.PrepareImage(
-                            source, out note);
+                        return PicturePipeline.Prepare(
+                            source, _config);
                     }
                     finally
                     {
@@ -887,8 +889,8 @@ namespace SelectionTranslator
                 });
 
                 string text =
-                    await BaiduImageTranslator.RecognizeTextAsync(
-                        _config, imageBytes);
+                    await PicturePipeline.RecognizeTextAsync(
+                        _config, prepared);
                 Clipboard.SetText(text);
                 watch.Stop();
 
@@ -898,11 +900,18 @@ namespace SelectionTranslator
                 {
                     preview = preview.Substring(0, 60) + "…";
                 }
+                string engine = prepared.UseTencent
+                    ? "腾讯云 OCR" : "百度图片翻译";
                 Log.Info("OCR 取字成功，共 " + text.Length +
-                    " 字符，耗时 " + watch.ElapsedMilliseconds + " ms");
+                    " 字符，引擎=" + engine +
+                    " 请求耗时=" + watch.ElapsedMilliseconds +
+                    " ms，浮层收尾=" + finishMs +
+                    " ms，端到端=" +
+                    (watch.ElapsedMilliseconds + finishMs) + " ms");
                 ShowOcrBalloon("文字已复制，可直接 Ctrl+V",
                     "共 " + text.Length + " 字符（" +
-                    watch.ElapsedMilliseconds + " ms）：" + preview,
+                    (watch.ElapsedMilliseconds + finishMs) +
+                    " ms）：" + preview,
                     ToolTipIcon.Info);
             }
             catch (Exception ex)
