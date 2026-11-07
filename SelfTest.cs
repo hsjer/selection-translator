@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Drawing;
 using System.IO;
 using System.Reflection;
@@ -185,6 +186,109 @@ namespace SelectionTranslator
                                 exported.Height.ToString(), "80");
                         }
                     }
+                }
+
+                // 图片选字复制：rect 解析 + 按阅读顺序拼接原文 / 译文。
+                Type editorType = typeof(ScreenshotEditorForm);
+                MethodInfo parseRect = editorType.GetMethod(
+                    "TryParseOcrRect",
+                    BindingFlags.NonPublic | BindingFlags.Static);
+                object[] parseArgs = new object[]
+                {
+                    "79 23 246 43", RectangleF.Empty
+                };
+                bool parsed = (bool)parseRect.Invoke(
+                    null, parseArgs);
+                RectangleF parsedRect = (RectangleF)parseArgs[1];
+                Check(output, ref ok, "ocr rect parsed",
+                    parsed.ToString(), "True");
+                Check(output, ref ok, "ocr rect values",
+                    parsedRect.X + "," + parsedRect.Y + "," +
+                    parsedRect.Width + "," + parsedRect.Height,
+                    "79,23,246,43");
+
+                object[] badArgs = new object[]
+                {
+                    "not a rect", RectangleF.Empty
+                };
+                Check(output, ref ok, "ocr rect rejects junk",
+                    ((bool)parseRect.Invoke(null, badArgs)).ToString(),
+                    "False");
+
+                using (Bitmap stub = new Bitmap(120, 80))
+                using (Bitmap rawStub = new Bitmap(120, 80))
+                using (ScreenshotEditorForm editor =
+                    new ScreenshotEditorForm(
+                        delegate { return new AppConfig(); },
+                        stub, rawStub))
+                {
+                    Type blockType = editorType.GetNestedType(
+                        "TextBlock", BindingFlags.NonPublic);
+                    const BindingFlags AnyField =
+                        BindingFlags.Public |
+                        BindingFlags.NonPublic |
+                        BindingFlags.Instance;
+                    IList blocks = (IList)editorType.GetField(
+                        "_textBlocks",
+                        BindingFlags.NonPublic |
+                        BindingFlags.Instance).GetValue(editor);
+
+                    string[] sources =
+                        new string[] { "A", "B", "C" };
+                    string[] targets =
+                        new string[] { "甲", "乙", "丙" };
+                    RectangleF[] rects = new RectangleF[]
+                    {
+                        new RectangleF(0, 0, 20, 10),
+                        new RectangleF(30, 0, 20, 10),
+                        new RectangleF(0, 30, 20, 10)
+                    };
+                    for (int i = 0; i < 3; i++)
+                    {
+                        object block = Activator.CreateInstance(
+                            blockType, true);
+                        blockType.GetField("Rect", AnyField)
+                            .SetValue(block, rects[i]);
+                        blockType.GetField("Src", AnyField)
+                            .SetValue(block, sources[i]);
+                        blockType.GetField("Dst", AnyField)
+                            .SetValue(block, targets[i]);
+                        blockType.GetField("Index", AnyField)
+                            .SetValue(block, i);
+                        blocks.Add(block);
+                    }
+
+                    // 故意逆序放入，验证按行 / 列排序。
+                    editorType.GetField(
+                        "_textSelectRect",
+                        BindingFlags.NonPublic |
+                        BindingFlags.Instance).SetValue(
+                            editor,
+                            new RectangleF(0, 0, 200, 50));
+                    editorType.GetMethod(
+                        "ApplyTextSelection",
+                        BindingFlags.NonPublic |
+                        BindingFlags.Instance).Invoke(
+                            editor, new object[] { false });
+
+                    MethodInfo buildText = editorType.GetMethod(
+                        "BuildSelectedText",
+                        BindingFlags.NonPublic |
+                        BindingFlags.Instance);
+                    Check(output, ref ok, "selected source text",
+                        ((string)buildText.Invoke(editor, null))
+                            .Replace("\r\n", "\\n"),
+                        "A B\\nC");
+
+                    editorType.GetField(
+                        "_copySourceText",
+                        BindingFlags.NonPublic |
+                        BindingFlags.Instance).SetValue(
+                            editor, false);
+                    Check(output, ref ok, "selected target text",
+                        ((string)buildText.Invoke(editor, null))
+                            .Replace("\r\n", "\\n"),
+                        "甲 乙\\n丙");
                 }
             }
             catch (Exception ex)

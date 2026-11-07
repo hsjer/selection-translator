@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Globalization;
 using System.IO;
+using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -561,6 +563,32 @@ namespace SelectionTranslator
 
         private ImageTranslationResult _lastResult;
 
+        /// <summary>
+        /// 图片上可选中的文字块。图片翻译接口为每段返回 rect
+        /// （left top width height），据此在原图上叠一层可选文字层。
+        /// </summary>
+        private sealed class TextBlock
+        {
+            public RectangleF Rect;
+            public string Src;
+            public string Dst;
+            public int Index;
+        }
+
+        private readonly List<TextBlock> _textBlocks =
+            new List<TextBlock>();
+        private readonly List<int> _selectedBlocks = new List<int>();
+        private Size _ocrSize = Size.Empty;
+        private bool _textSelectMode;
+        private bool _textSelecting;
+        private bool _copySourceText = true;
+        private PointF _textSelectStart;
+        private RectangleF _textSelectRect;
+        private string _selectedText = "";
+        private string _copiedHint = "";
+        private ToolStripButton _textSelectButton;
+        private ToolStripButton _selectContentTypeButton;
+
         /// <summary>当前编辑的截图位图（供外部清理）。</summary>
         public Bitmap Image
         {
@@ -697,6 +725,18 @@ namespace SelectionTranslator
             _translateButton.Click += OnTranslateClicked;
             _toolbar.Items.Add(_translateButton);
 
+            _textSelectButton = NewToolButton("图片选字");
+            _textSelectButton.Enabled = false;
+            _textSelectButton.Click += OnTextSelectClicked;
+            _toolbar.Items.Add(_textSelectButton);
+
+            _selectContentTypeButton =
+                NewToolButton("选字复制：原文");
+            _selectContentTypeButton.Enabled = false;
+            _selectContentTypeButton.Click +=
+                OnSelectContentTypeClicked;
+            _toolbar.Items.Add(_selectContentTypeButton);
+
             _toolbar.Items.Add(new ToolStripSeparator());
 
             _copyTextButton = NewToolButton("复制译文");
@@ -774,6 +814,15 @@ namespace SelectionTranslator
             };
             _resultPanel.Controls.Add(title);
 
+            Label selectHint = new Label
+            {
+                Text = "翻译后可直接在图片上点选 / 框选文字复制（Ctrl+A 全选，Esc 退出）",
+                Bounds = new Rectangle(130, 9, 560, 20),
+                ForeColor = Color.FromArgb(0, 105, 210),
+                AutoSize = false
+            };
+            _resultPanel.Controls.Add(selectHint);
+
             Label srcLabel = new Label
             {
                 Text = "原文：",
@@ -796,7 +845,8 @@ namespace SelectionTranslator
             {
                 Bounds = new Rectangle(12, 58, 448, 120),
                 Anchor = AnchorStyles.Top | AnchorStyles.Left,
-                HorizontalScrollbar = true
+                HorizontalScrollbar = true,
+                SelectionMode = SelectionMode.MultiExtended
             };
             _resultPanel.Controls.Add(_segmentList);
 
@@ -1088,12 +1138,35 @@ namespace SelectionTranslator
                 ? "无图片"
                 : _image.Width + "×" + _image.Height +
                   "  缩放 " + (_zoom * 100).ToString("0") + "%";
+
+            if (_textSelectMode)
+            {
+                string detail = _copiedHint.Length > 0
+                    ? _copiedHint
+                    : "点选文字块或拖拽框选，松开即复制；" +
+                      "Ctrl+A 全选，右键 / Esc 退出";
+                if (detail.Length > 90)
+                {
+                    detail = detail.Substring(0, 90) + "…";
+                }
+                _statusLabel.Text = size + "    |    图片选字（" +
+                    (_copySourceText ? "原文" : "译文") + "）：" +
+                    detail;
+                return;
+            }
+
             _statusLabel.Text = size + "    |    工具：" +
                 toolName + "　" + hint;
         }
 
         private void SetTool(Tool tool)
         {
+            // 开始标注就自动退出「图片选字」，两种交互不互相干扰。
+            if (_textSelectMode && tool != Tool.None)
+            {
+                ExitTextSelectMode();
+            }
+
             _tool = tool;
             _preview = null;
 
@@ -1140,6 +1213,65 @@ namespace SelectionTranslator
             {
                 _preview.Draw(g, _zoom, _image);
             }
+
+            if (_textSelectMode)
+            {
+                DrawTextOverlay(g);
+            }
+        }
+
+        /// <summary>
+        /// 在图片坐标系里叠加 OCR 文字块：淡蓝底表示可选，
+        /// 深蓝底表示已选中（已复制），虚线框是正在拖出的范围。
+        /// </summary>
+        private void DrawTextOverlay(Graphics g)
+        {
+            float line = 1f / Math.Max(_zoom, 0.01f);
+            for (int i = 0; i < _textBlocks.Count; i++)
+            {
+                RectangleF r = MapOcrRect(_textBlocks[i].Rect);
+                bool selected = _selectedBlocks.Contains(i);
+                using (SolidBrush fill = new SolidBrush(
+                    selected
+                        ? Color.FromArgb(96, 0, 122, 255)
+                        : Color.FromArgb(26, 0, 122, 255)))
+                using (Pen border = new Pen(
+                    selected
+                        ? Color.FromArgb(235, 0, 90, 210)
+                        : Color.FromArgb(105, 0, 122, 255),
+                    line))
+                {
+                    g.FillRectangle(fill, r);
+                    g.DrawRectangle(border,
+                        r.X, r.Y, r.Width, r.Height);
+                }
+            }
+
+            if (_textSelecting)
+            {
+                RectangleF r = _textSelectRect;
+                using (Pen pen = new Pen(
+                    Color.FromArgb(0, 122, 255), line * 1.6f))
+                {
+                    pen.DashStyle = DashStyle.Dash;
+                    g.DrawRectangle(pen,
+                        r.X, r.Y, r.Width, r.Height);
+                }
+            }
+        }
+
+        /// <summary>OCR 坐标按「识别时图片尺寸 → 当前显示图片尺寸」映射。</summary>
+        private RectangleF MapOcrRect(RectangleF r)
+        {
+            if (_image == null ||
+                _ocrSize.Width <= 0 || _ocrSize.Height <= 0)
+            {
+                return r;
+            }
+            float sx = _image.Width / (float)_ocrSize.Width;
+            float sy = _image.Height / (float)_ocrSize.Height;
+            return new RectangleF(
+                r.X * sx, r.Y * sy, r.Width * sx, r.Height * sy);
         }
 
         // ---------------- 鼠标事件 ----------------
@@ -1147,8 +1279,26 @@ namespace SelectionTranslator
         private void OnCanvasMouseDown(
             object sender, MouseEventArgs e)
         {
+            if (_textSelectMode && e.Button == MouseButtons.Right)
+            {
+                ExitTextSelectMode();
+                return;
+            }
+
             if (e.Button != MouseButtons.Left)
             {
+                return;
+            }
+
+            // 图片选字模式：拖拽框选 OCR 文字块，不生成任何标注形状。
+            if (_textSelectMode)
+            {
+                _textSelectStart = GetImagePoint(e);
+                _textSelectRect = new RectangleF(
+                    _textSelectStart.X, _textSelectStart.Y, 0, 0);
+                _textSelecting = true;
+                _canvas.Capture = true;
+                InvalidateCanvas();
                 return;
             }
 
@@ -1224,6 +1374,16 @@ namespace SelectionTranslator
         private void OnCanvasMouseMove(
             object sender, MouseEventArgs e)
         {
+            if (_textSelecting)
+            {
+                PointF current = GetImagePoint(e);
+                _textSelectRect =
+                    NormalizeRect(_textSelectStart, current);
+                ApplyTextSelection(false);
+                InvalidateCanvas();
+                return;
+            }
+
             if (!_drawing || _preview == null)
             {
                 return;
@@ -1287,6 +1447,23 @@ namespace SelectionTranslator
         private void OnCanvasMouseUp(
             object sender, MouseEventArgs e)
         {
+            if (_textSelecting)
+            {
+                _textSelecting = false;
+                _canvas.Capture = false;
+                PointF end = GetImagePoint(e);
+                _textSelectRect =
+                    NormalizeRect(_textSelectStart, end);
+                bool clicked =
+                    _textSelectRect.Width < 4 &&
+                    _textSelectRect.Height < 4;
+                ApplyTextSelection(clicked);
+                SyncSegmentList();
+                CopySelectedText();
+                InvalidateCanvas();
+                return;
+            }
+
             if (!_drawing)
             {
                 return;
@@ -1631,6 +1808,288 @@ namespace SelectionTranslator
             }
         }
 
+        // ---------------- 图片选字复制 ----------------
+
+        private void OnTextSelectClicked(object sender, EventArgs e)
+        {
+            if (_textSelectMode)
+            {
+                ExitTextSelectMode();
+            }
+            else
+            {
+                EnterTextSelectMode(false);
+            }
+        }
+
+        private void OnSelectContentTypeClicked(
+            object sender, EventArgs e)
+        {
+            _copySourceText = !_copySourceText;
+            if (_selectContentTypeButton != null)
+            {
+                _selectContentTypeButton.Text = _copySourceText
+                    ? "选字复制：原文"
+                    : "选字复制：译文";
+            }
+            if (_textSelectMode && _selectedBlocks.Count > 0)
+            {
+                CopySelectedText();
+            }
+            else
+            {
+                SetStatusText();
+            }
+        }
+
+        private void EnterTextSelectMode(bool silent)
+        {
+            if (_textBlocks.Count == 0)
+            {
+                if (!silent)
+                {
+                    MessageBox.Show(
+                        this,
+                        "请先点击「翻译图片」，识别到文字后才能框选复制。",
+                        "图片选字",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                }
+                return;
+            }
+
+            _textSelectMode = true;
+            _tool = Tool.None;
+            _preview = null;
+            _drawing = false;
+            _selectedBlocks.Clear();
+            _selectedText = "";
+            _copiedHint = "";
+            _canvas.Cursor = Cursors.IBeam;
+            if (_textSelectButton != null)
+            {
+                _textSelectButton.Checked = true;
+            }
+            SetStatusText();
+            InvalidateCanvas();
+        }
+
+        private void ExitTextSelectMode()
+        {
+            _textSelectMode = false;
+            _textSelecting = false;
+            _selectedBlocks.Clear();
+            _selectedText = "";
+            _copiedHint = "";
+            if (_canvas != null && !_canvas.IsDisposed)
+            {
+                _canvas.Cursor = Cursors.Cross;
+            }
+            if (_textSelectButton != null)
+            {
+                _textSelectButton.Checked = false;
+            }
+            if (_segmentList != null)
+            {
+                _segmentList.ClearSelected();
+            }
+            SetStatusText();
+            InvalidateCanvas();
+        }
+
+        private void BuildTextBlocks(
+            ImageTranslationResult result, Size ocrSize)
+        {
+            _textBlocks.Clear();
+            _selectedBlocks.Clear();
+            _selectedText = "";
+            _copiedHint = "";
+            _ocrSize = ocrSize;
+            if (result == null || result.Segments == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < result.Segments.Count; i++)
+            {
+                ImageSegmentInfo seg = result.Segments[i];
+                RectangleF rect;
+                if (!TryParseOcrRect(seg.Rect, out rect))
+                {
+                    continue;
+                }
+                TextBlock block = new TextBlock();
+                block.Rect = rect;
+                block.Src = (seg.Src ?? "").Trim();
+                block.Dst = (seg.Dst ?? "").Trim();
+                block.Index = i;
+                _textBlocks.Add(block);
+            }
+        }
+
+        /// <summary>rect 格式为 "left top width height"，空格或逗号分隔。</summary>
+        private static bool TryParseOcrRect(
+            string text, out RectangleF rect)
+        {
+            rect = RectangleF.Empty;
+            if (string.IsNullOrEmpty(text))
+            {
+                return false;
+            }
+            string[] parts = text.Split(
+                new char[] { ' ', ',', '\t' },
+                StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 4)
+            {
+                return false;
+            }
+
+            float[] values = new float[4];
+            for (int i = 0; i < 4; i++)
+            {
+                if (!float.TryParse(
+                    parts[i],
+                    NumberStyles.Float,
+                    CultureInfo.InvariantCulture,
+                    out values[i]))
+                {
+                    return false;
+                }
+            }
+            if (values[2] <= 0 || values[3] <= 0)
+            {
+                return false;
+            }
+            rect = new RectangleF(
+                values[0], values[1], values[2], values[3]);
+            return true;
+        }
+
+        private void ApplyTextSelection(bool clicked)
+        {
+            _selectedBlocks.Clear();
+            for (int i = 0; i < _textBlocks.Count; i++)
+            {
+                RectangleF r = MapOcrRect(_textBlocks[i].Rect);
+                bool hit = clicked
+                    ? r.Contains(_textSelectStart)
+                    : r.IntersectsWith(_textSelectRect);
+                if (hit)
+                {
+                    _selectedBlocks.Add(i);
+                }
+            }
+            SortSelectedBlocks();
+        }
+
+        /// <summary>按阅读顺序排序：Top 容差内视为同一行，行内按 Left。</summary>
+        private void SortSelectedBlocks()
+        {
+            _selectedBlocks.Sort(delegate(int a, int b)
+            {
+                RectangleF ra = MapOcrRect(_textBlocks[a].Rect);
+                RectangleF rb = MapOcrRect(_textBlocks[b].Rect);
+                float tolerance =
+                    Math.Max(ra.Height, rb.Height) * 0.6f;
+                if (Math.Abs(ra.Top - rb.Top) > tolerance)
+                {
+                    return ra.Top.CompareTo(rb.Top);
+                }
+                return ra.Left.CompareTo(rb.Left);
+            });
+        }
+
+        private string BuildSelectedText()
+        {
+            StringBuilder builder = new StringBuilder();
+            float previousTop = float.NaN;
+            float previousHeight = 0f;
+            for (int i = 0; i < _selectedBlocks.Count; i++)
+            {
+                TextBlock block = _textBlocks[_selectedBlocks[i]];
+                string text = _copySourceText
+                    ? block.Src : block.Dst;
+                if (text.Length == 0)
+                {
+                    continue;
+                }
+                RectangleF r = MapOcrRect(block.Rect);
+                if (builder.Length > 0)
+                {
+                    bool sameLine = !float.IsNaN(previousTop) &&
+                        Math.Abs(r.Top - previousTop) <=
+                        Math.Max(r.Height, previousHeight) * 0.6f;
+                    builder.Append(sameLine ? " " : "\r\n");
+                }
+                builder.Append(text);
+                previousTop = r.Top;
+                previousHeight = r.Height;
+            }
+            return builder.ToString();
+        }
+
+        private void SyncSegmentList()
+        {
+            if (_segmentList == null)
+            {
+                return;
+            }
+            _segmentList.ClearSelected();
+            for (int i = 0; i < _selectedBlocks.Count; i++)
+            {
+                int index = _textBlocks[_selectedBlocks[i]].Index;
+                if (index >= 0 &&
+                    index < _segmentList.Items.Count)
+                {
+                    _segmentList.SetSelected(index, true);
+                }
+            }
+        }
+
+        private void CopySelectedText()
+        {
+            _selectedText = BuildSelectedText();
+            if (_selectedText.Length == 0)
+            {
+                _copiedHint = "选区内没有可复制的文字，请重新框选";
+                SetStatusText();
+                return;
+            }
+
+            try
+            {
+                Clipboard.SetText(_selectedText);
+                string preview = _selectedText
+                    .Replace("\r\n", " ").Replace("\n", " ");
+                if (preview.Length > 46)
+                {
+                    preview = preview.Substring(0, 46) + "…";
+                }
+                _copiedHint = "已复制 " + _selectedBlocks.Count +
+                    " 段" + (_copySourceText ? "原文" : "译文") +
+                    "：" + preview;
+            }
+            catch (Exception ex)
+            {
+                Log.Error("复制图片选中文字失败", ex);
+                _copiedHint = "复制失败，剪贴板可能被其它程序占用";
+            }
+            SetStatusText();
+        }
+
+        private void SelectAllTextBlocks()
+        {
+            _selectedBlocks.Clear();
+            for (int i = 0; i < _textBlocks.Count; i++)
+            {
+                _selectedBlocks.Add(i);
+            }
+            SortSelectedBlocks();
+            SyncSegmentList();
+            CopySelectedText();
+            InvalidateCanvas();
+        }
+
         // ---------------- 翻译 ----------------
 
         /// <summary>
@@ -1676,6 +2135,15 @@ namespace SelectionTranslator
             _resultPanel.Visible = true;
             RefreshLayoutAfterPanelChange();
             _lastResult = null;
+            // 重新翻译时先撤掉上一轮的文字层，避免坐标串位。
+            if (_textSelectMode)
+            {
+                ExitTextSelectMode();
+            }
+            _textBlocks.Clear();
+            _selectedBlocks.Clear();
+            _textSelectButton.Enabled = false;
+            _selectContentTypeButton.Enabled = false;
             _segmentList.Items.Clear();
             _srcBox.Text = "（翻译中…）";
             _sumBox.Text = "翻译中…（图片识别可能需要几秒）";
@@ -1704,7 +2172,17 @@ namespace SelectionTranslator
                 }
 
                 _lastResult = result;
-                ShowResult(result);
+                ShowResult(result, ocrSource.Size);
+
+                // 翻译完成即进入「图片选字」，用户可直接在图上
+                // 点选或框选文字复制，无需再切工具。
+                bool hasBlocks = _textBlocks.Count > 0;
+                _textSelectButton.Enabled = hasBlocks;
+                _selectContentTypeButton.Enabled = hasBlocks;
+                if (hasBlocks)
+                {
+                    EnterTextSelectMode(true);
+                }
             }
             catch (TranslationException ex)
             {
@@ -1743,8 +2221,10 @@ namespace SelectionTranslator
             }
         }
 
-        private void ShowResult(ImageTranslationResult result)
+        private void ShowResult(
+            ImageTranslationResult result, Size ocrSize)
         {
+            BuildTextBlocks(result, ocrSize);
             _segmentList.Items.Clear();
             if (result.Segments != null)
             {
@@ -1921,6 +2401,13 @@ namespace SelectionTranslator
 
             if (e.KeyCode == Keys.Escape)
             {
+                if (_textSelectMode)
+                {
+                    ExitTextSelectMode();
+                    e.SuppressKeyPress = true;
+                    return;
+                }
+
                 if (_tool == Tool.Crop && _preview != null)
                 {
                     DiscardPreview();
@@ -1953,9 +2440,32 @@ namespace SelectionTranslator
                 return;
             }
 
+            if (e.Control && e.KeyCode == Keys.A &&
+                _textSelectMode)
+            {
+                SelectAllTextBlocks();
+                e.SuppressKeyPress = true;
+                return;
+            }
+
             if (e.Control && e.KeyCode == Keys.C)
             {
-                OnCopyClicked(this, EventArgs.Empty);
+                if (_textSelectMode)
+                {
+                    if (_selectedText.Length > 0)
+                    {
+                        CopySelectedText();
+                    }
+                    else
+                    {
+                        _copiedHint = "请先在图片上点选或框选文字";
+                        SetStatusText();
+                    }
+                }
+                else
+                {
+                    OnCopyClicked(this, EventArgs.Empty);
+                }
                 e.SuppressKeyPress = true;
             }
         }
