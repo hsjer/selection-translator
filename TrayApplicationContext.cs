@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Threading;
 using System.Threading.Tasks;
@@ -736,43 +737,20 @@ namespace SelectionTranslator
             }
 
             // 「取字」：只做 OCR，把识别出的全文直接复制到剪贴板，
-            // 不显示译文、不打开任何窗口。识别在后台异步进行。
+            // 不显示译文、不打开任何窗口。
+            // 位图交给异步任务自行编码并释放，这里立即返回，避免
+            // PNG 压缩卡住 UI 线程、让浮层关闭显得迟钝。
             if (action == ScreenshotCaptureForm.CaptureResult.Ocr)
             {
-                byte[] bytes = null;
-                string failure = "";
-                try
-                {
-                    // 用不含标注的原图识别，避免框线 / 马赛克干扰 OCR。
-                    Bitmap source = rawImage != null ? rawImage : image;
-                    string note;
-                    bytes = BaiduImageTranslator.PrepareImage(
-                        source, out note);
-                }
-                catch (Exception ex)
-                {
-                    Log.Error("准备 OCR 图片失败", ex);
-                    failure = ex.Message;
-                }
-                finally
+                // 用不含标注的原图识别，避免框线 / 马赛克干扰 OCR。
+                Bitmap source = rawImage != null ? rawImage : image;
+                if (!object.ReferenceEquals(source, image))
                 {
                     image.Dispose();
-                    image = null;
-                    if (rawImage != null)
-                    {
-                        rawImage.Dispose();
-                        rawImage = null;
-                    }
                 }
-
-                if (bytes == null)
-                {
-                    ShowOcrBalloon("取字失败", failure, ToolTipIcon.Error);
-                }
-                else
-                {
-                    RecognizeAndCopy(bytes);
-                }
+                image = null;
+                rawImage = null;
+                RecognizeAndCopy(source);
                 return;
             }
 
@@ -864,31 +842,67 @@ namespace SelectionTranslator
         /// <summary>
         /// 异步调用图片翻译接口，只取 OCR 原文写入剪贴板。
         /// 接口本身仍会翻译并计费一次，这里只是忽略译文。
+        ///
+        /// 体验要点：PNG 编码放线程池；识别期间不再弹「正在识别…」气泡
+        /// （两次气泡会被 Windows 通知排队 / 折叠，反而让人以为卡住）；
+        /// 只在结果就绪时弹一次，且文字此时已可直接 Ctrl+V。
         /// </summary>
-        private async void RecognizeAndCopy(byte[] imageBytes)
+        private async void RecognizeAndCopy(Bitmap source)
         {
             if (_ocrInProgress)
             {
+                source.Dispose();
                 return;
             }
             _ocrInProgress = true;
-            ShowOcrBalloon("取字", "正在识别图片中的文字…",
-                ToolTipIcon.Info);
+            Stopwatch watch = Stopwatch.StartNew();
+            string previousTip = _trayIcon.Text;
             try
             {
+                if (!_disposed)
+                {
+                    try
+                    {
+                        _trayIcon.Text = "正在识别文字…";
+                    }
+                    catch
+                    {
+                        // NotifyIcon.Text 有长度限制，失败不影响取字。
+                    }
+                }
+
+                // GDI+ 的 PNG 编码在线程池里做，UI 线程保持流畅。
+                byte[] imageBytes = await Task.Run(() =>
+                {
+                    try
+                    {
+                        string note;
+                        return BaiduImageTranslator.PrepareImage(
+                            source, out note);
+                    }
+                    finally
+                    {
+                        source.Dispose();
+                    }
+                });
+
                 string text =
                     await BaiduImageTranslator.RecognizeTextAsync(
                         _config, imageBytes);
                 Clipboard.SetText(text);
+                watch.Stop();
+
                 string preview = text
                     .Replace("\r", " ").Replace("\n", " ");
                 if (preview.Length > 60)
                 {
                     preview = preview.Substring(0, 60) + "…";
                 }
-                Log.Info("OCR 取字成功，共 " + text.Length + " 字符");
-                ShowOcrBalloon("文字已复制到剪贴板",
-                    "共 " + text.Length + " 字符：" + preview,
+                Log.Info("OCR 取字成功，共 " + text.Length +
+                    " 字符，耗时 " + watch.ElapsedMilliseconds + " ms");
+                ShowOcrBalloon("文字已复制，可直接 Ctrl+V",
+                    "共 " + text.Length + " 字符（" +
+                    watch.ElapsedMilliseconds + " ms）：" + preview,
                     ToolTipIcon.Info);
             }
             catch (Exception ex)
@@ -898,6 +912,17 @@ namespace SelectionTranslator
             }
             finally
             {
+                if (!_disposed)
+                {
+                    try
+                    {
+                        _trayIcon.Text = previousTip;
+                    }
+                    catch
+                    {
+                        // 同上，提示文本恢复失败可忽略。
+                    }
+                }
                 _ocrInProgress = false;
             }
         }
