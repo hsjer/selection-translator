@@ -795,7 +795,7 @@ namespace SelectionTranslator
             AddActionButton(panel, ref x, IconKind.Translate,
                 "翻译图片（译文直接显示在图上，可选中复制）", OnTranslateClicked);
             AddActionButton(panel, ref x, IconKind.Ocr,
-                "只识别文字（不翻译，全文直接复制到剪贴板）", OnOcrClicked);
+                "只识别文字（不翻译，识别后可在图上自己选字复制）", OnOcrClicked);
             AddActionButton(panel, ref x, IconKind.Cancel,
                 "取消 (Esc)", OnCancelClicked);
             AddActionButton(panel, ref x, IconKind.Done,

@@ -79,10 +79,10 @@ namespace SelectionTranslator
         }
 
         /// <summary>
-        /// 「取字」：只识别文字并复制到剪贴板，不翻译、不弹窗。
-        /// 腾讯云路径完全不消耗百度图片翻译额度。
+        /// 「取字」：只识别文字，产出带坐标的分段结果供结果窗口显示热区。
+        /// 腾讯云路径完全不消耗百度图片翻译额度；未配置腾讯云时回退百度。
         /// </summary>
-        public static async Task<string> RecognizeTextAsync(
+        public static async Task<ImageTranslationResult> RecognizeAsync(
             AppConfig config, PreparedPicture picture)
         {
             if (picture == null || picture.Bytes == null)
@@ -91,21 +91,80 @@ namespace SelectionTranslator
                     "没有可识别的图片", "EMPTY_IMAGE");
             }
 
+            ImageTranslationResult result;
             if (picture.UseTencent)
             {
                 OcrResult ocr = await TencentOcr.RecognizeAsync(
                     config, picture.Bytes, picture.Size);
-                if (string.IsNullOrEmpty(ocr.SumText))
-                {
-                    throw new TranslationException(
-                        "图片中没有识别到文字。", "NO_TEXT");
-                }
-                return ocr.SumText;
+                result = BuildOcrOnlyResult(ocr);
+            }
+            else
+            {
+                Log.Info("腾讯云 OCR 未启用，取字回退百度图片翻译");
+                result = await BaiduImageTranslator
+                    .RecognizeResultAsync(config, picture.Bytes);
             }
 
-            Log.Info("腾讯云 OCR 未启用，取字回退百度图片翻译");
-            return await BaiduImageTranslator.RecognizeTextAsync(
-                config, picture.Bytes);
+            string text = result == null ? "" : (result.SumSrc ?? "");
+            if (text.Trim().Length == 0)
+            {
+                throw new TranslationException(
+                    "图片中没有识别到文字。", "NO_TEXT");
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// 「取字」：只识别文字并返回全文（托盘剪贴板路径与自检使用）。
+        /// </summary>
+        public static async Task<string> RecognizeTextAsync(
+            AppConfig config, PreparedPicture picture)
+        {
+            ImageTranslationResult result =
+                await RecognizeAsync(config, picture);
+            return (result.SumSrc ?? "").Trim();
+        }
+
+        /// <summary>腾讯云 OCR 结果 → 结果窗口结构（无译文）。</summary>
+        public static ImageTranslationResult BuildOcrOnlyResult(
+            OcrResult ocr)
+        {
+            ImageTranslationResult result = new ImageTranslationResult();
+            result.Segments = new List<ImageSegmentInfo>();
+            result.PastedImage = null;
+            result.From = "";
+            result.To = "";
+            result.SumDst = "";
+            if (ocr == null)
+            {
+                result.SumSrc = "";
+                return result;
+            }
+            result.SumSrc = (ocr.SumText ?? "").Trim();
+            if (ocr.Lines != null)
+            {
+                for (int i = 0; i < ocr.Lines.Count; i++)
+                {
+                    OcrLine line = ocr.Lines[i];
+                    if (line == null)
+                    {
+                        continue;
+                    }
+                    ImageSegmentInfo segment = new ImageSegmentInfo();
+                    segment.Src = line.Text;
+                    segment.Dst = "";
+                    segment.Rect = line.Rect;
+                    segment.LineCount = 1;
+                    result.Segments.Add(segment);
+                }
+            }
+            if (result.SumSrc.Length == 0 &&
+                result.Segments.Count > 0)
+            {
+                result.SumSrc = TencentOcr.BuildOrderedText(
+                    ocr.Lines, null);
+            }
+            return result;
         }
 
         /// <summary>

@@ -387,12 +387,25 @@ namespace SelectionTranslator
                             prepared.Note);
                         if (mode == Mode.Ocr)
                         {
-                            string text =
-                                PicturePipeline.RecognizeTextAsync(
+                            // 走结果窗口实际使用的入口，确认能拿到坐标分段。
+                            ImageTranslationResult ocrResult =
+                                PicturePipeline.RecognizeAsync(
                                     config, prepared)
                                     .GetAwaiter().GetResult();
-                            log.AppendLine("chars=" + text.Length);
-                            log.AppendLine("text=" + text);
+                            log.AppendLine("chars=" +
+                                (ocrResult.SumSrc ?? "").Length);
+                            log.AppendLine("segments=" +
+                                (ocrResult.Segments == null
+                                    ? 0 : ocrResult.Segments.Count));
+                            for (int i = 0;
+                                i < ocrResult.Segments.Count &&
+                                i < 5; i++)
+                            {
+                                log.AppendLine("[" + i + "] " +
+                                    ocrResult.Segments[i].Rect + " | " +
+                                    ocrResult.Segments[i].Src);
+                            }
+                            log.AppendLine("text=" + ocrResult.SumSrc);
                         }
                         else
                         {

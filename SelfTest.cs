@@ -524,6 +524,80 @@ namespace SelectionTranslator
                     (pipelineResult.PastedImage == null)
                         .ToString(), "True");
 
+                // 仅识别路径：有坐标分段、原文汇总，但没有任何译文。
+                ImageTranslationResult ocrOnlyResult =
+                    PicturePipeline.BuildOcrOnlyResult(tencentParsed);
+                Check(output, ref ok, "ocr-only segment count",
+                    ocrOnlyResult.Segments.Count.ToString(), "3");
+                Check(output, ref ok, "ocr-only segment src",
+                    ocrOnlyResult.Segments[0].Src, "A");
+                Check(output, ref ok, "ocr-only segment has rect",
+                    ocrOnlyResult.Segments[0].Rect,
+                    "0.0 0.0 40.0 20.0");
+                Check(output, ref ok, "ocr-only no translation",
+                    (ocrOnlyResult.Segments[0].Dst.Length == 0 &&
+                        string.IsNullOrEmpty(ocrOnlyResult.SumDst))
+                        .ToString(), "True");
+                Check(output, ref ok, "ocr-only sum src",
+                    ocrOnlyResult.SumSrc.Replace("\r\n", "\\n"),
+                    "A B\\nC");
+                Check(output, ref ok, "ocr-only no pasted image",
+                    (ocrOnlyResult.PastedImage == null).ToString(),
+                    "True");
+
+                // 仅识别窗口：不画译文遮罩，应用结果后默认复制原文。
+                using (Bitmap stub = new Bitmap(120, 80))
+                using (Bitmap rawStub = new Bitmap(120, 80))
+                using (ImageTranslationForm ocrWindow =
+                    new ImageTranslationForm(
+                        delegate { return new AppConfig(); },
+                        stub, rawStub, true))
+                {
+                    const BindingFlags Instance =
+                        BindingFlags.NonPublic |
+                        BindingFlags.Instance;
+                    Check(output, ref ok, "ocr window mode",
+                        ((bool)editorType.GetField(
+                            "_ocrOnly", Instance)
+                            .GetValue(ocrWindow)).ToString(),
+                        "True");
+                    Check(output, ref ok,
+                        "ocr window skips translation overlay",
+                        ((bool)editorType.GetProperty(
+                            "NeedDrawTranslation", Instance)
+                            .GetValue(ocrWindow, null)).ToString(),
+                        "False");
+
+                    editorType.GetMethod("ApplyResult", Instance).Invoke(
+                        ocrWindow,
+                        new object[] { ocrOnlyResult, new Size(120, 80) });
+                    IList ocrBlocks = (IList)editorType.GetField(
+                        "_textBlocks", Instance).GetValue(ocrWindow);
+                    Check(output, ref ok, "ocr window block count",
+                        ocrBlocks.Count.ToString(), "3");
+                    Check(output, ref ok, "ocr window copies source",
+                        ((bool)editorType.GetField(
+                            "_copySourceText", Instance)
+                            .GetValue(ocrWindow)).ToString(),
+                        "True");
+
+                    using (Bitmap surface = new Bitmap(320, 200))
+                    using (Graphics graphics =
+                        Graphics.FromImage(surface))
+                    {
+                        PaintEventArgs paintArgs =
+                            new PaintEventArgs(
+                                graphics,
+                                new Rectangle(0, 0, 320, 200));
+                        editorType.GetMethod(
+                            "OnCanvasPaint", Instance).Invoke(
+                                ocrWindow,
+                                new object[] { ocrWindow, paintArgs });
+                        Check(output, ref ok, "ocr window render",
+                            "True", "True");
+                    }
+                }
+
                 AppConfig fresh = new AppConfig();
                 Check(output, ref ok, "config tencent on by default",
                     fresh.UseTencentOcr.ToString(), "True");

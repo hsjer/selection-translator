@@ -58,6 +58,12 @@ namespace SelectionTranslator
         // ------------------------------------------------------------------
 
         private readonly Func<AppConfig> _configProvider;
+
+        /// <summary>
+        /// true = 只做文字识别（不翻译）：界面只显示原图和可选择的文字块，
+        /// 工具条不出现译文相关按钮。false = 识别 + 翻译。
+        /// </summary>
+        private readonly bool _ocrOnly;
         private Bitmap _image;          // 带标注的截图
         private Bitmap _sourceImage;    // 未标注截图，送 OCR
         private Bitmap _pastedImage;    // 百度返回的整图贴合译文图
@@ -126,27 +132,44 @@ namespace SelectionTranslator
         /// <summary>没有贴合图时，需要在原图文字块上自己画译文。</summary>
         private bool NeedDrawTranslation
         {
-            get { return !(_viewPasted && _pastedImage != null); }
+            get
+            {
+                // 仅识别模式没有译文，不能把原文盖回图上（会遮住原图）。
+                return !_ocrOnly && !(_viewPasted && _pastedImage != null);
+            }
         }
 
         public ImageTranslationForm(
             Func<AppConfig> configProvider, Bitmap image)
-            : this(configProvider, image, null)
+            : this(configProvider, image, null, false)
+        {
+        }
+
+        public ImageTranslationForm(
+            Func<AppConfig> configProvider,
+            Bitmap image,
+            Bitmap sourceImage)
+            : this(configProvider, image, sourceImage, false)
         {
         }
 
         /// <param name="image">带标注的截图，作为显示底图与兜底 OCR 源。</param>
         /// <param name="sourceImage">不含标注的原图，送 OCR 以避免标注干扰识别。</param>
+        /// <param name="ocrOnly">true 时只识别文字，不做翻译。</param>
         public ImageTranslationForm(
             Func<AppConfig> configProvider,
             Bitmap image,
-            Bitmap sourceImage)
+            Bitmap sourceImage,
+            bool ocrOnly)
         {
             _configProvider = configProvider;
             _image = image;
             _sourceImage = sourceImage;
+            _ocrOnly = ocrOnly;
 
-            Text = "图片翻译 — 直接在图上点选 / 框选文字复制";
+            Text = ocrOnly
+                ? "文字识别 — 直接在图上点选 / 框选文字复制"
+                : "图片翻译 — 直接在图上点选 / 框选文字复制";
             FormBorderStyle = FormBorderStyle.Sizable;
             StartPosition = FormStartPosition.CenterScreen;
             MinimizeBox = false;
@@ -229,15 +252,25 @@ namespace SelectionTranslator
             _viewButton = NewButton("显示：译文图", OnViewClicked);
             _contentButton = NewButton("选字复制：原文", OnContentClicked);
             _copySelectedButton = NewButton("复制选中 (Ctrl+C)", OnCopySelectedClicked);
-            _copyAllButton = NewButton("复制全部译文", OnCopyAllClicked);
+            _copyAllButton = NewButton(
+                _ocrOnly ? "复制全部原文" : "复制全部译文",
+                OnCopyAllClicked);
             _copyImageButton = NewButton("复制图片", OnCopyImageClicked);
             _toolbar.Items.Add(new ToolStripSeparator());
             _pinButton = NewButton("钉在桌面", OnPinClicked);
             _saveButton = NewButton("保存 PNG", OnSaveClicked);
             _toolbar.Items.Add(new ToolStripSeparator());
-            _retryButton = NewButton("重新翻译", OnRetryClicked);
+            _retryButton = NewButton(
+                _ocrOnly ? "重新识别" : "重新翻译", OnRetryClicked);
             _fitButton = NewButton("适应窗口", OnFitClicked);
             NewButton("关闭 (Esc)", OnCloseClicked);
+
+            if (_ocrOnly)
+            {
+                // 仅识别模式没有译文图，也没有原文 / 译文切换。
+                _viewButton.Visible = false;
+                _contentButton.Visible = false;
+            }
 
             UpdateUi();
         }
@@ -375,6 +408,12 @@ namespace SelectionTranslator
             Shown += handler;
         }
 
+        /// <summary>仅识别模式：窗口显示后自动识别一次（不翻译）。</summary>
+        public void BeginRecognition()
+        {
+            BeginTranslation();
+        }
+
         private void OnRetryClicked(object sender, EventArgs e)
         {
             StartTranslation();
@@ -383,6 +422,11 @@ namespace SelectionTranslator
         private bool HasCredentials()
         {
             AppConfig config = Config;
+            // 仅识别 + 已配置腾讯云时，不需要百度凭证。
+            if (_ocrOnly && PicturePipeline.UseTencent(config))
+            {
+                return true;
+            }
             return !string.IsNullOrEmpty((config.AppId ?? "").Trim()) &&
                 !string.IsNullOrEmpty(config.GetSecret());
         }
@@ -395,24 +439,40 @@ namespace SelectionTranslator
             }
             if (_sourceImage == null && _image == null)
             {
-                SetStatus("没有可翻译的图片", true);
+                SetStatus(
+                    _ocrOnly ? "没有可识别的图片" : "没有可翻译的图片",
+                    true);
                 return;
             }
             if (!HasCredentials())
             {
                 SetStatus(
-                    "未配置百度翻译 AppID 或密钥，请右键托盘图标打开「设置」填写",
+                    _ocrOnly
+                        ? "未配置识别凭证：请右键托盘图标打开「设置」，填写腾讯云 SecretId / SecretKey（或百度 AppID / 密钥）"
+                        : "未配置百度翻译 AppID 或密钥，请右键托盘图标打开「设置」填写",
                     true);
                 return;
             }
 
             _translating = true;
             _error = "";
-            SetStatus(
-                PicturePipeline.UseTencent(Config)
-                    ? "正在识别（腾讯云）并翻译（百度）…"
-                    : "正在识别并翻译图片（百度图片翻译）…",
-                false);
+            string engine = PicturePipeline.UseTencent(Config)
+                ? "腾讯云"
+                : "百度图片翻译";
+            string busy;
+            if (_ocrOnly)
+            {
+                busy = "正在识别图片中的文字（" + engine + "）…";
+            }
+            else if (PicturePipeline.UseTencent(Config))
+            {
+                busy = "正在识别（腾讯云）并翻译（百度）…";
+            }
+            else
+            {
+                busy = "正在识别并翻译图片（百度图片翻译）…";
+            }
+            SetStatus(busy, false);
 
             try
             {
@@ -425,11 +485,19 @@ namespace SelectionTranslator
                     await System.Threading.Tasks.Task.Run(() =>
                         PicturePipeline.Prepare(ocrSource, config));
 
-                // 腾讯云 OCR + 百度文本翻译；未配置腾讯云时自动回退
-                // 百度图片翻译。两条路径都返回同一结构。
-                ImageTranslationResult result =
-                    await PicturePipeline.TranslateAsync(
+                ImageTranslationResult result;
+                if (_ocrOnly)
+                {
+                    result = await PicturePipeline.RecognizeAsync(
                         config, prepared);
+                }
+                else
+                {
+                    // 腾讯云 OCR + 百度文本翻译；未配置腾讯云时自动回退
+                    // 百度图片翻译。两条路径都返回同一结构。
+                    result = await PicturePipeline.TranslateAsync(
+                        config, prepared);
+                }
 
                 if (IsDisposed)
                 {
@@ -443,15 +511,21 @@ namespace SelectionTranslator
             {
                 if (!IsDisposed)
                 {
-                    SetStatus("翻译失败：" + ex.Message, true);
+                    SetStatus(
+                        (_ocrOnly ? "识别失败：" : "翻译失败：") + ex.Message,
+                        true);
                 }
             }
             catch (Exception ex)
             {
-                Log.Error("图片翻译结果窗口翻译失败", ex);
+                Log.Error(
+                    _ocrOnly ? "图片文字识别失败" : "图片翻译结果窗口翻译失败",
+                    ex);
                 if (!IsDisposed)
                 {
-                    SetStatus("翻译失败：" + ex.Message, true);
+                    SetStatus(
+                        (_ocrOnly ? "识别失败：" : "翻译失败：") + ex.Message,
+                        true);
                 }
             }
             finally
@@ -484,14 +558,36 @@ namespace SelectionTranslator
 
             BuildTextBlocks(result);
 
-            // 运行时默认复制译文；自检（不走翻译路径）保持默认原文，
-            // 两条路径的期望值在 SelfTest 中分别断言。
-            _copySourceText = false;
+            // 运行时翻译默认复制译文；仅识别模式只有原文。
+            // 自检（不走翻译路径）保持默认原文。
+            _copySourceText = _ocrOnly;
 
             _autoFit = true;
             FitToWindow();
 
             int count = _textBlocks.Count;
+            if (_ocrOnly)
+            {
+                int chars = (result.SumSrc ?? "").Length;
+                if (count == 0)
+                {
+                    SetStatus(
+                        "识别完成，共 " + chars +
+                        " 字符，但没有返回文字坐标，无法在图上框选；" +
+                        "请点「复制全部原文」。",
+                        false);
+                }
+                else
+                {
+                    SetStatus(
+                        "识别到 " + count + " 段文字（共 " + chars +
+                        " 字符）。点选或框选文字块即可复制；" +
+                        "Ctrl+A 全选复制，Ctrl+C 复制选中，Esc 关闭。",
+                        false);
+                }
+                return;
+            }
+
             string tip = _pastedImage != null
                 ? "译文已贴合到图片上" : "译文已叠加到图片上";
             SetStatus(
@@ -1154,6 +1250,16 @@ namespace SelectionTranslator
             {
                 return;
             }
+            if (_ocrOnly)
+            {
+                string origin = _lastResult.SumSrc;
+                if (string.IsNullOrEmpty(origin))
+                {
+                    origin = BuildAllText(true);
+                }
+                TrySetClipboardText(origin, "已复制全部原文");
+                return;
+            }
             string text = _lastResult.SumDst;
             if (string.IsNullOrEmpty(text))
             {
@@ -1214,10 +1320,11 @@ namespace SelectionTranslator
             }
             using (SaveFileDialog dialog = new SaveFileDialog())
             {
-                dialog.Title = "保存翻译结果图片";
+                dialog.Title = _ocrOnly
+                    ? "保存识别的截图" : "保存翻译结果图片";
                 dialog.Filter = "PNG 图片 (*.png)|*.png";
                 dialog.DefaultExt = "png";
-                dialog.FileName = "翻译截图_" +
+                dialog.FileName = (_ocrOnly ? "识别截图_" : "翻译截图_") +
                     DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".png";
                 if (dialog.ShowDialog(this) != DialogResult.OK)
                 {

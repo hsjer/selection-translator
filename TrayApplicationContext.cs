@@ -38,8 +38,6 @@ namespace SelectionTranslator
         private ToolStripMenuItem _closePinsItem;
         // 防止热键在浮层显示期间重复触发、嵌套打开第二个截图会话。
         private bool _captureInProgress;
-        // 「取字」是异步网络请求，期间不允许重复发起。
-        private bool _ocrInProgress;
         private SettingsForm _settingsForm;
         private bool _started;
         private bool _busy;
@@ -702,6 +700,11 @@ namespace SelectionTranslator
                 _captureInProgress = false;
             }
 
+            if (finishMs > 0)
+            {
+                Log.Info("截图浮层收尾耗时 " + finishMs + " ms");
+            }
+
             if (image == null || _disposed)
             {
                 if (image != null)
@@ -738,23 +741,9 @@ namespace SelectionTranslator
                 return;
             }
 
-            // 「取字」：只做 OCR，把识别出的全文直接复制到剪贴板，
-            // 不显示译文、不打开任何窗口。
-            // 位图交给异步任务自行编码并释放，这里立即返回，避免
-            // PNG 压缩卡住 UI 线程、让浮层关闭显得迟钝。
-            if (action == ScreenshotCaptureForm.CaptureResult.Ocr)
-            {
-                // 用不含标注的原图识别，避免框线 / 马赛克干扰 OCR。
-                Bitmap source = rawImage != null ? rawImage : image;
-                if (!object.ReferenceEquals(source, image))
-                {
-                    image.Dispose();
-                }
-                image = null;
-                rawImage = null;
-                RecognizeAndCopy(source, finishMs);
-                return;
-            }
+            // 「取字」与「译」都打开同一个结果窗口，区别只是取字不翻译：
+            // 用户可以在图上自己点选 / 框选要复制的文字，而不是一次性
+            // 把全文塞进剪贴板。
 
             // 「钉在桌面」：把合成图放进无边框置顶小窗，不打开编辑器。
             if (action == ScreenshotCaptureForm.CaptureResult.Pin)
@@ -786,8 +775,11 @@ namespace SelectionTranslator
                 return;
             }
 
-            // 只有「翻译图片」才需要窗口；其余结果在浮层内已处理完。
-            if (action != ScreenshotCaptureForm.CaptureResult.Translate)
+            // 「翻译图片」与「取字」都需要结果窗口；其余结果在浮层内已处理完。
+            bool ocrOnly =
+                action == ScreenshotCaptureForm.CaptureResult.Ocr;
+            if (action != ScreenshotCaptureForm.CaptureResult.Translate &&
+                !ocrOnly)
             {
                 image.Dispose();
                 if (rawImage != null)
@@ -809,7 +801,7 @@ namespace SelectionTranslator
                 _translationWindow =
                     new ImageTranslationForm(
                         delegate { return _config; },
-                        image, rawImage);
+                        image, rawImage, ocrOnly);
                 // 位图所有权移交给结果窗口，由它在关闭时释放。
                 image = null;
                 rawImage = null;
@@ -817,13 +809,20 @@ namespace SelectionTranslator
                 {
                     _translationWindow = null;
                 };
-                _translationWindow.BeginTranslation();
+                if (ocrOnly)
+                {
+                    _translationWindow.BeginRecognition();
+                }
+                else
+                {
+                    _translationWindow.BeginTranslation();
+                }
                 _translationWindow.Show();
                 _translationWindow.Activate();
             }
             catch (Exception ex)
             {
-                Log.Error("打开图片翻译结果失败", ex);
+                Log.Error("打开图片结果窗口失败", ex);
                 if (_translationWindow != null &&
                     !_translationWindow.IsDisposed)
                 {
@@ -839,119 +838,6 @@ namespace SelectionTranslator
                     rawImage.Dispose();
                 }
             }
-        }
-
-        /// <summary>
-        /// 只识别图中文字并写入剪贴板。默认走腾讯云 GeneralAccurateOCR，
-        /// 完全不调用翻译接口；未配置腾讯云时回退百度图片翻译。
-        ///
-        /// 体验要点：PNG 编码放线程池；识别期间不再弹「正在识别…」气泡
-        /// （两次气泡会被 Windows 通知排队 / 折叠，反而让人以为卡住）；
-        /// 只在结果就绪时弹一次，且文字此时已可直接 Ctrl+V。
-        /// </summary>
-        private async void RecognizeAndCopy(
-            Bitmap source, long finishMs)
-        {
-            if (_ocrInProgress)
-            {
-                source.Dispose();
-                return;
-            }
-            _ocrInProgress = true;
-            Stopwatch watch = Stopwatch.StartNew();
-            string previousTip = _trayIcon.Text;
-            try
-            {
-                if (!_disposed)
-                {
-                    try
-                    {
-                        _trayIcon.Text = "正在识别文字…";
-                    }
-                    catch
-                    {
-                        // NotifyIcon.Text 有长度限制，失败不影响取字。
-                    }
-                }
-
-                // GDI+ 的 PNG 编码在线程池里做，UI 线程保持流畅。
-                PreparedPicture prepared = await Task.Run(() =>
-                {
-                    try
-                    {
-                        return PicturePipeline.Prepare(
-                            source, _config);
-                    }
-                    finally
-                    {
-                        source.Dispose();
-                    }
-                });
-
-                string text =
-                    await PicturePipeline.RecognizeTextAsync(
-                        _config, prepared);
-                Clipboard.SetText(text);
-                watch.Stop();
-
-                string preview = text
-                    .Replace("\r", " ").Replace("\n", " ");
-                if (preview.Length > 60)
-                {
-                    preview = preview.Substring(0, 60) + "…";
-                }
-                string engine = prepared.UseTencent
-                    ? "腾讯云 OCR" : "百度图片翻译";
-                Log.Info("OCR 取字成功，共 " + text.Length +
-                    " 字符，引擎=" + engine +
-                    " 请求耗时=" + watch.ElapsedMilliseconds +
-                    " ms，浮层收尾=" + finishMs +
-                    " ms，端到端=" +
-                    (watch.ElapsedMilliseconds + finishMs) + " ms");
-                ShowOcrBalloon("文字已复制，可直接 Ctrl+V",
-                    "共 " + text.Length + " 字符（" +
-                    (watch.ElapsedMilliseconds + finishMs) +
-                    " ms）：" + preview,
-                    ToolTipIcon.Info);
-            }
-            catch (Exception ex)
-            {
-                Log.Error("OCR 取字失败", ex);
-                ShowOcrBalloon("取字失败", ex.Message, ToolTipIcon.Error);
-            }
-            finally
-            {
-                if (!_disposed)
-                {
-                    try
-                    {
-                        _trayIcon.Text = previousTip;
-                    }
-                    catch
-                    {
-                        // 同上，提示文本恢复失败可忽略。
-                    }
-                }
-                _ocrInProgress = false;
-            }
-        }
-
-        private void ShowOcrBalloon(
-            string title, string text, ToolTipIcon icon)
-        {
-            if (_disposed)
-            {
-                return;
-            }
-            if (string.IsNullOrEmpty(text))
-            {
-                text = "请稍后重试";
-            }
-            if (text.Length > 180)
-            {
-                text = text.Substring(0, 180) + "…";
-            }
-            _trayIcon.ShowBalloonTip(1800, title, text, icon);
         }
 
         /// <summary>

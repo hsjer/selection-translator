@@ -191,6 +191,18 @@ namespace SelectionTranslator
         public static async Task<string> RecognizeTextAsync(
             AppConfig config, byte[] imageBytes)
         {
+            ImageTranslationResult result =
+                await RecognizeResultAsync(config, imageBytes);
+            return BuildOcrText(result);
+        }
+
+        /// <summary>
+        /// 与 RecognizeTextAsync 相同的请求（paste=0），但保留每段的 src 和
+        /// rect，供结果窗口在图上做「可选字」热区；译文被清空。
+        /// </summary>
+        public static async Task<ImageTranslationResult> RecognizeResultAsync(
+            AppConfig config, byte[] imageBytes)
+        {
             if (config == null)
             {
                 throw new TranslationException("配置为空", "NO_CONFIG");
@@ -258,7 +270,27 @@ namespace SelectionTranslator
                     "图片中没有识别到文字，请确认截图区域内有清晰文本。",
                     "NO_TEXT");
             }
-            return text;
+
+            // 「取字」只需要原文：清掉译文与贴合图，避免结果窗口
+            // 把译文当正文画到图上。
+            if (result != null)
+            {
+                result.SumDst = "";
+                result.PastedImage = null;
+                if (result.Segments != null)
+                {
+                    for (int i = 0; i < result.Segments.Count; i++)
+                    {
+                        ImageSegmentInfo segment = result.Segments[i];
+                        if (segment != null)
+                        {
+                            segment.Dst = "";
+                            segment.LineCount = 1;
+                        }
+                    }
+                }
+            }
+            return result;
         }
 
         /// <summary>
