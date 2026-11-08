@@ -556,12 +556,13 @@ namespace SelectionTranslator
             string imageMd5 = Md5OfBytes(imageBytes);
             string sign = BuildImageSign(appId, imageMd5, salt, secret);
 
-            // 便于排查 54001：只记录非敏感字段，绝不写入密钥。
-            Log.Info("图片翻译请求：appid=" + appId +
-                " salt=" + salt + " imageMd5=" + imageMd5 +
+            // 便于排查 54001：只记录非敏感字段，
+            // 绝不写入 AppID / 密钥 / 签名值。
+            Log.Info("图片翻译请求：salt=" + salt +
+                " imageMd5=" + imageMd5 +
                 " imageBytes=" + imageBytes.Length +
                 " from=" + from + " to=" + to +
-                " paste=" + paste + " sign=" + sign);
+                " paste=" + paste);
 
             Dictionary<string, string> fields = new Dictionary<string, string>();
             fields["from"] = from;

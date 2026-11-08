@@ -62,7 +62,10 @@ namespace SelectionTranslator
                 ServicePointManager.SecurityProtocol |=
                     SecurityProtocolType.Tls12;
                 AppConfig config = ConfigStore.Load();
-                log.AppendLine("appid=" + config.AppId);
+                // 诊断日志只记录「是否配置」，绝不写出 AppID / 密钥明文。
+                log.AppendLine("hasBaiduCredentials=" +
+                    (!string.IsNullOrEmpty(config.AppId) &&
+                     !string.IsNullOrEmpty(config.GetSecret())));
                 if (string.IsNullOrEmpty(config.AppId) ||
                     string.IsNullOrEmpty(config.GetSecret()))
                 {
@@ -712,13 +715,14 @@ namespace SelectionTranslator
 
                 AppConfig config = ConfigStore.Load();
                 log.AppendLine("mode=" + mode);
-                log.AppendLine("baiduAppId=" + config.AppId);
-                log.AppendLine("tencentSecretId=" +
-                    (config.TencentSecretId ?? ""));
+                // 只输出布尔状态：SecretId 属于账号标识，同样不写进日志。
+                log.AppendLine("hasBaiduCredentials=" +
+                    (!string.IsNullOrEmpty(config.AppId) &&
+                     !string.IsNullOrEmpty(config.GetSecret())));
+                log.AppendLine("hasTencentCredentials=" +
+                    config.HasTencentCredentials());
                 log.AppendLine("useTencentOcr=" +
                     config.UseTencentOcr);
-                log.AppendLine("hasTencentKey=" +
-                    config.HasTencentCredentials());
                 log.AppendLine("target=" +
                     config.ImageTargetLanguage);
                 log.AppendLine("pipeline=" +

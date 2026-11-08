@@ -142,6 +142,13 @@ $env:ST_OUTPUT_NAME = "_next.exe"; .\build.ps1
 .\dist\_next.exe --selftest
 ```
 
+## 凭证与隐私
+
+- **密钥不进代码、也不进 exe**：百度 AppID / 密钥、腾讯云 SecretId / SecretKey 只存在本机 `%APPDATA%\SelectionTranslator\config.json`，密钥用 Windows DPAPI 加密（绑定当前账户，换台电脑解不开）。`release\SelectionTranslator.exe` 是**零预置凭证**的干净构建，谁下载都要自己填。
+- **日志不写凭证**：诊断命令只输出 `hasBaiduCredentials=True/False` 这类布尔状态，运行日志不记录 AppID、SecretId、密钥或签名值。
+- 清空本机凭证：把 `config.json` 里 `AppId`、`SecretProtected`、`TencentSecretId`、`TencentSecretKeyProtected` 四个字段置空（或直接删掉文件，其余设置会回默认），下次启动即为未配置状态。
+- 仓库不含 `config.json` 和任何日志（`dist/`、`.workbuddy/` 已被 `.gitignore` 排除）；请勿把本机 `config.json` 或 `%APPDATA%\SelectionTranslator\*.txt` 提交、打包或截图外发。
+
 ## 首次使用
 
 1. 打开 [百度翻译开放平台](https://fanyi-api.baidu.com/manage/developer)，注册并创建应用，开通「通用翻译」，拿到 **AppID** 和 **密钥**。
