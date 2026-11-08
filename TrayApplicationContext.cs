@@ -140,7 +140,7 @@ namespace SelectionTranslator
 
             // 资源管理器右键菜单的开关。默认开启，首次启动就会写进 HKCU。
             _shellMenuItem = new ToolStripMenuItem(
-                "图片右键菜单：使用" + AppInfo.Name + "打开");
+                "图片右键菜单 / 打开方式：" + AppInfo.Name);
             _shellMenuItem.Click += OnShellMenuClicked;
             _trayMenu.Items.Add(_shellMenuItem);
             SyncShellMenu();
@@ -1523,9 +1523,11 @@ namespace SelectionTranslator
                     2600,
                     AppInfo.Name,
                     want
-                        ? "已添加。在任意图片上右键，选「" +
-                            ShellIntegration.MenuText + "」。"
-                        : "已移除。图片右键菜单里不再显示这一项。",
+                        ? "已添加。图片右键可直接选「" +
+                            ShellIntegration.MenuText +
+                            "」，或在「打开方式」里选「" +
+                            AppInfo.Name + "」。"
+                        : "已移除。右键菜单和「打开方式」里都不再显示。",
                     ToolTipIcon.Info);
             }
             catch

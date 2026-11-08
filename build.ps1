@@ -46,6 +46,10 @@ New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
 # 允许通过环境变量临时指定输出名，便于在程序运行时先编译到旁路口径做验证。
 # 产品对外叫「工具侠」，可执行文件也用同名，任务管理器里一眼能认出来。
 $exeName = "工具侠.exe"
+# ST_VERIFY_NAME 用于旁路验证，避免覆盖正在运行的正式产物。
+if ($env:ST_VERIFY_NAME) {
+    $exeName = $env:ST_VERIFY_NAME
+}
 if ($env:ST_OUTPUT_NAME) {
     $exeName = $env:ST_OUTPUT_NAME
 }

@@ -331,6 +331,69 @@ namespace SelectionTranslator
         public const int WS_EX_TRANSPARENT = 0x00000020;
         public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
 
+        private const int SHCNE_ASSOCCHANGED = 0x08000000;
+        private const uint SHCNF_IDLIST = 0x0000;
+
+        [DllImport("shell32.dll")]
+        private static extern void SHChangeNotify(
+            int eventId,
+            uint flags,
+            IntPtr item1,
+            IntPtr item2);
+
+        [DllImport("Shlwapi.dll", CharSet = CharSet.Unicode)]
+        private static extern int AssocQueryString(
+            uint flags,
+            uint str,
+            string assoc,
+            string extra,
+            StringBuilder output,
+            ref uint size);
+
+        /// <summary>
+        /// 让 Shell 自己解析一个 ProgID，用来验证「打开方式」注册是否真的
+        /// 被 Windows 认出来（比直接读注册表可靠）。
+        /// </summary>
+        public static string QueryAssociation(uint str, string assoc)
+        {
+            try
+            {
+                uint size = 1024;
+                StringBuilder buffer = new StringBuilder((int)size);
+                int hr = AssocQueryString(
+                    0, str, assoc, "open", buffer, ref size);
+                if (hr != 0)
+                {
+                    return "HRESULT 0x" + hr.ToString("X8");
+                }
+                return buffer.ToString();
+            }
+            catch (Exception ex)
+            {
+                return "ERROR " + ex.Message;
+            }
+        }
+
+        /// <summary>
+        /// 通知资源管理器「文件关联变了」。写 OpenWithProgids 之后不调这个，
+        /// 「打开方式」列表往往要等重启 Explorer 才刷新。
+        /// </summary>
+        public static void NotifyAssociationChanged()
+        {
+            try
+            {
+                SHChangeNotify(
+                    SHCNE_ASSOCCHANGED,
+                    SHCNF_IDLIST,
+                    IntPtr.Zero,
+                    IntPtr.Zero);
+            }
+            catch
+            {
+                // 老系统上没有这个导出时忽略，重启 Explorer 也能生效。
+            }
+        }
+
         /// <summary>
         /// 让无边框窗口在 Windows 11 上使用系统圆角（Windows 10 会直接
         /// 返回错误码，忽略即可），同时把弹窗的标题栏设成深色。

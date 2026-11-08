@@ -1148,6 +1148,31 @@ namespace SelectionTranslator
                 Check(output, ref ok, "shell trim quotes",
                     ShellIntegration.TrimQuotes("\"x y\""), "x y");
 
+                // ---- 「打开方式(H)」注册用的纯函数 ----
+                Check(output, ref ok, "openwith progid",
+                    ShellIntegration.ProgId, "ToolboxHero.Image");
+                Check(output, ref ok, "openwith extension count",
+                    ShellIntegration.ImageExtensions.Length.ToString(),
+                    "8");
+                Check(output, ref ok, "openwith first extension",
+                    ShellIntegration.ImageExtensions[0], ".png");
+                Check(output, ref ok, "openwith last extension",
+                    ShellIntegration.ImageExtensions[7], ".webp");
+                Check(output, ref ok, "openwith progids path",
+                    ShellIntegration.OpenWithProgidsPath(".jpg"),
+                    @"Software\Classes\.jpg\OpenWithProgids");
+                Check(output, ref ok, "openwith fileexts path",
+                    ShellIntegration.FileExtsProgidsPath(".gif"),
+                    @"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.gif\OpenWithProgids");
+                Check(output, ref ok, "openwith app file name",
+                    ShellIntegration.AppFileName(
+                        @"C:\a b\工具侠.exe"),
+                    "工具侠.exe");
+                Check(output, ref ok, "openwith app key path",
+                    ShellIntegration.AppKeyPath(
+                        @"C:\a b\工具侠.exe"),
+                    @"Software\Classes\Applications\工具侠.exe");
+
                 // 真的写一次 HKCU 再读回来，最后恢复成跑自检之前的模样。
                 bool shellWasEnabled = ShellIntegration.IsEnabled();
                 string shellError;
@@ -1163,11 +1188,30 @@ namespace SelectionTranslator
                         "True");
                     Check(output, ref ok, "shell register enabled",
                         ShellIntegration.IsEnabled().ToString(), "True");
+                    Check(output, ref ok, "openwith register command",
+                        ShellIntegration.GetOpenWithCommand(),
+                        ShellIntegration.BuildCommand(
+                            @"C:\临时 目录\工具侠.exe"));
+                    Check(output, ref ok, "openwith register enabled",
+                        ShellIntegration.IsOpenWithEnabled().ToString(),
+                        "True");
+                    Check(output, ref ok, "openwith register candidate",
+                        ShellIntegration.HasProgIdValue(".png").ToString(),
+                        "True");
+                    Check(output, ref ok, "openwith register webp",
+                        ShellIntegration.HasProgIdValue(".webp").ToString(),
+                        "True");
                     Check(output, ref ok, "shell unregister",
                         ShellIntegration.SetEnabled(false, null,
                             out shellError).ToString(), "True");
                     Check(output, ref ok, "shell unregister disabled",
                         ShellIntegration.IsEnabled().ToString(), "False");
+                    Check(output, ref ok, "openwith unregister disabled",
+                        ShellIntegration.IsOpenWithEnabled().ToString(),
+                        "False");
+                    Check(output, ref ok, "openwith unregister candidate",
+                        ShellIntegration.HasProgIdValue(".png").ToString(),
+                        "False");
                 }
                 finally
                 {

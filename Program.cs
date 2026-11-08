@@ -177,6 +177,12 @@ namespace SelectionTranslator
                 return;
             }
 
+            if (Array.IndexOf(args, "--assocprobe") >= 0)
+            {
+                ImageTest.RunAssocProbe();
+                return;
+            }
+
             int viewerPreviewIndex = Array.IndexOf(args, "--viewerpreview");
             if (viewerPreviewIndex >= 0)
             {

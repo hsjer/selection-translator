@@ -132,9 +132,11 @@ Windows 没有公开接口可以往**所有应用**的文本右键菜单里统�
 
 > 压缩固定输出 JPEG（体积收益最大）；动图 GIF 只处理第一帧；不支持 WebP / HEIC / AVIF（系统 GDI+ 没有对应编解码器，硬塞第三方库会破坏「单文件」）。
 
-### 图片右键菜单
+### 图片右键菜单 / 打开方式
 
-第一次运行（或启动托盘）时，程序会在 **当前用户** 的注册表里挂一项右键菜单：
+第一次运行（或启动托盘）时，程序会在 **当前用户** 的注册表里挂**两处**入口：右键菜单里的「使用工具侠打开图片」，以及「**打开方式(H)**」子菜单里的「**工具侠**」一行（也可在「选择其他应用」里找到）。两处共用托盘里同一个开关，都**不改文件的默认打开方式**。
+
+#### 1. 经典右键菜单
 
 ```text
 HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\image\shell\ToolboxHero
@@ -144,18 +146,42 @@ HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\image\shell\ToolboxHer
   command\(默认)     = "<程序路径>" "%1"
 ```
 
-- 挂在 `SystemFileAssociations\image` 下，所以 png / jpg / jpeg / bmp / gif / tif / tiff 这些「图片」类型都能看到，**不影响**文件关联和「打开方式」列表；
-- **只写 HKCU，不需要管理员权限**，也不会弹 UAC；关掉开关就整棵子键删掉，系统里不留痕迹；
-- 托盘菜单「图片右键菜单：使用工具侠打开」可以随时开关（前面带勾），状态每次都从注册表回读；
-- 程序被挪了目录、改了名字，下次启动托盘或下次从右键菜单打开图片时会自动把路径修正过来；
-- **Windows 11 提示**：这个位置属于经典菜单，Win11 默认收在「显示更多选项」（`Shift+F10` 或右键 → 显示更多选项）里。想让它出现在 Win11 新菜单的第一层，需要注册 `IExplorerCommand` COM 组件，代价是要写一堆 COM 注册项，跟「单文件绿色」冲突，所以没做。
+- 挂在 `SystemFileAssociations\image` 下，所以 png / jpg / jpeg / bmp / gif / tif / tiff 这些「图片」类型都能看到；
+- **Windows 11 提示**：这一项属于经典菜单，Win11 默认收在「显示更多选项」（`Shift+F10` 或右键 → 显示更多选项）里。想让它出现在 Win11 新菜单的第一层，需要注册 `IExplorerCommand` COM 组件，跟「单文件绿色」冲突，所以没做 —— 但下方的「打开方式」入口不受这个限制。
+
+#### 2. 「打开方式(H)」子菜单
+
+按 Windows 的「应用程序注册」规范写三处，缺一个列表里就可能不显示：
+
+```text
+HKCU\Software\Classes\ToolboxHero.Image
+  (默认)                     = 工具侠 图片文件
+  Application\ApplicationName = 工具侠      ← 列表里显示的就是这一行字
+  DefaultIcon\(默认)          = "<程序路径>",0
+  shell\open\command\(默认)   = "<程序路径>" "%1"
+
+HKCU\Software\Classes\Applications\工具侠.exe
+  FriendlyAppName           = 工具侠
+  shell\open\command\(默认)   = "<程序路径>" "%1"
+  SupportedTypes            = .png .jpg .jpeg .bmp .gif .tif .tiff .webp
+
+HKCU\Software\Classes\.png\OpenWithProgids      → 追加值 ToolboxHero.Image
+HKCU\...\Explorer\FileExts\.png\OpenWithProgids → 追加值 ToolboxHero.Image
+（8 种图片扩展名各写一次）
+```
+
+- 只往候选表里**追加自己那一个值**，别人注册的 ProgID 和 `UserChoice`（默认程序）一律不动；关掉开关只删自己的值和键；
+- 写完调 `SHChangeNotify(SHCNE_ASSOCCHANGED)` 通知资源管理器刷新，通常右键立刻就能看到。偶尔 Explorer 缓存顽固，重启资源管理器或重新登录即可；
+- **只写 HKCU，不需要管理员权限**，也不弹 UAC；托盘菜单「图片右键菜单 / 打开方式：工具侠」可以随时开关（前面带勾），状态每次都从注册表回读；
+- 程序被挪了目录、改了名字，下次启动托盘会自动把两处路径一起修正过来。
 
 等价的命令行（调试或脚本里用）：
 
 ```powershell
-.\工具侠.exe --shellon     # 注册右键菜单（指向当前 exe）
-.\工具侠.exe --shelloff    # 移除
-.\工具侠.exe --shellprobe  # 打印当前注册状态
+.\工具侠.exe --shellon      # 注册两处入口（指向当前 exe）
+.\工具侠.exe --shelloff     # 两处一起移除
+.\工具侠.exe --shellprobe   # 打印两处的注册状态、8 个扩展名的候选表
+.\工具侠.exe --assocprobe   # 让 Shell 亲自解析 ProgID，确认「打开方式」认得它
 ```
 
 ## 功能
@@ -176,7 +202,7 @@ HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\image\shell\ToolboxHer
 - 未配置腾讯云凭证时自动回退百度图片翻译，功能不中断
 - 图片工具：深色轻量查看器，就地转格式（PNG/JPG/BMP/GIF/TIFF）、压缩、改尺寸、重命名、旋转、裁剪、另存、复制，可滚动缩放/拖动平移、同目录循环切换
 - 资源管理器集成：在任意图片上右键 →「使用工具侠打开图片」（只写 HKCU，可随时开关，不抢文件关联）
-- 托盘菜单：翻译选中文本、手动翻译、截图翻译…、语音识别（按住说话）、翻译剪贴板、打开图片…、图片右键菜单、关闭所有桌面贴图、设置、开机启动、退出
+- 托盘菜单：翻译选中文本、手动翻译、截图翻译…、语音识别（按住说话）、翻译剪贴板、打开图片…、图片右键菜单 / 打开方式、关闭所有桌面贴图、设置、开机启动、退出
 - 开机自动启动写在 `HKCU\...\Run\工具侠`；每次启动都会校正路径，并清掉任务管理器 / 启动管理工具写下的「已禁用」标记，所以程序换目录、改名字、被优化软件关掉过，下次手动启动一次就自动修好
 - 百度翻译 API（通用文本翻译，回退时含图片翻译）+ 腾讯云 OCR（GeneralAccurateOCR）+ 腾讯云语音识别（SentenceRecognition），全部自行实现 TC3-HMAC-SHA256 签名
 - 自动目标语言：中文→英文，其他→中文；也可固定目标语言（文本与图片分别设置）
@@ -356,7 +382,7 @@ Content-Type: application/json; charset=utf-8
 Get-Content "$env:APPDATA\SelectionTranslator\selftest.txt"
 ```
 
-自检（共 217 项）覆盖文本翻译 MD5 签名、自动目标语言判断、DPAPI 加解密、文本分段，图片翻译的 MD5 签名、固定参数（cuid/mac）、语种映射与目标语种校验，截图浮层的构造与选区导出冒烟测试，exe / 托盘图标资源，结果窗口的 `rect` 解析、按阅读顺序拼接选字文本、贴合图解码与画布绘制冒烟测试，**TC3-HMAC-SHA256 签名固定向量**、腾讯云 OCR 响应解析（含 `Polygon` 回退、鉴权错误映射）、阅读顺序、目标语种归一化、管道结果拼装、两套 `Prepare` 路径。语音识别部分新增：WAV 头字节级校验（RIFF/WAVE/fmt/data、采样率、data 长度、时长换算）、引擎码归一与列表、`asr` 与 `ocr` 签名必须不同、`SentenceRecognition` 响应与错误码解析、录音浮条（含完成态）的渲染冒烟测试、焦点默认放行分类（未知控件类名 / 资源管理器 / 空类名都放行，桌面 / 菜单 / 无效窗口拦截）、上屏闸门校验、`KEYEVENTF_UNICODE` 输入序列构造、换行/控制字符归一、上屏方式归一与设置窗口上屏方式下拉，以及仅识别模式（结果无译文、窗口不绘制译文遮罩、默认复制原文）的回归用例。图片工具部分新增：格式/扩展名归一与中文标签、体积与位数格式化、路径中间省略、PNG 落盘→读回→尺寸校验、缩放 / 旋转 / 裁剪（含越界返回 null）、32 位透明图转 JPEG 自动铺白、同名不覆盖的 `(1)` 命名、带后缀命名、重命名成功与三类失败原因、同目录图片数量与自然序、以及查看器构造冒烟测试。窗口拾取部分新增：桌面 / 工作窗类名识别、最小可截尺寸、越界夹取（含完全在屏幕外返回空）。图标部分新增：7 档尺寸清单、16px 实际像素有不透明内容且四角透明、ICO 文件头与帧数。改名与右键菜单部分新增：显示名 / 内部标识、菜单文案与注册表路径、带空格路径的命令行加引号与去引号、空路径、图标值格式，以及**真的往 HKCU 写一次再删掉**的注册 / 读回 / 反注册往返测试（跑完自动恢复原状态），以及开机启动命令行加引号与 Run 键路径。
+自检（共 231 项）覆盖文本翻译 MD5 签名、自动目标语言判断、DPAPI 加解密、文本分段，图片翻译的 MD5 签名、固定参数（cuid/mac）、语种映射与目标语种校验，截图浮层的构造与选区导出冒烟测试，exe / 托盘图标资源，结果窗口的 `rect` 解析、按阅读顺序拼接选字文本、贴合图解码与画布绘制冒烟测试，**TC3-HMAC-SHA256 签名固定向量**、腾讯云 OCR 响应解析（含 `Polygon` 回退、鉴权错误映射）、阅读顺序、目标语种归一化、管道结果拼装、两套 `Prepare` 路径。语音识别部分新增：WAV 头字节级校验（RIFF/WAVE/fmt/data、采样率、data 长度、时长换算）、引擎码归一与列表、`asr` 与 `ocr` 签名必须不同、`SentenceRecognition` 响应与错误码解析、录音浮条（含完成态）的渲染冒烟测试、焦点默认放行分类（未知控件类名 / 资源管理器 / 空类名都放行，桌面 / 菜单 / 无效窗口拦截）、上屏闸门校验、`KEYEVENTF_UNICODE` 输入序列构造、换行/控制字符归一、上屏方式归一与设置窗口上屏方式下拉，以及仅识别模式（结果无译文、窗口不绘制译文遮罩、默认复制原文）的回归用例。图片工具部分新增：格式/扩展名归一与中文标签、体积与位数格式化、路径中间省略、PNG 落盘→读回→尺寸校验、缩放 / 旋转 / 裁剪（含越界返回 null）、32 位透明图转 JPEG 自动铺白、同名不覆盖的 `(1)` 命名、带后缀命名、重命名成功与三类失败原因、同目录图片数量与自然序、以及查看器构造冒烟测试。窗口拾取部分新增：桌面 / 工作窗类名识别、最小可截尺寸、越界夹取（含完全在屏幕外返回空）。图标部分新增：7 档尺寸清单、16px 实际像素有不透明内容且四角透明、ICO 文件头与帧数。改名与右键菜单部分新增：显示名 / 内部标识、菜单文案与注册表路径、带空格路径的命令行加引号与去引号、空路径、图标值格式，以及**真的往 HKCU 写一次再删掉**的注册 / 读回 / 反注册往返测试（跑完自动恢复原状态），开机启动命令行加引号与 Run 键路径。「打开方式」部分新增：ProgID / 8 种扩展名清单、两条候选表路径、Applications 键名、ProgID 命令行读回、候选值写入与反注册后不残留（同样是真的写一次 HKCU 再恢复）。
 
 真实请求诊断（使用当前已保存的凭证，不输出密钥）：
 
@@ -416,11 +442,13 @@ Get-Content "$env:APPDATA\SelectionTranslator\uipreview.txt"
 .\dist\工具侠.exe --viewerpreview
 Get-Content "$env:APPDATA\SelectionTranslator\viewerpreview.txt"
 
-# 图片右键菜单：注册 / 移除 / 查看当前状态
+# 图片右键菜单 + 打开方式：注册 / 移除 / 查看状态 / 让 Shell 解析验证
 .\dist\工具侠.exe --shellon
 .\dist\工具侠.exe --shelloff
 .\dist\工具侠.exe --shellprobe
 Get-Content "$env:APPDATA\SelectionTranslator\shellprobe.txt"
+.\dist\工具侠.exe --assocprobe
+Get-Content "$env:APPDATA\SelectionTranslator\assocprobe.txt"
 
 # 开机启动项：看它到底指向哪个 exe、是否被禁用
 .\dist\工具侠.exe --startupprobe
@@ -487,10 +515,10 @@ ImageToolKit.cs               图片读写/编码/缩放/旋转/裁剪/命名（
 ImageToolDialogs.cs           转格式 / 压缩 / 改尺寸 / 重命名 / 提示框
 DarkUi.cs                     深色调色板、按钮、输入框、矢量图标、无边框窗口基类
 AppInfo.cs                    产品名「工具侠」与内部标识（界面文字统一从这里取）
-ShellIntegration.cs           图片右键菜单注册（HKCU，可开关、可自愈路径）
+ShellIntegration.cs           图片右键菜单 + 打开方式注册（HKCU，可开关、可自愈路径）
 AppConfig.cs / SettingsForm.cs 配置（两套凭证）与设置界面
 TrayApplicationContext.cs     托盘、全局热键与流程编排
-SelfTest.cs                    自检用例（217 项）
+SelfTest.cs                    自检用例（231 项）
 ImageTest.cs                   真实请求诊断（--imagetest / --typetest / --viewerpreview 等）
 IconFactory.cs / app.ico      托盘与 exe 图标（多尺寸）
 build.ps1                     使用系统 csc.exe 编译并嵌入图标

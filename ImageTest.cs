@@ -787,6 +787,12 @@ namespace SelectionTranslator
                 log.AppendLine("keyPath = " + ShellIntegration.MenuKeyPath);
                 log.AppendLine("enabled = " + ShellIntegration.IsEnabled());
                 log.AppendLine("command = " + ShellIntegration.GetCommand());
+                log.AppendLine("openWithEnabled = " +
+                    ShellIntegration.IsOpenWithEnabled());
+                log.AppendLine("openWithCommand = " +
+                    ShellIntegration.GetOpenWithCommand());
+                log.AppendLine("current = " +
+                    ShellIntegration.IsCurrent(Application.ExecutablePath));
                 if (!ok)
                 {
                     log.AppendLine("error = " + error);
@@ -803,6 +809,61 @@ namespace SelectionTranslator
             WriteReport("shelltoggle.txt", log, ok, "图片右键菜单");
         }
 
+        /// <summary>让 Shell 亲自解析新 ProgID，确认「打开方式」真的认得它。</summary>
+        public static void RunAssocProbe()
+        {
+            StringBuilder log = new StringBuilder();
+            bool ok = true;
+            try
+            {
+                const uint Command = 1;
+                const uint Executable = 2;
+                const uint FriendlyAppName = 4;
+                const uint DefaultIcon = 15;
+
+                string id = ShellIntegration.ProgId;
+                log.AppendLine("progId = " + id);
+                log.AppendLine("friendlyAppName = " +
+                    NativeMethods.QueryAssociation(FriendlyAppName, id));
+                log.AppendLine("executable = " +
+                    NativeMethods.QueryAssociation(Executable, id));
+                log.AppendLine("command = " +
+                    NativeMethods.QueryAssociation(Command, id));
+                log.AppendLine("defaultIcon = " +
+                    NativeMethods.QueryAssociation(DefaultIcon, id));
+
+                string command = NativeMethods.QueryAssociation(Command, id);
+                string exe = NativeMethods.QueryAssociation(
+                    Executable, id);
+                if (command.IndexOf(
+                        ShellIntegration.TrimQuotes(
+                            Application.ExecutablePath),
+                        StringComparison.OrdinalIgnoreCase) < 0 ||
+                    exe.IndexOf(
+                        Path.GetFileName(Application.ExecutablePath),
+                        StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    ok = false;
+                }
+                log.AppendLine(ok ? "RESULT: OK" : "RESULT: FAILED");
+            }
+            catch (Exception ex)
+            {
+                ok = false;
+                log.AppendLine("RESULT: FAILED");
+                log.AppendLine(ex.ToString());
+            }
+            Environment.ExitCode = ok ? 0 : 1;
+            WriteReport(
+                "assocprobe.txt", log, ok, "打开方式关联解析");
+        }
+
+        /// <summary>某个扩展名的 OpenWithProgids 里有没有我们这一行。</summary>
+        private static bool HasOpenWithValue(string extension)
+        {
+            return ShellIntegration.HasProgIdValue(extension);
+        }
+
         /// <summary>打印当前图片右键菜单的注册状态，方便排查「右键没出现」。 </summary>
         public static void RunShellProbe()
         {
@@ -817,6 +878,22 @@ namespace SelectionTranslator
                 log.AppendLine("current = " +
                     ShellIntegration.IsCurrent(Application.ExecutablePath));
                 log.AppendLine("command = " + ShellIntegration.GetCommand());
+                log.AppendLine("");
+                log.AppendLine("--- 打开方式(H) ---");
+                log.AppendLine("progId = " + ShellIntegration.ProgId);
+                log.AppendLine("enabled = " +
+                    ShellIntegration.IsOpenWithEnabled());
+                log.AppendLine("command = " +
+                    ShellIntegration.GetOpenWithCommand());
+                log.AppendLine("appKey = " +
+                    ShellIntegration.AppKeyPath(Application.ExecutablePath));
+                for (int i = 0;
+                    i < ShellIntegration.ImageExtensions.Length; i++)
+                {
+                    string ext = ShellIntegration.ImageExtensions[i];
+                    log.AppendLine(ext + " -> " +
+                        HasOpenWithValue(ext));
+                }
                 log.AppendLine("RESULT: OK");
             }
             catch (Exception ex)
