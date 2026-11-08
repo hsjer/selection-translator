@@ -42,6 +42,7 @@ namespace SelectionTranslator
         private readonly CheckBox _voiceEnableBox;
         private readonly TextBox _hotkeyVoiceField;
         private readonly ComboBox _voiceEngineBox;
+        private readonly ComboBox _voiceMethodBox;
         private readonly CheckBox _voiceAutoCopyBox;
         private TextBox _capturingField;
         private string _capturingFieldOriginal;
@@ -60,7 +61,7 @@ namespace SelectionTranslator
             int availableHeight =
                 Screen.PrimaryScreen.WorkingArea.Height - 60;
             ClientSize = new Size(
-                480, Math.Min(930, Math.Max(560, availableHeight)));
+                480, Math.Min(938, Math.Max(560, availableHeight)));
             AutoScroll = true;
             MaximizeBox = false;
             MinimizeBox = false;
@@ -397,7 +398,7 @@ namespace SelectionTranslator
             GroupBox voiceGroup = new GroupBox();
             voiceGroup.Text = "语音识别（腾讯云一句话识别 · 按住说话）";
             voiceGroup.Location = new Point(12, 738);
-            voiceGroup.Size = new Size(448, 142);
+            voiceGroup.Size = new Size(448, 156);
             voiceGroup.Font = Font;
             Controls.Add(voiceGroup);
 
@@ -425,15 +426,15 @@ namespace SelectionTranslator
             voiceGroup.Controls.Add(_hotkeyVoiceField);
 
             Label voiceEngineLabel = new Label();
-            voiceEngineLabel.Text = "识别引擎";
+            voiceEngineLabel.Text = "引擎";
             voiceEngineLabel.AutoSize = true;
-            voiceEngineLabel.Location = new Point(214, 52);
+            voiceEngineLabel.Location = new Point(220, 52);
             voiceGroup.Controls.Add(voiceEngineLabel);
 
             _voiceEngineBox = new ComboBox();
             _voiceEngineBox.DropDownStyle = ComboBoxStyle.DropDownList;
-            _voiceEngineBox.Location = new Point(272, 48);
-            _voiceEngineBox.Size = new Size(164, 23);
+            _voiceEngineBox.Location = new Point(256, 48);
+            _voiceEngineBox.Size = new Size(180, 23);
             System.Collections.Generic.List<AsrEngineOption> engines =
                 TencentAsr.BuildEngineOptions();
             for (int i = 0; i < engines.Count; i++)
@@ -443,19 +444,36 @@ namespace SelectionTranslator
             SelectVoiceEngine(config.VoiceEngineType);
             voiceGroup.Controls.Add(_voiceEngineBox);
 
+            Label voiceMethodLabel = new Label();
+            voiceMethodLabel.Text = "上屏方式";
+            voiceMethodLabel.AutoSize = true;
+            voiceMethodLabel.Location = new Point(12, 82);
+            voiceGroup.Controls.Add(voiceMethodLabel);
+
+            _voiceMethodBox = new ComboBox();
+            _voiceMethodBox.DropDownStyle = ComboBoxStyle.DropDownList;
+            _voiceMethodBox.Location = new Point(80, 78);
+            _voiceMethodBox.Size = new Size(160, 23);
+            _voiceMethodBox.Items.Add("模拟键入（推荐）");
+            _voiceMethodBox.Items.Add("剪贴板粘贴（兼容）");
+            _voiceMethodBox.SelectedIndex =
+                InputFocusProbe.NormalizeMethod(config.VoiceInputMethod) ==
+                    InputFocusProbe.MethodPaste ? 1 : 0;
+            voiceGroup.Controls.Add(_voiceMethodBox);
+
             _voiceAutoCopyBox = new CheckBox();
-            _voiceAutoCopyBox.Text = "识别完成后自动复制到剪贴板";
+            _voiceAutoCopyBox.Text = "同时复制到剪贴板";
             _voiceAutoCopyBox.AutoSize = true;
-            _voiceAutoCopyBox.Location = new Point(12, 78);
+            _voiceAutoCopyBox.Location = new Point(252, 80);
             _voiceAutoCopyBox.Checked = config.VoiceAutoCopy;
             voiceGroup.Controls.Add(_voiceAutoCopyBox);
 
             Label voiceHint = new Label();
             voiceHint.Text =
-                "识别结果可编辑，能复制或直接粘贴回原窗口；\r\n" +
-                "与文字识别共用腾讯云凭证，需先在控制台开通「语音识别」。";
-            voiceHint.Location = new Point(12, 100);
-            voiceHint.Size = new Size(424, 36);
+                "光标在输入框里才触发，松开后文字直接上屏；\r\n" +
+                "个别软件打不出字时改用「剪贴板粘贴」。";
+            voiceHint.Location = new Point(12, 104);
+            voiceHint.Size = new Size(424, 40);
             voiceHint.ForeColor = Color.FromArgb(90, 98, 112);
             voiceGroup.Controls.Add(voiceHint);
 
@@ -464,35 +482,35 @@ namespace SelectionTranslator
             // --------------------------------------------------------------
             _ocrTestButton = new Button();
             _ocrTestButton.Text = "测试 OCR";
-            _ocrTestButton.Location = new Point(16, 892);
+            _ocrTestButton.Location = new Point(16, 900);
             _ocrTestButton.Size = new Size(88, 28);
             _ocrTestButton.Click += OnOcrTestClicked;
             Controls.Add(_ocrTestButton);
 
             _testButton = new Button();
             _testButton.Text = "测试翻译";
-            _testButton.Location = new Point(112, 892);
+            _testButton.Location = new Point(112, 900);
             _testButton.Size = new Size(88, 28);
             _testButton.Click += OnTestClicked;
             Controls.Add(_testButton);
 
             Button micTestButton = new Button();
             micTestButton.Text = "测试麦克风";
-            micTestButton.Location = new Point(208, 892);
+            micTestButton.Location = new Point(208, 900);
             micTestButton.Size = new Size(94, 28);
             micTestButton.Click += OnMicTestClicked;
             Controls.Add(micTestButton);
 
             Button saveButton = new Button();
             saveButton.Text = "保存";
-            saveButton.Location = new Point(310, 892);
+            saveButton.Location = new Point(310, 900);
             saveButton.Size = new Size(68, 28);
             saveButton.Click += OnSaveClicked;
             Controls.Add(saveButton);
 
             Button cancelButton = new Button();
             cancelButton.Text = "取消";
-            cancelButton.Location = new Point(384, 892);
+            cancelButton.Location = new Point(384, 900);
             cancelButton.Size = new Size(64, 28);
             cancelButton.DialogResult = DialogResult.Cancel;
             Controls.Add(cancelButton);
@@ -599,6 +617,7 @@ namespace SelectionTranslator
             edited.EnableVoiceInput = _voiceEnableBox.Checked;
             edited.HotkeyVoiceInput = _hotkeyVoiceField.Text.Trim();
             edited.VoiceEngineType = GetSelectedVoiceEngine();
+            edited.VoiceInputMethod = GetSelectedVoiceMethod();
             edited.VoiceAutoCopy = _voiceAutoCopyBox.Checked;
             return edited;
         }
@@ -653,6 +672,13 @@ namespace SelectionTranslator
                 _voiceEngineBox.SelectedItem as AsrEngineOption;
             return option == null
                 ? TencentAsr.DefaultEngine : option.Code;
+        }
+
+        private string GetSelectedVoiceMethod()
+        {
+            return _voiceMethodBox.SelectedIndex == 1
+                ? InputFocusProbe.MethodPaste
+                : InputFocusProbe.MethodType;
         }
 
         private void OnShowSecretChanged(object sender, EventArgs e)

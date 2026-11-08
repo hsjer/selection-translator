@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace SelectionTranslator
 {
@@ -34,6 +35,13 @@ namespace SelectionTranslator
 
         public const int INPUT_KEYBOARD = 1;
         public const uint KEYEVENTF_KEYUP = 0x0002;
+        /// <summary>wScan 直接放 UTF-16 码元，绕过键盘布局与输入法。</summary>
+        public const uint KEYEVENTF_UNICODE = 0x0004;
+
+        public const int GUI_CARETBLINKING = 0x0001;
+        public const int GUI_INMENUMODE = 0x0004;
+        public const int GUI_SYSTEMMENUMODE = 0x0008;
+        public const int GUI_POPUPMENUMODE = 0x0010;
 
         [StructLayout(LayoutKind.Sequential)]
         public struct POINT
@@ -105,6 +113,33 @@ namespace SelectionTranslator
         {
             public int type;
             public InputUnion U;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct RECT
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        /// <summary>
+        /// 取前台线程焦点信息。idThread 传 0 即「当前前台线程」，
+        /// 因此能拿到别的进程里真正在接收键盘输入的那个控件。
+        /// </summary>
+        [StructLayout(LayoutKind.Sequential)]
+        public struct GUITHREADINFO
+        {
+            public int cbSize;
+            public int flags;
+            public IntPtr hwndActive;
+            public IntPtr hwndFocus;
+            public IntPtr hwndCapture;
+            public IntPtr hwndMenuOwner;
+            public IntPtr hwndMoveSize;
+            public IntPtr hwndCaret;
+            public RECT rcCaret;
         }
 
         public delegate IntPtr LowLevelMouseProc(
@@ -216,5 +251,25 @@ namespace SelectionTranslator
             int cx,
             int cy,
             uint uFlags);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool GetGUIThreadInfo(
+            uint idThread,
+            ref GUITHREADINFO lpgui);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        public static extern int GetClassName(
+            IntPtr hWnd,
+            StringBuilder lpClassName,
+            int nMaxCount);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsWindowEnabled(IntPtr hWnd);
     }
 }

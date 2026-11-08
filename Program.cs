@@ -94,6 +94,23 @@ namespace SelectionTranslator
                 return;
             }
 
+            int focusTestIndex = Array.IndexOf(args, "--focustest");
+            int inputTestIndex = Array.IndexOf(args, "--inputtest");
+            if (focusTestIndex >= 0 || inputTestIndex >= 0)
+            {
+                string text = inputTestIndex >= 0 &&
+                    inputTestIndex + 1 < args.Length
+                        ? args[inputTestIndex + 1] : null;
+                ImageTest.RunFocusTest(text);
+                return;
+            }
+
+            if (Array.IndexOf(args, "--typetest") >= 0)
+            {
+                ImageTest.RunTypeTest();
+                return;
+            }
+
             int asrTestIndex = Array.IndexOf(args, "--asrtest");
             if (asrTestIndex >= 0)
             {

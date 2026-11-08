@@ -684,10 +684,12 @@ namespace SelectionTranslator
                     FreshConfig().HotkeyVoiceInput, "Ctrl+Alt+V");
                 Check(output, ref ok, "config voice engine",
                     FreshConfig().VoiceEngineType, "16k_zh");
-                Check(output, ref ok, "config voice autocopy",
-                    FreshConfig().VoiceAutoCopy.ToString(), "True");
+                Check(output, ref ok, "config voice autocopy off",
+                    FreshConfig().VoiceAutoCopy.ToString(), "False");
+                Check(output, ref ok, "config voice input method",
+                    FreshConfig().VoiceInputMethod, "type");
 
-                // 录音浮条与结果窗口都要能正常构建并画出来。
+                // 录音浮条（含完成态）要能正常构建并画出来。
                 using (VoiceCaptureForm bar =
                     new VoiceCaptureForm("Ctrl+Alt+V"))
                 {
@@ -715,39 +717,79 @@ namespace SelectionTranslator
                     Check(output, ref ok, "voice bar renders panel",
                         (panelPixels > 500).ToString(), "True");
                     bar.ShowRecognizing("正在识别…");
+                    bar.ShowDone("已输入 12 字");
+                    using (Bitmap surface =
+                        new Bitmap(bar.Width, bar.Height))
+                    {
+                        bar.DrawToBitmap(surface,
+                            new Rectangle(0, 0, bar.Width, bar.Height));
+                        Check(output, ref ok, "voice bar done render",
+                            "True", "True");
+                    }
                     bar.ShowFailed("测试失败");
                 }
 
-                using (VoiceResultForm resultForm = new VoiceResultForm(
-                    "今天天气不错",
-                    asrParsed,
-                    812,
-                    TencentAsr.DescribeEngine("16k_zh"),
-                    IntPtr.Zero,
-                    false,
-                    delegate { return FreshConfig(); },
-                    null))
-                {
-                    TextBox resultBox = (TextBox)typeof(VoiceResultForm)
-                        .GetField(
-                            "_textBox",
-                            BindingFlags.NonPublic |
-                            BindingFlags.Instance)
-                        .GetValue(resultForm);
-                    Check(output, ref ok, "voice result text",
-                        resultBox.Text, "今天天气不错");
-                    using (Bitmap surface =
-                        new Bitmap(resultForm.Width, resultForm.Height))
-                    {
-                        resultForm.DrawToBitmap(surface,
-                            new Rectangle(
-                                0, 0,
-                                resultForm.Width,
-                                resultForm.Height));
-                        Check(output, ref ok, "voice result render",
-                            "True", "True");
-                    }
-                }
+                // ---- 只有输入框才触发 + 文字直接上屏 ----
+                Check(output, ref ok, "focus editable edit",
+                    InputFocusProbe.IsEditableClass("Edit").ToString(),
+                    "True");
+                Check(output, ref ok, "focus editable richedit",
+                    InputFocusProbe.IsEditableClass("RichEdit20W")
+                        .ToString(), "True");
+                Check(output, ref ok, "focus editable scintilla",
+                    InputFocusProbe.IsEditableClass("Scintilla")
+                        .ToString(), "True");
+                Check(output, ref ok, "focus editable explorer",
+                    InputFocusProbe.IsEditableClass("CabinetWClass")
+                        .ToString(), "False");
+                Check(output, ref ok, "focus host chrome",
+                    InputFocusProbe.IsHostClass(
+                        "Chrome_RenderWidgetHostHWND").ToString(), "True");
+                Check(output, ref ok, "focus host word",
+                    InputFocusProbe.IsHostClass("_WwG").ToString(),
+                    "True");
+                Check(output, ref ok, "focus excluded desktop",
+                    InputFocusProbe.IsExcludedClass("Progman")
+                        .ToString(), "True");
+                Check(output, ref ok, "focus excluded menu",
+                    InputFocusProbe.IsExcludedClass("#32768")
+                        .ToString(), "True");
+                Check(output, ref ok, "focus probe no crash",
+                    InputFocusProbe.Probe().Describe()
+                        .Contains("editable=") ? "yes" : "no", "yes");
+
+                Check(output, ref ok, "focus method default",
+                    InputFocusProbe.NormalizeMethod(null), "type");
+                Check(output, ref ok, "focus method paste",
+                    InputFocusProbe.NormalizeMethod("PASTE"), "paste");
+                Check(output, ref ok, "focus method fallback",
+                    InputFocusProbe.NormalizeMethod("bogus"), "type");
+                Check(output, ref ok, "typing normalize newline",
+                    InputFocusProbe.NormalizeForTyping(
+                        "第一行\r\n第二行\t三"), "第一行 第二行 三");
+                Check(output, ref ok, "typing normalize control",
+                    InputFocusProbe.NormalizeForTyping("a\u0001b"),
+                    "ab");
+                Check(output, ref ok, "typing keeps inner space",
+                    InputFocusProbe.NormalizeForTyping("今天 天气"),
+                    "今天 天气");
+                NativeMethods.INPUT[] typed =
+                    InputFocusProbe.BuildUnicodeInputs("中文A");
+                Check(output, ref ok, "typing inputs length",
+                    typed.Length.ToString(), "6");
+                Check(output, ref ok, "typing first scan",
+                    typed[0].U.ki.wScan.ToString(),
+                    ((int)'\u4e2d').ToString());
+                Check(output, ref ok, "typing unicode flag",
+                    typed[0].U.ki.dwFlags.ToString(),
+                    NativeMethods.KEYEVENTF_UNICODE.ToString());
+                Check(output, ref ok, "typing keyup flag",
+                    typed[1].U.ki.dwFlags.ToString(),
+                    (NativeMethods.KEYEVENTF_UNICODE |
+                        NativeMethods.KEYEVENTF_KEYUP).ToString());
+                Check(output, ref ok, "typing empty text",
+                    InputFocusProbe.BuildUnicodeInputs("").Length
+                        .ToString(), "0");
 
                 // 设置窗口加了语音区，这里做一次构造 + 绘制冒烟测试，
                 // 免得布局代码在低分辨率机器上抛异常。
@@ -762,6 +804,16 @@ namespace SelectionTranslator
                         .GetValue(settings);
                     Check(output, ref ok, "settings voice hotkey field",
                         voiceHotkey.Text, "Ctrl+Alt+V");
+                    ComboBox methodBox = (ComboBox)typeof(SettingsForm)
+                        .GetField(
+                            "_voiceMethodBox",
+                            BindingFlags.NonPublic |
+                            BindingFlags.Instance)
+                        .GetValue(settings);
+                    Check(output, ref ok, "settings voice method",
+                        methodBox.SelectedIndex.ToString(), "0");
+                    Check(output, ref ok, "settings voice method items",
+                        methodBox.Items.Count.ToString(), "2");
                     Check(output, ref ok, "settings autoscroll",
                         settings.AutoScroll.ToString(), "True");
                     using (Bitmap surface = new Bitmap(

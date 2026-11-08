@@ -38,7 +38,11 @@ namespace SelectionTranslator
         public string HotkeyVoiceInput { get; set; }
         /// <summary>EngSerViceType，默认 16k_zh（中文普通话）。</summary>
         public string VoiceEngineType { get; set; }
-        /// <summary>识别完成后自动把文字放进剪贴板。</summary>
+        /// <summary>
+        /// 上屏方式：type=模拟键入（不碰剪贴板），paste=剪贴板 + Ctrl+V。
+        /// </summary>
+        public string VoiceInputMethod { get; set; }
+        /// <summary>除了上屏之外，是否顺便把识别文字留在剪贴板里。</summary>
         public bool VoiceAutoCopy { get; set; }
 
         public AppConfig()
@@ -63,7 +67,8 @@ namespace SelectionTranslator
             EnableVoiceInput = true;
             HotkeyVoiceInput = "Ctrl+Alt+V";
             VoiceEngineType = TencentAsr.DefaultEngine;
-            VoiceAutoCopy = true;
+            VoiceInputMethod = InputFocusProbe.MethodType;
+            VoiceAutoCopy = false;
         }
 
         public string GetSecret()
@@ -172,14 +177,24 @@ namespace SelectionTranslator
                     config.EnableVoiceInput = true;
                     config.HotkeyVoiceInput = "Ctrl+Alt+V";
                     config.VoiceEngineType = TencentAsr.DefaultEngine;
-                    config.VoiceAutoCopy = true;
+                    config.VoiceInputMethod = InputFocusProbe.MethodType;
+                    config.VoiceAutoCopy = false;
                 }
                 if (string.IsNullOrEmpty(config.HotkeyVoiceInput))
                 {
                     config.HotkeyVoiceInput = "Ctrl+Alt+V";
                 }
+                // 老版本是「弹结果窗口 + 自动复制」，新版本直接上屏，
+                // 没有这个字段时一律回到模拟键入 / 不占用剪贴板。
+                if (!HasVoiceInputMethodSetting(json))
+                {
+                    config.VoiceInputMethod = InputFocusProbe.MethodType;
+                    config.VoiceAutoCopy = false;
+                }
                 config.VoiceEngineType =
                     TencentAsr.NormalizeEngine(config.VoiceEngineType);
+                config.VoiceInputMethod =
+                    InputFocusProbe.NormalizeMethod(config.VoiceInputMethod);
 
                 // 旧版本配置里没有这个字段，反序列化后为 false，
                 // 这里按默认开启处理。
@@ -223,6 +238,14 @@ namespace SelectionTranslator
             return json != null &&
                 json.IndexOf(
                     "\"VoiceEngineType\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool HasVoiceInputMethodSetting(string json)
+        {
+            return json != null &&
+                json.IndexOf(
+                    "\"VoiceInputMethod\"",
                     StringComparison.OrdinalIgnoreCase) >= 0;
         }
 

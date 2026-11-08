@@ -14,6 +14,8 @@ namespace SelectionTranslator
     ///   --imagetest      &lt;图片&gt;  识别 + 翻译（自动选引擎）
     ///   --tencenttest    &lt;图片&gt;  只调腾讯云 OCR，逐行输出坐标
     ///   --baiduimagetest &lt;图片&gt;  强制旧的百度图片翻译接口
+    ///   --focustest                  延时 3 秒后打印当前焦点控件
+    ///   --inputtest      &lt;文字&gt;  延时 3 秒后把文字打进当前输入框
     ///
     /// 日志不输出 AppID / 密钥 / 图片 Base64。
     /// </summary>
@@ -410,7 +412,136 @@ namespace SelectionTranslator
         }
 
         /// <summary>
-        /// 把语音相关的三个界面离屏渲染成 PNG，方便在没有显示器的环境下
+        /// 验证「只有输入框才触发」以及「文字直接上屏」。
+        /// 命令行启动后给 3 秒，让用户把光标点进目标输入框。
+        /// text 为空时只做焦点探测，不写任何东西。
+        /// </summary>
+        public static void RunFocusTest(string text)
+        {
+            StringBuilder log = new StringBuilder();
+            bool ok = false;
+            try
+            {
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                log.AppendLine("等待 3 秒，请把光标点进一个输入框…");
+                System.Threading.Thread.Sleep(3000);
+
+                FocusTarget target = InputFocusProbe.Probe();
+                log.AppendLine(target.Describe());
+                log.AppendLine("method=type");
+
+                if (!target.IsEditable)
+                {
+                    log.AppendLine("当前焦点不是输入框，未写入任何内容。");
+                    log.AppendLine("RESULT: FAILED");
+                }
+                else if (string.IsNullOrEmpty(text))
+                {
+                    log.AppendLine("焦点判定通过（只探测，未注入）。");
+                    ok = true;
+                    log.AppendLine("RESULT: OK");
+                }
+                else
+                {
+                    log.AppendLine("text=" + text);
+                    log.AppendLine("normalized=" +
+                        InputFocusProbe.NormalizeForTyping(text));
+                    VoiceInsertOutcome outcome =
+                        System.Threading.Tasks.Task.Run(
+                            delegate
+                            {
+                                return InputFocusProbe.InsertAsync(
+                                    target, text,
+                                    InputFocusProbe.MethodType, false);
+                            }).GetAwaiter().GetResult();
+                    log.AppendLine("outcome=" + outcome);
+                    ok = outcome == VoiceInsertOutcome.Inserted;
+                    log.AppendLine(ok
+                        ? "RESULT: OK"
+                        : "RESULT: FAILED");
+                }
+            }
+            catch (Exception ex)
+            {
+                log.AppendLine("RESULT: FAILED");
+                log.AppendLine(ex.ToString());
+            }
+            WriteReport("focustest.txt", log, ok, "焦点探测与上屏测试");
+        }
+
+        /// <summary>
+        /// 真实回环测试：在屏幕外开一个只带 TextBox 的小窗体并聚焦，
+        /// 走完整的「焦点探测 → SendInput Unicode 注入」链路，再读回
+        /// TextBox.Text 比对。用来证明中文确实能直接打进输入框。
+        /// </summary>
+        public static void RunTypeTest()
+        {
+            StringBuilder log = new StringBuilder();
+            bool ok = false;
+            Form host = null;
+            TextBox box = null;
+            try
+            {
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                host = new Form();
+                host.StartPosition = FormStartPosition.Manual;
+                host.Location = new Point(-6000, -6000);
+                host.Size = new Size(320, 120);
+                host.ShowInTaskbar = false;
+
+                box = new TextBox();
+                box.Multiline = true;
+                box.Location = new Point(8, 8);
+                box.Size = new Size(280, 60);
+                host.Controls.Add(box);
+
+                host.Show();
+                box.Focus();
+                Application.DoEvents();
+                System.Threading.Thread.Sleep(200);
+
+                FocusTarget target = InputFocusProbe.Probe();
+                log.AppendLine(target.Describe());
+
+                string sample = "中文语音上屏 123";
+                // 必须丢到线程池：WinForms 会安装同步上下文，
+                // 直接 .GetResult() 会把 UI 线程堵死形成死锁。
+                VoiceInsertOutcome outcome =
+                    System.Threading.Tasks.Task.Run(
+                        delegate
+                        {
+                            return InputFocusProbe.InsertAsync(
+                                target,
+                                sample,
+                                InputFocusProbe.MethodType,
+                                false);
+                        }).GetAwaiter().GetResult();
+
+                log.AppendLine("outcome=" + outcome);
+                Application.DoEvents();
+                log.AppendLine("textbox=[" + box.Text + "]");
+                ok = outcome == VoiceInsertOutcome.Inserted &&
+                    box.Text == sample;
+                log.AppendLine(ok ? "RESULT: OK" : "RESULT: FAILED");
+            }
+            catch (Exception ex)
+            {
+                log.AppendLine("RESULT: FAILED");
+                log.AppendLine(ex.ToString());
+            }
+            finally
+            {
+                if (host != null)
+                {
+                    host.Close();
+                    host.Dispose();
+                }
+            }
+            WriteReport("typetest.txt", log, ok, "文字直投回环测试");
+        }
+
+        /// <summary>
+        /// 把语音浮条与设置界面离屏渲染成 PNG，方便在没有显示器的环境下
         /// 检查布局（输出到 %APPDATA%\SelectionTranslator\ui-*.png）。
         /// </summary>
         public static void RunUiPreview()
@@ -429,23 +560,10 @@ namespace SelectionTranslator
                     SaveForm(bar, "ui-voicebar-recording.png", log);
                     bar.ShowRecognizing("正在识别…");
                     SaveForm(bar, "ui-voicebar-recognizing.png", log);
-                }
-
-                AsrResult sample = new AsrResult();
-                sample.Text = "今天下午三点开会，记得带上上周的报表。";
-                sample.AudioDurationMs = 4200;
-                sample.RequestId = "83b414b9-8bd8-4d47";
-                using (VoiceResultForm form = new VoiceResultForm(
-                    sample.Text,
-                    sample,
-                    812,
-                    TencentAsr.DescribeEngine("16k_zh"),
-                    IntPtr.Zero,
-                    false,
-                    delegate { return new AppConfig(); },
-                    null))
-                {
-                    SaveForm(form, "ui-voice-result.png", log);
+                    bar.ShowDone("已输入 18 字");
+                    SaveForm(bar, "ui-voicebar-done.png", log);
+                    bar.ShowFailed("没听清，再说一次");
+                    SaveForm(bar, "ui-voicebar-failed.png", log);
                 }
 
                 using (SettingsForm form = new SettingsForm(new AppConfig()))

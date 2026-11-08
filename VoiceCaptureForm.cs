@@ -21,6 +21,7 @@ namespace SelectionTranslator
         {
             Recording,
             Recognizing,
+            Done,
             Failed
         }
 
@@ -115,6 +116,14 @@ namespace SelectionTranslator
             {
                 _animationTimer.Start();
             }
+        }
+
+        /// <summary>文字已经直接写进输入框，闪一下就收起。</summary>
+        public void ShowDone(string message)
+        {
+            _state = BarState.Done;
+            _statusText = message ?? "已输入";
+            Invalidate();
         }
 
         public void ShowFailed(string message)
@@ -302,6 +311,10 @@ namespace SelectionTranslator
             {
                 dotColor = Color.FromArgb(64, 156, 255);
             }
+            else if (_state == BarState.Done)
+            {
+                dotColor = Color.FromArgb(66, 200, 130);
+            }
             else
             {
                 dotColor = Color.FromArgb(240, 178, 60);
@@ -330,6 +343,11 @@ namespace SelectionTranslator
                 title = "识别中" + new string('.', dots);
                 color = Color.FromArgb(160, 205, 255);
             }
+            else if (_state == BarState.Done)
+            {
+                title = "✓ " + _statusText;
+                color = Color.FromArgb(150, 235, 185);
+            }
             else
             {
                 title = _statusText;
@@ -353,7 +371,11 @@ namespace SelectionTranslator
             float height = 20f;
 
             int lit;
-            if (_state == BarState.Recording)
+            if (_state == BarState.Done)
+            {
+                lit = barCount;
+            }
+            else if (_state == BarState.Recording)
             {
                 float scaled = _level * 3.2f;
                 if (scaled > 1f)
@@ -369,6 +391,10 @@ namespace SelectionTranslator
                     Math.Sin(_phase * Math.PI / 180.0)) * barCount);
             }
 
+            Color litColor = _state == BarState.Done
+                ? Color.FromArgb(80, 200, 140)
+                : Color.FromArgb(110, 170, 255);
+
             float step = width / barCount;
             float barWidth = step * 0.55f;
 
@@ -376,7 +402,7 @@ namespace SelectionTranslator
             {
                 bool on = i < lit;
                 Color color = on
-                    ? Color.FromArgb(110, 170, 255)
+                    ? litColor
                     : Color.FromArgb(58, 64, 78);
                 float barHeight = height;
                 if (i % 2 == 1)
@@ -406,9 +432,13 @@ namespace SelectionTranslator
             {
                 hint = "正在上传到腾讯云语音识别…";
             }
+            else if (_state == BarState.Done)
+            {
+                hint = "文字已直接出现在光标处";
+            }
             else
             {
-                hint = "点 × 关闭";
+                hint = "稍后自动关闭";
             }
 
             using (Font font = new Font("Microsoft YaHei UI", 8.5F))

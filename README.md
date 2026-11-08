@@ -66,19 +66,22 @@ Windows 没有公开接口可以往**所有应用**的文本右键菜单里统�
 
 > **凭证**：腾讯云需在控制台开通「文字识别 OCR」并创建 SecretId / SecretKey（在设置里填写，SecretKey 用 DPAPI 加密保存）；百度只需「通用翻译」的 AppID / 密钥。只有回退到百度图片翻译时才需要单独开通百度的「图片翻译」服务。设置里的目标语言使用**文本翻译**语种代码（`ja`/`ko`/`fr`/`es`…），回退时会自动映射为图片接口的 `jp`/`kor`/`fra`/`spa`。
 
-## 语音识别（按住说话）
+## 语音输入（按住说话，直接上屏）
 
-不想打字时，按住 `Ctrl+Alt+V`（可改）说一句话，松开就出文字：
+和微信输入法的语音输入一样：**先把光标点进任意输入框，按住 `Ctrl+Alt+V`（可改）说话，松开后文字就直接出现在光标处**。全程没有结果窗口、没有按钮要按。
 
-1. 按下快捷键 → 屏幕底部弹出录音浮条（红色脉冲点 + 实时电平 + 计时）；
-2. **松开快捷键** → 浮条变成「识别中…」，把 WAV 直接传给腾讯云 `SentenceRecognition`；
-3. 结果出现在小窗口里：文本**可编辑**（识别难免同音错字），按钮有「复制」「复制并关闭」「翻译」「粘贴到原窗口」「重新录音」。
+1. 按下快捷键时先做焦点判定：只有当前焦点是可编辑控件（`GetGUIThreadInfo` 拿跨进程焦点窗口 + 类名白名单 + 插入符检测）才启动录音；光标在桌面、菜单、资源管理器等地方时只给一条托盘提示，不录音。
+2. 录音时屏幕底部浮出状态条（红色脉冲点 + 实时电平 + 计时），它带 `WS_EX_NOACTIVATE`，**不抢焦点**，光标一直留在原输入框。
+3. 松开快捷键 → 浮条变「识别中…」→ WAV 传给腾讯云 `SentenceRecognition` → 文字通过 `SendInput(KEYEVENTF_UNICODE)` 直接注入原输入框，浮条闪一下「✓ 已输入 N 字」后自动消失。
 
 几个设计取舍：
 
-- **按住说话而不是点一下开始、再点一下停**：热键 API 只投递按下消息，拿不到松开消息，所以程序用 40ms 的定时器轮询 `GetAsyncKeyState` 判断主键是否松开；松开即结束，最短 300ms（点一下也能录到一小段），最长 60 秒自动收尾（接口上限）。
-- **浮条不抢焦点**：窗口带 `WS_EX_NOACTIVATE` + `ShowWithoutActivation`，录音时你的光标还留在原来的输入框里，所以识别完可以一键「粘贴到原窗口」（程序记下说话前的那个 `HWND`，`SetForegroundWindow` 后发 `Ctrl+V`）。
-- **录音全程在内存里**：16kHz / 16bit / 单声道 PCM，60 秒约 1.9MB，正好在接口 3MB 限制内；不落盘（除非你用 `--voicetest` 自测，那个会存 `voicetest.wav`）。
+- **默认不碰剪贴板**：模拟键入逐字符送 UTF-16 码元，中文、emoji 代理对都能原样上屏，用户剪贴板内容不受影响。设置里可勾选「同时复制到剪贴板」。
+- **个别软件不收 Unicode 注入**（终端、游戏、某些自绘控件）时，在设置的「上屏方式」里改成「剪贴板粘贴（兼容）」：临时借用剪贴板发 `Ctrl+V`，粘贴完成后自动恢复原内容。
+- **切走窗口就安全放弃**：说话期间如果用户切到了别的窗口，程序不会把字打进新窗口，而是把结果放进剪贴板并提示手动粘贴。
+- **修饰键先松开**：语音键是 `Ctrl+Alt+V`，注入前会等 Ctrl/Alt/Shift 释放，避免中文变成 `Ctrl+字母` 快捷键。
+- **按住说话而不是点一下开始、再点一下停**：热键 API 只投递按下消息，拿不到松开消息，所以程序用 40ms 的定时器轮询 `GetAsyncKeyState`；松开即结束，最短 300ms，最长 60 秒自动收尾（接口上限）。
+- **录音全程在内存里**：16kHz / 16bit / 单声道 PCM，60 秒约 1.9MB，在接口 3MB 限制内；不落盘（除非用 `--voicetest` 自测）。
 - **不引入音频库**：直接 P/Invoke `winmm.dll` 的 `waveIn*`，保持「单文件、无第三方 DLL、拷走就能跑」。
 
 > 识别走腾讯云**语音识别 ASR**，与文字识别共用同一对 SecretId / SecretKey，但需要在控制台**单独开通「语音识别」**，否则会返回 `FailedOperation.UserNotRegistered`。
@@ -89,7 +92,7 @@ Windows 没有公开接口可以往**所有应用**的文本右键菜单里统�
 - 全局快捷键翻译选中文本（默认 `Ctrl+Alt+T`，可在设置中自定义）
 - 全局快捷键打开手动翻译窗口（默认 `Ctrl+Alt+E`，可在设置中自定义）
 - 全局快捷键截图翻译（默认 `Ctrl+Alt+S`，可在设置中自定义）
-- 全局快捷键语音识别（默认 `Ctrl+Alt+V`）：按住说话，松开即识别，结果可编辑 / 复制 / 粘贴回原窗口
+- 全局快捷键语音输入（默认 `Ctrl+Alt+V`）：只在输入框里生效，按住说话、松开即识别，文字直接上屏，不弹结果窗口
 - 截图浮层：左键/右键框选、选区锁定、8 手柄调整、尺寸标签、18 个线性图标就地标注（含序号、马赛克、裁剪、贴图、取字）
 - 桌面贴图：置顶无边框小窗，可拖动、缩放、调透明度，托盘菜单一键关闭全部
 - 截图就地标注完成后「对号」直接复制到剪贴板，不再弹出编辑窗口
@@ -270,7 +273,7 @@ Content-Type: application/json; charset=utf-8
 Get-Content "$env:APPDATA\SelectionTranslator\selftest.txt"
 ```
 
-自检（共 115 项）覆盖文本翻译 MD5 签名、自动目标语言判断、DPAPI 加解密、文本分段，图片翻译的 MD5 签名、固定参数（cuid/mac）、语种映射与目标语种校验，截图浮层的构造与选区导出冒烟测试，exe / 托盘图标资源，结果窗口的 `rect` 解析、按阅读顺序拼接选字文本、贴合图解码与画布绘制冒烟测试，**TC3-HMAC-SHA256 签名固定向量**、腾讯云 OCR 响应解析（含 `Polygon` 回退、鉴权错误映射）、阅读顺序、目标语种归一化、管道结果拼装、两套 `Prepare` 路径。语音识别部分新增：WAV 头字节级校验（RIFF/WAVE/fmt/data、采样率、data 长度、时长换算）、引擎码归一与列表、`asr` 与 `ocr` 签名必须不同、`SentenceRecognition` 响应与错误码解析、录音浮条与结果窗口的渲染冒烟测试，以及仅识别模式（结果无译文、窗口不绘制译文遮罩、默认复制原文）的回归用例。
+自检（共 140 项）覆盖文本翻译 MD5 签名、自动目标语言判断、DPAPI 加解密、文本分段，图片翻译的 MD5 签名、固定参数（cuid/mac）、语种映射与目标语种校验，截图浮层的构造与选区导出冒烟测试，exe / 托盘图标资源，结果窗口的 `rect` 解析、按阅读顺序拼接选字文本、贴合图解码与画布绘制冒烟测试，**TC3-HMAC-SHA256 签名固定向量**、腾讯云 OCR 响应解析（含 `Polygon` 回退、鉴权错误映射）、阅读顺序、目标语种归一化、管道结果拼装、两套 `Prepare` 路径。语音识别部分新增：WAV 头字节级校验（RIFF/WAVE/fmt/data、采样率、data 长度、时长换算）、引擎码归一与列表、`asr` 与 `ocr` 签名必须不同、`SentenceRecognition` 响应与错误码解析、录音浮条（含完成态）的渲染冒烟测试、焦点控件类名判定、`KEYEVENTF_UNICODE` 输入序列构造、换行/控制字符归一、上屏方式归一与设置窗口上屏方式下拉，以及仅识别模式（结果无译文、窗口不绘制译文遮罩、默认复制原文）的回归用例。
 
 真实请求诊断（使用当前已保存的凭证，不输出密钥）：
 
@@ -310,6 +313,22 @@ Get-Content "$env:APPDATA\SelectionTranslator\asrprobe.txt"
 # 强制走旧的百度图片翻译回退路径
 .\dist\SelectionTranslator.exe --baiduimagetest "C:\path\to\screenshot.png"
 Get-Content "$env:APPDATA\SelectionTranslator\imagetest.txt"
+
+# 延时 3 秒探测当前焦点（验证「只有输入框才触发」）
+.\dist\SelectionTranslator.exe --focustest
+Get-Content "$env:APPDATA\SelectionTranslator\focustest.txt"
+
+# 延时 3 秒后把文字打进当前光标处（先点开记事本，再运行）
+.\dist\SelectionTranslator.exe --inputtest "中文语音上屏 123"
+
+# 真实回环：屏幕外建一个 TextBox，注入后读回文本比对
+.\dist\SelectionTranslator.exe --typetest
+Get-Content "$env:APPDATA\SelectionTranslator\typetest.txt"
+
+# 离屏渲染界面预览图（ui-*.png）
+.\dist\SelectionTranslator.exe --uipreview
+Get-Content "$env:APPDATA\SelectionTranslator\uipreview.txt"
+
 ```
 
 `RESULT: OK` 即该段链路正常；失败时文件里有完整异常信息。`--tencentprobe` / `--asrprobe` 用一组无效凭证发一次真实请求，收到 `AuthFailure.SecretIdNotFound` 之类的鉴权错误反而说明**签名串与公共参数格式被服务端正确解析**，可用来在没填密钥时先排除代码问题。
@@ -331,7 +350,9 @@ Get-Content "$env:APPDATA\SelectionTranslator\imagetest.txt"
 - 截图浮层中的马赛克仅作用于当前显示的截图，不会修改系统剪贴板中的原始内容。
 - 语音识别需要麦克风，并且要在腾讯云控制台**单独开通「语音识别 ASR」**；只开通 OCR 时调用会返回 `FailedOperation.UserNotRegistered`。
 - 语音一次最长 60 秒（接口限制），超时会自动截断收尾；连续说话请分多次录入。
-- 「粘贴到原窗口」依赖 `SetForegroundWindow`，从管理员权限程序切回来时可能被 UIPI 拦截；失败时文字仍在剪贴板里，手动 `Ctrl+V` 即可。
+- 语音输入只在检测到输入框时触发；少数不创建 Win32 插入符、也不在类名白名单里的自绘输入框可能被判为「非输入框」，可反馈软件名称以便补充白名单。
+- 以管理员权限运行的程序会拦截普通权限进程的模拟键入（UIPI）；让本工具也以管理员身份运行，或改用「剪贴板粘贴」上屏方式。
+- 说话期间切到别的窗口时，文字不会写入新窗口，只会放进剪贴板，手动 `Ctrl+V` 即可。
 - 录音浮条不会抢焦点，所以它上面的「点这里停止」需要鼠标点击浮条本身；键盘请用「松开快捷键」结束。
 
 ## 文件结构
@@ -342,16 +363,16 @@ BaiduImageTranslator.cs       百度图片翻译 API（回退路径）
 TencentOcr.cs                 腾讯云 GeneralAccurateOCR（TC3 签名/解析/预处理）
 TencentAsr.cs                 腾讯云 SentenceRecognition（一句话识别，共用 TC3 签名）
 VoiceRecorder.cs              麦克风录音（winmm waveIn，16k/16bit/mono → WAV）
-VoiceCaptureForm.cs           录音浮条（不抢焦点，显示时长与电平）
-VoiceResultForm.cs            语音识别结果窗口（可编辑/复制/粘贴回原窗口）
+VoiceCaptureForm.cs           录音浮条（不抢焦点；录音/识别/已上屏/失败四态）
+InputFocusProbe.cs            焦点判定 + 文字直投（Unicode 键入 / 剪贴板粘贴）
 PicturePipeline.cs            识别 + 翻译管道，统一产出结果结构
 ScreenshotCaptureForm.cs      一体化截图浮层（框选/标注/工具栏）
 ImageTranslationForm.cs       图片翻译结果窗口（译文贴图上/选字复制）
 PinnedImageForm.cs            桌面贴图窗口（置顶/拖动/缩放）
 AppConfig.cs / SettingsForm.cs 配置（两套凭证）与设置界面
 TrayApplicationContext.cs     托盘、全局热键与流程编排
-SelfTest.cs                    自检用例（115 项）
-ImageTest.cs                   真实请求诊断（--imagetest / --voicetest / --asrtest 等）
+SelfTest.cs                    自检用例（140 项）
+ImageTest.cs                   真实请求诊断（--imagetest / --typetest / --asrtest 等）
 IconFactory.cs / app.ico      托盘与 exe 图标（多尺寸）
 build.ps1                     使用系统 csc.exe 编译并嵌入图标
 app.manifest                  DPI 与 Windows 兼容性声明

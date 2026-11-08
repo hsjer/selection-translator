@@ -46,13 +46,13 @@ namespace SelectionTranslator
         // ---- 语音识别（按住说话）----
         private VoiceRecorder _recorder;
         private VoiceCaptureForm _voiceBar;
-        private VoiceResultForm _voiceResult;
         private System.Windows.Forms.Timer _voicePollTimer;
+        private System.Windows.Forms.Timer _voiceMenuDelayTimer;
         private bool _voiceInProgress;
         // 防止「定时器收尾」和「点浮条停止」同时进来跑两遍。
         private bool _voiceStopping;
-        // 说话开始时的前台窗口，识别完成后可以「粘贴回原窗口」。
-        private IntPtr _voiceTargetWindow;
+        // 按下语音键那一刻的焦点快照，文字要送回这个输入框。
+        private FocusTarget _voiceTarget;
         // 主键是否已观测到按下：避免热键刚触发就误判为「已松开」。
         private bool _voiceKeyDown;
         private DateTime _voiceStartedUtc;
@@ -171,6 +171,12 @@ namespace SelectionTranslator
             _voicePollTimer = new System.Windows.Forms.Timer();
             _voicePollTimer.Interval = 40;
             _voicePollTimer.Tick += OnVoicePollTick;
+
+            // 从托盘菜单点「语音输入」时菜单还占着前台，等它收起、
+            // 焦点回到原输入框后再做焦点判定。
+            _voiceMenuDelayTimer = new System.Windows.Forms.Timer();
+            _voiceMenuDelayTimer.Interval = 260;
+            _voiceMenuDelayTimer.Tick += OnVoiceMenuDelayTick;
         }
 
         private bool HasCredentials()
@@ -689,12 +695,20 @@ namespace SelectionTranslator
 
         private void OnVoiceClicked(object sender, EventArgs e)
         {
+            _voiceMenuDelayTimer.Stop();
+            _voiceMenuDelayTimer.Start();
+        }
+
+        private void OnVoiceMenuDelayTick(object sender, EventArgs e)
+        {
+            _voiceMenuDelayTimer.Stop();
             StartVoiceInput();
         }
 
         /// <summary>
-        /// 按住快捷键开始录音：按下 → 底部录音浮条 → 松开主键（或点浮条）
-        /// → 上传腾讯云「一句话识别」→ 结果小窗口。
+        /// 按住快捷键开始录音：只有光标确实在输入框里才启动；
+        /// 松开后上传腾讯云「一句话识别」，文字直接送回那个光标处，
+        /// 全程不弹出任何需要操作的窗口。
         /// 热键 API 只投递按下消息，拿不到松开消息，所以主键状态靠
         /// _voicePollTimer 轮询 GetAsyncKeyState。
         /// </summary>
@@ -733,7 +747,22 @@ namespace SelectionTranslator
                 return;
             }
 
-            _voiceTargetWindow = NativeMethods.GetForegroundWindow();
+            // 微信输入法式体验的前提：光标必须在输入框里。
+            // 不在输入框就不录音，免得说完之后没有地方落字。
+            FocusTarget focus = InputFocusProbe.Probe();
+            Log.Info("语音输入焦点探测：" + focus.Describe());
+            if (!focus.IsEditable)
+            {
+                _trayIcon.ShowBalloonTip(
+                    3200,
+                    "语音识别",
+                    "请先把光标点进输入框，再按住 " +
+                        _config.HotkeyVoiceInput + " 说话。",
+                    ToolTipIcon.Info);
+                return;
+            }
+
+            _voiceTarget = focus;
             _voiceStartedUtc = DateTime.UtcNow;
             // 热键刚触发，主键此刻必然是按下的。
             _voiceKeyDown = true;
@@ -875,29 +904,28 @@ namespace SelectionTranslator
                 Log.Info("语音识别端到端 " + elapsed + " ms，" +
                     "音频 " + durationMs + " ms");
 
-                CloseVoiceBar();
                 RestoreSelectionWatchers();
                 _voiceInProgress = false;
                 _voiceStopping = false;
-                ShowVoiceResult(result, elapsed);
+                await DeliverVoiceTextAsync(result, elapsed);
             }
             catch (TranslationException ex)
             {
-                CloseVoiceBar();
                 RestoreSelectionWatchers();
                 _voiceInProgress = false;
                 _voiceStopping = false;
                 Log.Info("语音识别失败：" + ex.Code + " " + ex.Message);
+                ShowBarNote(DetachVoiceBar(), false, "识别失败");
                 _trayIcon.ShowBalloonTip(
                     4500, "语音识别失败", ex.Message, ToolTipIcon.Warning);
             }
             catch (Exception ex)
             {
-                CloseVoiceBar();
                 RestoreSelectionWatchers();
                 _voiceInProgress = false;
                 _voiceStopping = false;
                 Log.Error("语音识别时发生未处理错误", ex);
+                ShowBarNote(DetachVoiceBar(), false, "识别失败");
                 _trayIcon.ShowBalloonTip(
                     4500, "语音识别失败", ex.Message, ToolTipIcon.Warning);
             }
@@ -967,43 +995,119 @@ namespace SelectionTranslator
             bar.Close();
         }
 
-        private void ShowVoiceResult(AsrResult result, int elapsedMs)
+        /// <summary>
+        /// 识别完成后不再开任何窗口：直接把文字写到说话前那个光标处。
+        /// 只有窗口被切走 / 注入失败时才退化为「放进剪贴板」并给提示，
+        /// 保证识别结果不会凭空丢掉。
+        /// </summary>
+        private async Task DeliverVoiceTextAsync(
+            AsrResult result, int elapsedMs)
         {
-            if (_disposed)
+            VoiceCaptureForm bar = DetachVoiceBar();
+            string text = result == null
+                ? "" : (result.Text ?? "").Trim();
+            try
             {
-                return;
-            }
+                if (text.Length == 0)
+                {
+                    Log.Info("语音识别：没有识别到文字");
+                    ShowBarNote(bar, false, "没听清，再说一次");
+                    return;
+                }
 
-            string text = result == null ? "" : (result.Text ?? "");
-            if (text.Trim().Length == 0)
-            {
+                // 用户勾了「同时复制到剪贴板」才去占用剪贴板；
+                // 默认的模拟键入模式完全不碰它。
+                if (_config.VoiceAutoCopy)
+                {
+                    ClipboardHelper.SetText(text);
+                }
+
+                VoiceInsertOutcome outcome =
+                    await InputFocusProbe.InsertAsync(
+                        _voiceTarget,
+                        text,
+                        _config.VoiceInputMethod,
+                        _config.VoiceAutoCopy);
+
+                if (outcome == VoiceInsertOutcome.Inserted)
+                {
+                    Log.Info("语音识别端到端 " + elapsedMs +
+                        " ms，已上屏 " + text.Length + " 字");
+                    ShowBarNote(bar, true,
+                        "已输入 " + text.Length + " 字");
+                    return;
+                }
+
+                string note = outcome == VoiceInsertOutcome.WindowChanged
+                    ? "窗口已切换，文字已复制到剪贴板"
+                    : "无法写入输入框，已复制到剪贴板";
+                Log.Info("语音识别：" + note);
+                ClipboardHelper.SetText(text);
+                ShowBarNote(bar, false, note);
                 _trayIcon.ShowBalloonTip(
-                    3000,
+                    3200,
                     "语音识别",
-                    "这次没有识别到说话内容，再试一次吧。",
+                    note + "，按 Ctrl+V 粘贴。",
                     ToolTipIcon.Info);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("语音输入上屏失败", ex);
+                if (text.Length > 0)
+                {
+                    ClipboardHelper.SetText(text);
+                }
+                ShowBarNote(bar, false, "上屏失败，已复制到剪贴板");
+            }
+        }
+
+        /// <summary>把浮条交给「完成态」自行收尾，不再由托盘持有。</summary>
+        private VoiceCaptureForm DetachVoiceBar()
+        {
+            VoiceCaptureForm bar = _voiceBar;
+            _voiceBar = null;
+            if (bar == null || bar.IsDisposed)
+            {
+                return null;
+            }
+            bar.StopAnimation();
+            return bar;
+        }
+
+        private void ShowBarNote(
+            VoiceCaptureForm bar, bool done, string note)
+        {
+            if (bar == null || bar.IsDisposed)
+            {
                 return;
             }
-
-            if (_voiceResult != null && !_voiceResult.IsDisposed)
+            if (done)
             {
-                _voiceResult.Close();
+                bar.ShowDone(note);
             }
+            else
+            {
+                bar.ShowFailed(note);
+            }
+            ScheduleBarClose(bar, done ? 900 : 2000);
+        }
 
-            VoiceResultForm form = new VoiceResultForm(
-                text,
-                result,
-                elapsedMs,
-                TencentAsr.DescribeEngine(_config.VoiceEngineType),
-                _voiceTargetWindow,
-                _config.VoiceAutoCopy,
-                delegate { return _config; },
-                ShowSettings);
-            _voiceResult = form;
-            form.FormClosed += delegate { _voiceResult = null; };
-            form.RecordAgainRequested += delegate { StartVoiceInput(); };
-            form.Show();
-            form.Activate();
+        /// <summary>成功只闪一下，失败留久一点让人看清原因。</summary>
+        private void ScheduleBarClose(VoiceCaptureForm bar, int delayMs)
+        {
+            System.Windows.Forms.Timer timer =
+                new System.Windows.Forms.Timer();
+            timer.Interval = delayMs;
+            timer.Tick += delegate
+            {
+                timer.Stop();
+                timer.Dispose();
+                if (!bar.IsDisposed)
+                {
+                    bar.Close();
+                }
+            };
+            timer.Start();
         }
 
         /// <summary>
@@ -1519,6 +1623,7 @@ namespace SelectionTranslator
             _disposed = true;
             _firstRunTimer.Stop();
             _voicePollTimer.Stop();
+            _voiceMenuDelayTimer.Stop();
             Application.Idle -= OnFirstIdle;
 
             if (_recorder != null)
@@ -1535,11 +1640,6 @@ namespace SelectionTranslator
                 _recorder = null;
             }
             CloseVoiceBar();
-            if (_voiceResult != null && !_voiceResult.IsDisposed)
-            {
-                _voiceResult.Close();
-                _voiceResult = null;
-            }
 
             if (_rightClickWatcher != null)
             {
@@ -1595,6 +1695,8 @@ namespace SelectionTranslator
                 _firstRunTimer.Dispose();
                 _voicePollTimer.Stop();
                 _voicePollTimer.Dispose();
+                _voiceMenuDelayTimer.Stop();
+                _voiceMenuDelayTimer.Dispose();
 
                 if (_rightClickWatcher != null)
                 {
