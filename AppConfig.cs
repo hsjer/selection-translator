@@ -32,6 +32,15 @@ namespace SelectionTranslator
         /// <summary>关闭时图片文字处理回退到百度图片翻译接口。</summary>
         public bool UseTencentOcr { get; set; }
 
+        // ---- 语音识别（腾讯云一句话识别）----
+        /// <summary>按住快捷键说话，松开即识别。</summary>
+        public bool EnableVoiceInput { get; set; }
+        public string HotkeyVoiceInput { get; set; }
+        /// <summary>EngSerViceType，默认 16k_zh（中文普通话）。</summary>
+        public string VoiceEngineType { get; set; }
+        /// <summary>识别完成后自动把文字放进剪贴板。</summary>
+        public bool VoiceAutoCopy { get; set; }
+
         public AppConfig()
         {
             AppId = "";
@@ -51,6 +60,10 @@ namespace SelectionTranslator
             TencentRegion = TencentOcr.DefaultRegion;
             TencentOcrConfigId = "MulOCR";
             UseTencentOcr = true;
+            EnableVoiceInput = true;
+            HotkeyVoiceInput = "Ctrl+Alt+V";
+            VoiceEngineType = TencentAsr.DefaultEngine;
+            VoiceAutoCopy = true;
         }
 
         public string GetSecret()
@@ -152,6 +165,22 @@ namespace SelectionTranslator
                     config.UseTencentOcr = true;
                 }
 
+                // 语音识别是后加的功能：旧配置里完全没有这几个字段，
+                // 用 VoiceEngineType 是否存在作为「新版配置」的判据。
+                if (!HasVoiceSettings(json))
+                {
+                    config.EnableVoiceInput = true;
+                    config.HotkeyVoiceInput = "Ctrl+Alt+V";
+                    config.VoiceEngineType = TencentAsr.DefaultEngine;
+                    config.VoiceAutoCopy = true;
+                }
+                if (string.IsNullOrEmpty(config.HotkeyVoiceInput))
+                {
+                    config.HotkeyVoiceInput = "Ctrl+Alt+V";
+                }
+                config.VoiceEngineType =
+                    TencentAsr.NormalizeEngine(config.VoiceEngineType);
+
                 // 旧版本配置里没有这个字段，反序列化后为 false，
                 // 这里按默认开启处理。
                 if (!HasClipboardFallbackSetting(json))
@@ -186,6 +215,14 @@ namespace SelectionTranslator
             return json != null &&
                 json.IndexOf(
                     "\"EnableClipboardFallback\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool HasVoiceSettings(string json)
+        {
+            return json != null &&
+                json.IndexOf(
+                    "\"VoiceEngineType\"",
                     StringComparison.OrdinalIgnoreCase) >= 0;
         }
 

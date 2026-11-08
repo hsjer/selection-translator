@@ -238,16 +238,27 @@ namespace SelectionTranslator
 
         private static void SendCtrlC()
         {
+            SendCtrlKey(NativeMethods.VK_C, "Ctrl+C");
+        }
+
+        /// <summary>向前台窗口发送 Ctrl+V，把剪贴板文字贴进输入框。</summary>
+        public static void SendPaste()
+        {
+            SendCtrlKey(NativeMethods.VK_V, "Ctrl+V");
+        }
+
+        private static void SendCtrlKey(int virtualKey, string name)
+        {
             NativeMethods.INPUT[] inputs = new NativeMethods.INPUT[4];
 
             inputs[0].type = NativeMethods.INPUT_KEYBOARD;
             inputs[0].U.ki.wVk = NativeMethods.VK_CONTROL;
 
             inputs[1].type = NativeMethods.INPUT_KEYBOARD;
-            inputs[1].U.ki.wVk = NativeMethods.VK_C;
+            inputs[1].U.ki.wVk = (ushort)virtualKey;
 
             inputs[2].type = NativeMethods.INPUT_KEYBOARD;
-            inputs[2].U.ki.wVk = NativeMethods.VK_C;
+            inputs[2].U.ki.wVk = (ushort)virtualKey;
             inputs[2].U.ki.dwFlags = NativeMethods.KEYEVENTF_KEYUP;
 
             inputs[3].type = NativeMethods.INPUT_KEYBOARD;
@@ -262,7 +273,7 @@ namespace SelectionTranslator
             if (sent != inputs.Length)
             {
                 Log.Error(
-                    "SendInput 发送 Ctrl+C 失败，Win32 错误码：" +
+                    "SendInput 发送 " + name + " 失败，Win32 错误码：" +
                     Marshal.GetLastWin32Error(),
                     null);
             }

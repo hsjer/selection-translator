@@ -66,12 +66,30 @@ Windows 没有公开接口可以往**所有应用**的文本右键菜单里统�
 
 > **凭证**：腾讯云需在控制台开通「文字识别 OCR」并创建 SecretId / SecretKey（在设置里填写，SecretKey 用 DPAPI 加密保存）；百度只需「通用翻译」的 AppID / 密钥。只有回退到百度图片翻译时才需要单独开通百度的「图片翻译」服务。设置里的目标语言使用**文本翻译**语种代码（`ja`/`ko`/`fr`/`es`…），回退时会自动映射为图片接口的 `jp`/`kor`/`fra`/`spa`。
 
+## 语音识别（按住说话）
+
+不想打字时，按住 `Ctrl+Alt+V`（可改）说一句话，松开就出文字：
+
+1. 按下快捷键 → 屏幕底部弹出录音浮条（红色脉冲点 + 实时电平 + 计时）；
+2. **松开快捷键** → 浮条变成「识别中…」，把 WAV 直接传给腾讯云 `SentenceRecognition`；
+3. 结果出现在小窗口里：文本**可编辑**（识别难免同音错字），按钮有「复制」「复制并关闭」「翻译」「粘贴到原窗口」「重新录音」。
+
+几个设计取舍：
+
+- **按住说话而不是点一下开始、再点一下停**：热键 API 只投递按下消息，拿不到松开消息，所以程序用 40ms 的定时器轮询 `GetAsyncKeyState` 判断主键是否松开；松开即结束，最短 300ms（点一下也能录到一小段），最长 60 秒自动收尾（接口上限）。
+- **浮条不抢焦点**：窗口带 `WS_EX_NOACTIVATE` + `ShowWithoutActivation`，录音时你的光标还留在原来的输入框里，所以识别完可以一键「粘贴到原窗口」（程序记下说话前的那个 `HWND`，`SetForegroundWindow` 后发 `Ctrl+V`）。
+- **录音全程在内存里**：16kHz / 16bit / 单声道 PCM，60 秒约 1.9MB，正好在接口 3MB 限制内；不落盘（除非你用 `--voicetest` 自测，那个会存 `voicetest.wav`）。
+- **不引入音频库**：直接 P/Invoke `winmm.dll` 的 `waveIn*`，保持「单文件、无第三方 DLL、拷走就能跑」。
+
+> 识别走腾讯云**语音识别 ASR**，与文字识别共用同一对 SecretId / SecretKey，但需要在控制台**单独开通「语音识别」**，否则会返回 `FailedOperation.UserNotRegistered`。
+
 ## 功能
 
 - 任意应用选中文本 → 自动浮出「译」按钮，点击即翻译（无需右键）
 - 全局快捷键翻译选中文本（默认 `Ctrl+Alt+T`，可在设置中自定义）
 - 全局快捷键打开手动翻译窗口（默认 `Ctrl+Alt+E`，可在设置中自定义）
 - 全局快捷键截图翻译（默认 `Ctrl+Alt+S`，可在设置中自定义）
+- 全局快捷键语音识别（默认 `Ctrl+Alt+V`）：按住说话，松开即识别，结果可编辑 / 复制 / 粘贴回原窗口
 - 截图浮层：左键/右键框选、选区锁定、8 手柄调整、尺寸标签、18 个线性图标就地标注（含序号、马赛克、裁剪、贴图、取字）
 - 桌面贴图：置顶无边框小窗，可拖动、缩放、调透明度，托盘菜单一键关闭全部
 - 截图就地标注完成后「对号」直接复制到剪贴板，不再弹出编辑窗口
@@ -80,14 +98,14 @@ Windows 没有公开接口可以往**所有应用**的文本右键菜单里统�
 - 图片翻译结果窗口：译文直接显示在图片上，可选字复制 / 复制图片 / 贴图 / 保存 / 重新翻译
 - 翻译后在图片上点选 / 框选文字直接复制（原文或译文，按阅读顺序拼接）
 - 未配置腾讯云凭证时自动回退百度图片翻译，功能不中断
-- 托盘菜单：翻译选中文本、手动翻译、截图翻译…、翻译剪贴板、关闭所有桌面贴图、设置、开机启动、退出
-- 百度翻译 API（通用文本翻译，回退时含图片翻译）+ 腾讯云 OCR（GeneralAccurateOCR，TC3-HMAC-SHA256 签名）
+- 托盘菜单：翻译选中文本、手动翻译、截图翻译…、语音识别（按住说话）、翻译剪贴板、关闭所有桌面贴图、设置、开机启动、退出
+- 百度翻译 API（通用文本翻译，回退时含图片翻译）+ 腾讯云 OCR（GeneralAccurateOCR）+ 腾讯云语音识别（SentenceRecognition），全部自行实现 TC3-HMAC-SHA256 签名
 - 自动目标语言：中文→英文，其他→中文；也可固定目标语言（文本与图片分别设置）
 - 百度密钥、腾讯云 SecretKey 都用 Windows DPAPI 加密后保存在当前用户目录
 - 翻译结果窗口支持一键复制原文/译文，并可编辑原文后重新翻译
 - 超长文本自动分段翻译（6000 UTF-8 字节上限）
 - 可在设置中开关「选中即显示」和「右键显示」两种触发方式
-- 可在设置中自定义三个全局快捷键（支持 Ctrl/Alt/Shift/Win + 任意键）
+- 可在设置中自定义四个全局快捷键（支持 Ctrl/Alt/Shift/Win + 任意键）
 
 ## 环境
 
@@ -123,9 +141,9 @@ $env:ST_OUTPUT_NAME = "_next.exe"; .\build.ps1
 ## 首次使用
 
 1. 打开 [百度翻译开放平台](https://fanyi-api.baidu.com/manage/developer)，注册并创建应用，开通「通用翻译」，拿到 **AppID** 和 **密钥**。
-2. （推荐，用于截图识别）打开 [腾讯云访问密钥控制台](https://console.cloud.tencent.com/cam/capi)，在 [文字识别 OCR](https://console.cloud.tencent.com/ocr) 开通服务，创建 **SecretId** 和 **SecretKey**。不填也能用，但截图识别会回退到百度图片翻译（需在百度侧单独开通该服务）。
+2. （推荐，用于截图识别）打开 [腾讯云访问密钥控制台](https://console.cloud.tencent.com/cam/capi)，在 [文字识别 OCR](https://console.cloud.tencent.com/ocr) 开通服务，创建 **SecretId** 和 **SecretKey**。不填也能用，但截图识别会回退到百度图片翻译（需在百度侧单独开通该服务）。想用语音识别，再到 [语音识别控制台](https://console.cloud.tencent.com/asr) 开通服务（与 OCR 共用同一对密钥）。
 3. 运行 `SelectionTranslator.exe`。
-4. 右键托盘图标 →「设置…」，填入百度 AppID / 密钥，以及腾讯云 SecretId / SecretKey；选择目标语言后，可分别点「测试翻译」「测试 OCR」确认可用，再保存。
+4. 右键托盘图标 →「设置…」，填入百度 AppID / 密钥，以及腾讯云 SecretId / SecretKey；选择目标语言后，可分别点「测试翻译」「测试 OCR」「测试麦克风」（会录 3 秒真实调用一次）确认可用，再保存。
 5. （可选）在设置中自定义快捷键：点击任一快捷键输入框，按下想要的组合键即可。
 6. 在任意应用中选中文字：
    - 选中后自动浮出「译」按钮，点击即可翻译；
@@ -135,6 +153,8 @@ $env:ST_OUTPUT_NAME = "_next.exe"; .\build.ps1
    没有现成文本可选中时，按快捷键（默认 `Ctrl+Alt+E`）打开手动翻译窗口，输入文本后回车即翻译。
 
    文字在图片里、无法选中时，按 `Ctrl+Alt+S`，用左键或右键拖拽框选，松开后点浮层工具栏里的「译」即可识别并在结果窗口里看到叠在图片上的译文；只想把图里的字拿出来就点「取字 📄」，会在同一个窗口里显示识别出的文字块，你自己点选 / 框选要复制的部分；点「完成 ✓（对号）」则直接把截图复制到剪贴板。截图后不会再出现旧版编辑器。
+
+   想说话代替打字时，**按住** `Ctrl+Alt+V` 说完再松开，底部浮条会变成「识别中…」，随后弹出结果小窗；改完错别字点「粘贴到原窗口」就能把文字送回刚才那个输入框。
 
 ## 第三方接口
 
@@ -204,6 +224,34 @@ Authorization    = TC3-HMAC-SHA256 Credential=<SecretId>/<scope>, SignedHeaders=
 
 **为什么这样拆**：百度文本翻译比图片翻译轻得多（一次 HTTP 表单请求、无贴合图解码），而腾讯云高精度 OCR 在长串数字、小字、复杂版式上更准；「取字」因此不用再为「不翻译」付出一次翻译调用。代价是腾讯云 OCR 是另一套凭证、按 OCR 调用计费。
 
+### 腾讯云语音识别接口（SentenceRecognition）
+
+请求地址（文档：[一句话识别](https://cloud.tencent.com/document/product/1093/35646)）：
+
+```text
+POST https://asr.tencentcloudapi.com
+X-TC-Action: SentenceRecognition
+X-TC-Version: 2019-06-14
+Content-Type: application/json; charset=utf-8
+```
+
+签名与 OCR 完全同一套 TC3-HMAC-SHA256，只是派生密钥里的 service 换成 `asr`（因此两者的 `Signature` 必然不同，自检里有一条专门比对）。请求体：
+
+```json
+{ "EngSerViceType": "16k_zh", "SourceType": 1, "VoiceFormat": "wav",
+  "Data": "<base64 的 wav>", "DataLen": 19244,
+  "WordInfo": 0, "FilterDirty": 0, "FilterModal": 0, "FilterPunc": 0,
+  "ConvertNumMode": 1 }
+```
+
+- `SourceType=1` 表示直接上传语音数据（不走 `Url`，也就不需要 COS）；`DataLen` 是 **base64 之前**的字节数。
+- 音频限制：≤ 60 秒、base64 前 ≤ 3MB；`VoiceFormat=wav` 时用标准 44 字节头。
+- 引擎（`EngSerViceType`）在设置里可选 20 种：`16k_zh`（中文普通话，默认）、`16k_zh-PY`（中英粤）、`16k_zh_dialect`（23 种方言）、`16k_en`、`16k_ja`、`16k_ko`、`16k_yue` 等。
+- 响应只取 `Response.Result`（整句文本）、`AudioDuration`（毫秒）和 `RequestId`；`WordList` 词级时间戳本轮不解析（`WordInfo=0`）。
+- 常见错误码已做中文提示：`FailedOperation.UserNotRegistered`（未开通语音识别）、`FailedOperation.UserHasNoAmount`（资源包耗尽）、`AuthFailure.*`（凭证/签名）、`InvalidParameterValue.ErrorVoicedataTooLong`（超过 60 秒）等。
+
+**录音实现**：`VoiceRecorder.cs` 直接 P/Invoke `winmm.dll`（`waveInOpen/PrepareHeader/AddBuffer/Start/Stop/Reset`），回调里把数据追加进 `MemoryStream`，并复用同一块缓冲继续录音 —— 复用时要保留 `WHDR_PREPARED`、只清 `WHDR_DONE|WHDR_INQUEUE`，否则 `waveInAddBuffer` 会静默失败，录音只剩头 600ms（6 个缓冲的容量）。
+
 ## 配置与日志
 
 ```text
@@ -222,7 +270,7 @@ Authorization    = TC3-HMAC-SHA256 Credential=<SecretId>/<scope>, SignedHeaders=
 Get-Content "$env:APPDATA\SelectionTranslator\selftest.txt"
 ```
 
-自检（共 88 项）覆盖文本翻译 MD5 签名、自动目标语言判断、DPAPI 加解密、文本分段，图片翻译的 MD5 签名、固定参数（cuid/mac）、语种映射与目标语种校验，截图浮层的构造与选区导出冒烟测试，exe / 托盘图标资源，结果窗口的 `rect` 解析、按阅读顺序拼接选字文本、贴合图解码与画布绘制冒烟测试，以及新增的 **TC3-HMAC-SHA256 签名固定向量**、腾讯云 OCR 响应解析（含 `Polygon` 回退、鉴权错误映射）、阅读顺序、目标语种归一化、管道结果拼装、两套 `Prepare` 路径，以及仅识别模式（结果无译文、窗口不绘制译文遮罩、默认复制原文）的回归用例。
+自检（共 115 项）覆盖文本翻译 MD5 签名、自动目标语言判断、DPAPI 加解密、文本分段，图片翻译的 MD5 签名、固定参数（cuid/mac）、语种映射与目标语种校验，截图浮层的构造与选区导出冒烟测试，exe / 托盘图标资源，结果窗口的 `rect` 解析、按阅读顺序拼接选字文本、贴合图解码与画布绘制冒烟测试，**TC3-HMAC-SHA256 签名固定向量**、腾讯云 OCR 响应解析（含 `Polygon` 回退、鉴权错误映射）、阅读顺序、目标语种归一化、管道结果拼装、两套 `Prepare` 路径。语音识别部分新增：WAV 头字节级校验（RIFF/WAVE/fmt/data、采样率、data 长度、时长换算）、引擎码归一与列表、`asr` 与 `ocr` 签名必须不同、`SentenceRecognition` 响应与错误码解析、录音浮条与结果窗口的渲染冒烟测试，以及仅识别模式（结果无译文、窗口不绘制译文遮罩、默认复制原文）的回归用例。
 
 真实请求诊断（使用当前已保存的凭证，不输出密钥）：
 
@@ -247,12 +295,24 @@ Get-Content "$env:APPDATA\SelectionTranslator\linetest.txt"
 .\dist\SelectionTranslator.exe --tencentprobe
 Get-Content "$env:APPDATA\SelectionTranslator\tencentprobe.txt"
 
+# 只测录音链路（不需要凭证）：录 3 秒，报告设备数/有效时长/峰值电平
+.\dist\SelectionTranslator.exe --voicetest 3
+Get-Content "$env:APPDATA\SelectionTranslator\voicetest.txt"
+
+# 用真实凭证识别一个 wav（不给路径则用 1 秒正弦波，只验证报文）
+.\dist\SelectionTranslator.exe --asrtest "C:\path\to\speech.wav"
+Get-Content "$env:APPDATA\SelectionTranslator\asrtest.txt"
+
+# 验证 asr 的签名 / 公共参数格式（用假凭证，预期 AuthFailure.*）
+.\dist\SelectionTranslator.exe --asrprobe
+Get-Content "$env:APPDATA\SelectionTranslator\asrprobe.txt"
+
 # 强制走旧的百度图片翻译回退路径
 .\dist\SelectionTranslator.exe --baiduimagetest "C:\path\to\screenshot.png"
 Get-Content "$env:APPDATA\SelectionTranslator\imagetest.txt"
 ```
 
-`RESULT: OK` 即该段链路正常；失败时文件里有完整异常信息。`--tencentprobe` 用一组无效凭证发一次真实请求，收到 `AuthFailure.SecretIdNotFound` 之类的鉴权错误反而说明**签名串与公共参数格式被服务端正确解析**，可用来在没填密钥时先排除代码问题。
+`RESULT: OK` 即该段链路正常；失败时文件里有完整异常信息。`--tencentprobe` / `--asrprobe` 用一组无效凭证发一次真实请求，收到 `AuthFailure.SecretIdNotFound` 之类的鉴权错误反而说明**签名串与公共参数格式被服务端正确解析**，可用来在没填密钥时先排除代码问题。
 
 ## 已知限制
 
@@ -269,6 +329,10 @@ Get-Content "$env:APPDATA\SelectionTranslator\imagetest.txt"
 - 逐行译文按 OCR 行一一对齐；如果接口把多行合并或某行过长，程序会做数量对齐，个别文字块可能回退显示原文而非译文。
 - 图片过窄、文字过小或倾斜、背景复杂时识别效果会下降；长宽比超过 3:1 的限制只存在于百度图片翻译回退路径。
 - 截图浮层中的马赛克仅作用于当前显示的截图，不会修改系统剪贴板中的原始内容。
+- 语音识别需要麦克风，并且要在腾讯云控制台**单独开通「语音识别 ASR」**；只开通 OCR 时调用会返回 `FailedOperation.UserNotRegistered`。
+- 语音一次最长 60 秒（接口限制），超时会自动截断收尾；连续说话请分多次录入。
+- 「粘贴到原窗口」依赖 `SetForegroundWindow`，从管理员权限程序切回来时可能被 UIPI 拦截；失败时文字仍在剪贴板里，手动 `Ctrl+V` 即可。
+- 录音浮条不会抢焦点，所以它上面的「点这里停止」需要鼠标点击浮条本身；键盘请用「松开快捷键」结束。
 
 ## 文件结构
 
@@ -276,14 +340,18 @@ Get-Content "$env:APPDATA\SelectionTranslator\imagetest.txt"
 BaiduTranslator.cs            百度文本翻译 API（含逐行翻译）
 BaiduImageTranslator.cs       百度图片翻译 API（回退路径）
 TencentOcr.cs                 腾讯云 GeneralAccurateOCR（TC3 签名/解析/预处理）
+TencentAsr.cs                 腾讯云 SentenceRecognition（一句话识别，共用 TC3 签名）
+VoiceRecorder.cs              麦克风录音（winmm waveIn，16k/16bit/mono → WAV）
+VoiceCaptureForm.cs           录音浮条（不抢焦点，显示时长与电平）
+VoiceResultForm.cs            语音识别结果窗口（可编辑/复制/粘贴回原窗口）
 PicturePipeline.cs            识别 + 翻译管道，统一产出结果结构
 ScreenshotCaptureForm.cs      一体化截图浮层（框选/标注/工具栏）
 ImageTranslationForm.cs       图片翻译结果窗口（译文贴图上/选字复制）
 PinnedImageForm.cs            桌面贴图窗口（置顶/拖动/缩放）
 AppConfig.cs / SettingsForm.cs 配置（两套凭证）与设置界面
 TrayApplicationContext.cs     托盘、全局热键与流程编排
-SelfTest.cs                    自检用例（88 项）
-ImageTest.cs                   真实请求诊断（--imagetest / --tencenttest / --linetest 等）
+SelfTest.cs                    自检用例（115 项）
+ImageTest.cs                   真实请求诊断（--imagetest / --voicetest / --asrtest 等）
 IconFactory.cs / app.ico      托盘与 exe 图标（多尺寸）
 build.ps1                     使用系统 csc.exe 编译并嵌入图标
 app.manifest                  DPI 与 Windows 兼容性声明

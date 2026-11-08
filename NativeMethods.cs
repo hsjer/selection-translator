@@ -30,6 +30,7 @@ namespace SelectionTranslator
         public const int VK_SHIFT = 0x10;
         public const int VK_MENU = 0x12;
         public const int VK_C = 0x43;
+        public const int VK_V = 0x56;
 
         public const int INPUT_KEYBOARD = 1;
         public const uint KEYEVENTF_KEYUP = 0x0002;
@@ -136,6 +137,9 @@ namespace SelectionTranslator
 
         [DllImport("user32.dll")]
         public static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        public static extern bool SetForegroundWindow(IntPtr hWnd);
 
         [DllImport("user32.dll")]
         public static extern uint GetWindowThreadProcessId(

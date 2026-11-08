@@ -12,6 +12,7 @@ namespace SelectionTranslator
         private const int HotkeyId = 1;
         private const int HotkeyIdManual = 2;
         private const int HotkeyIdScreenshot = 3;
+        private const int HotkeyIdVoice = 4;
 
         private readonly NotifyIcon _trayIcon;
         private readonly ContextMenuStrip _trayMenu;
@@ -19,6 +20,7 @@ namespace SelectionTranslator
         private readonly ToolStripMenuItem _translateMenuItem;
         private readonly ToolStripMenuItem _manualMenuItem;
         private readonly ToolStripMenuItem _screenshotMenuItem;
+        private readonly ToolStripMenuItem _voiceMenuItem;
         private readonly Icon _trayIconImage;
         private readonly HotkeyWindow _hotkeyWindow;
         private readonly System.Windows.Forms.Timer _firstRunTimer;
@@ -30,6 +32,8 @@ namespace SelectionTranslator
         private Keys _hotkeyManualKey;
         private int _hotkeyScreenshotModifiers;
         private Keys _hotkeyScreenshotKey;
+        private int _hotkeyVoiceModifiers;
+        private Keys _hotkeyVoiceKey;
         private RightClickWatcher _rightClickWatcher;
         private SelectionMonitor _selectionMonitor;
         private TranslateBubbleForm _bubble;
@@ -38,6 +42,20 @@ namespace SelectionTranslator
         private ToolStripMenuItem _closePinsItem;
         // 防止热键在浮层显示期间重复触发、嵌套打开第二个截图会话。
         private bool _captureInProgress;
+
+        // ---- 语音识别（按住说话）----
+        private VoiceRecorder _recorder;
+        private VoiceCaptureForm _voiceBar;
+        private VoiceResultForm _voiceResult;
+        private System.Windows.Forms.Timer _voicePollTimer;
+        private bool _voiceInProgress;
+        // 防止「定时器收尾」和「点浮条停止」同时进来跑两遍。
+        private bool _voiceStopping;
+        // 说话开始时的前台窗口，识别完成后可以「粘贴回原窗口」。
+        private IntPtr _voiceTargetWindow;
+        // 主键是否已观测到按下：避免热键刚触发就误判为「已松开」。
+        private bool _voiceKeyDown;
+        private DateTime _voiceStartedUtc;
         private SettingsForm _settingsForm;
         private bool _started;
         private bool _busy;
@@ -84,6 +102,13 @@ namespace SelectionTranslator
                 _config.HotkeyScreenshot;
             _screenshotMenuItem.Click += OnScreenshotClicked;
             _trayMenu.Items.Add(_screenshotMenuItem);
+
+            _voiceMenuItem =
+                new ToolStripMenuItem("语音识别（按住说话）");
+            _voiceMenuItem.ShortcutKeyDisplayString =
+                _config.HotkeyVoiceInput;
+            _voiceMenuItem.Click += OnVoiceClicked;
+            _trayMenu.Items.Add(_voiceMenuItem);
 
             ToolStripMenuItem clipboardItem =
                 new ToolStripMenuItem("翻译剪贴板");
@@ -140,6 +165,12 @@ namespace SelectionTranslator
             {
                 _firstRunTimer.Start();
             }
+
+            // 录音期间靠这个定时器轮询主键是否已经松开（热键 API 只给
+            // 按下消息，拿不到松开消息），同时刷新浮条的时长与电平。
+            _voicePollTimer = new System.Windows.Forms.Timer();
+            _voicePollTimer.Interval = 40;
+            _voicePollTimer.Tick += OnVoicePollTick;
         }
 
         private bool HasCredentials()
@@ -224,6 +255,31 @@ namespace SelectionTranslator
                 Log.Info("快捷键格式无效：" +
                     _config.HotkeyScreenshot);
             }
+
+            if (HotkeyParser.TryParse(
+                _config.HotkeyVoiceInput,
+                out modifiers,
+                out key))
+            {
+                _hotkeyVoiceModifiers =
+                    modifiers | NativeMethods.MOD_NOREPEAT;
+                _hotkeyVoiceKey = key;
+                bool ok = _hotkeyWindow.Register(
+                    HotkeyIdVoice,
+                    _hotkeyVoiceModifiers,
+                    key);
+                if (!ok)
+                {
+                    Log.Info("全局快捷键 " +
+                        _config.HotkeyVoiceInput +
+                        " 注册失败，可能已被其他程序占用。");
+                }
+            }
+            else
+            {
+                Log.Info("快捷键格式无效：" +
+                    _config.HotkeyVoiceInput);
+            }
         }
 
         /// <summary>
@@ -234,6 +290,7 @@ namespace SelectionTranslator
             _hotkeyWindow.Unregister(HotkeyId);
             _hotkeyWindow.Unregister(HotkeyIdManual);
             _hotkeyWindow.Unregister(HotkeyIdScreenshot);
+            _hotkeyWindow.Unregister(HotkeyIdVoice);
         }
 
         /// <summary>
@@ -249,6 +306,8 @@ namespace SelectionTranslator
                 _config.HotkeyManualInput;
             _screenshotMenuItem.ShortcutKeyDisplayString =
                 _config.HotkeyScreenshot;
+            _voiceMenuItem.ShortcutKeyDisplayString =
+                _config.HotkeyVoiceInput;
         }
 
         private void OnFirstIdle(object sender, EventArgs e)
@@ -606,6 +665,11 @@ namespace SelectionTranslator
                 StartScreenshot();
                 return;
             }
+            if (id == HotkeyIdVoice)
+            {
+                StartVoiceInput();
+                return;
+            }
             await TranslateSelectionAsync();
         }
 
@@ -617,6 +681,329 @@ namespace SelectionTranslator
         private void OnScreenshotClicked(object sender, EventArgs e)
         {
             StartScreenshot();
+        }
+
+        // ------------------------------------------------------------------
+        // 语音识别（按住说话）
+        // ------------------------------------------------------------------
+
+        private void OnVoiceClicked(object sender, EventArgs e)
+        {
+            StartVoiceInput();
+        }
+
+        /// <summary>
+        /// 按住快捷键开始录音：按下 → 底部录音浮条 → 松开主键（或点浮条）
+        /// → 上传腾讯云「一句话识别」→ 结果小窗口。
+        /// 热键 API 只投递按下消息，拿不到松开消息，所以主键状态靠
+        /// _voicePollTimer 轮询 GetAsyncKeyState。
+        /// </summary>
+        private void StartVoiceInput()
+        {
+            if (_disposed || _voiceInProgress)
+            {
+                return;
+            }
+            if (!_config.EnableVoiceInput)
+            {
+                _trayIcon.ShowBalloonTip(
+                    3000,
+                    "语音识别",
+                    "语音识别已在「设置」里关闭，勾选「启用语音识别」后即可使用。",
+                    ToolTipIcon.Info);
+                return;
+            }
+            if (!_config.HasTencentCredentials())
+            {
+                _trayIcon.ShowBalloonTip(
+                    4000,
+                    "语音识别",
+                    "请先在「设置」里填写腾讯云 SecretId / SecretKey（语音识别与文字识别共用同一对凭证）。",
+                    ToolTipIcon.Warning);
+                ShowSettings();
+                return;
+            }
+            if (VoiceRecorder.DeviceCount() <= 0)
+            {
+                _trayIcon.ShowBalloonTip(
+                    3000,
+                    "语音识别",
+                    "没有检测到麦克风，请插好麦克风后重试。",
+                    ToolTipIcon.Warning);
+                return;
+            }
+
+            _voiceTargetWindow = NativeMethods.GetForegroundWindow();
+            _voiceStartedUtc = DateTime.UtcNow;
+            // 热键刚触发，主键此刻必然是按下的。
+            _voiceKeyDown = true;
+
+            VoiceRecorder recorder = new VoiceRecorder();
+            try
+            {
+                recorder.Start();
+            }
+            catch (Exception ex)
+            {
+                Log.Error("启动录音失败", ex);
+                recorder.Dispose();
+                _trayIcon.ShowBalloonTip(
+                    3500, "语音识别", ex.Message, ToolTipIcon.Warning);
+                return;
+            }
+
+            // 录音期间暂停选区监听，避免误弹「译」气泡抢焦点。
+            if (_rightClickWatcher != null &&
+                _rightClickWatcher.IsRunning)
+            {
+                _rightClickWatcher.Stop();
+            }
+            if (_selectionMonitor != null &&
+                _selectionMonitor.IsRunning)
+            {
+                _selectionMonitor.Stop();
+            }
+
+            _recorder = recorder;
+            _voiceInProgress = true;
+
+            VoiceCaptureForm bar =
+                new VoiceCaptureForm(_config.HotkeyVoiceInput);
+            bar.StopRequested += delegate { StopVoiceInput(); };
+            bar.CancelRequested += delegate { CancelVoiceInput(); };
+            _voiceBar = bar;
+            bar.Show();
+            _voicePollTimer.Start();
+        }
+
+        private void OnVoicePollTick(object sender, EventArgs e)
+        {
+            VoiceRecorder recorder = _recorder;
+            if (!_voiceInProgress || recorder == null)
+            {
+                _voicePollTimer.Stop();
+                return;
+            }
+
+            double elapsedMs =
+                (DateTime.UtcNow - _voiceStartedUtc).TotalMilliseconds;
+
+            VoiceCaptureForm bar = _voiceBar;
+            if (bar != null && !bar.IsDisposed)
+            {
+                bar.UpdateRecording(
+                    TimeSpan.FromMilliseconds(elapsedMs),
+                    recorder.Level);
+            }
+
+            // 接口上限 60 秒，到点自动收尾，避免白录。
+            if (elapsedMs >= VoiceRecorder.MaxSeconds * 1000)
+            {
+                StopVoiceInput();
+                return;
+            }
+
+            bool down = (NativeMethods.GetAsyncKeyState(
+                (int)_hotkeyVoiceKey) & 0x8000) != 0;
+            if (down)
+            {
+                _voiceKeyDown = true;
+                return;
+            }
+
+            // 松开主键就结束；留 300ms 让「点一下」也能录到一小段。
+            if (_voiceKeyDown && elapsedMs >= 300)
+            {
+                StopVoiceInput();
+            }
+        }
+
+        private async void StopVoiceInput()
+        {
+            if (!_voiceInProgress || _voiceStopping)
+            {
+                return;
+            }
+            _voiceStopping = true;
+            _voicePollTimer.Stop();
+
+            VoiceRecorder recorder = _recorder;
+            _recorder = null;
+
+            byte[] wav = null;
+            if (recorder != null)
+            {
+                try
+                {
+                    wav = recorder.Stop();
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("停止录音失败", ex);
+                }
+                recorder.Dispose();
+            }
+
+            int durationMs = wav == null
+                ? 0 : VoiceRecorder.DurationMs(wav.Length);
+            if (wav == null || durationMs < 300)
+            {
+                CloseVoiceBar();
+                RestoreSelectionWatchers();
+                _voiceInProgress = false;
+                _voiceStopping = false;
+                _trayIcon.ShowBalloonTip(
+                    2200,
+                    "语音识别",
+                    "录音太短了，请按住快捷键把话说完再松开。",
+                    ToolTipIcon.Info);
+                return;
+            }
+
+            VoiceCaptureForm bar = _voiceBar;
+            if (bar != null && !bar.IsDisposed)
+            {
+                bar.ShowRecognizing("正在识别…");
+            }
+
+            int started = Environment.TickCount;
+            try
+            {
+                AsrResult result = await TencentAsr.RecognizeAsync(
+                    _config, wav, durationMs);
+                int elapsed = Environment.TickCount - started;
+                Log.Info("语音识别端到端 " + elapsed + " ms，" +
+                    "音频 " + durationMs + " ms");
+
+                CloseVoiceBar();
+                RestoreSelectionWatchers();
+                _voiceInProgress = false;
+                _voiceStopping = false;
+                ShowVoiceResult(result, elapsed);
+            }
+            catch (TranslationException ex)
+            {
+                CloseVoiceBar();
+                RestoreSelectionWatchers();
+                _voiceInProgress = false;
+                _voiceStopping = false;
+                Log.Info("语音识别失败：" + ex.Code + " " + ex.Message);
+                _trayIcon.ShowBalloonTip(
+                    4500, "语音识别失败", ex.Message, ToolTipIcon.Warning);
+            }
+            catch (Exception ex)
+            {
+                CloseVoiceBar();
+                RestoreSelectionWatchers();
+                _voiceInProgress = false;
+                _voiceStopping = false;
+                Log.Error("语音识别时发生未处理错误", ex);
+                _trayIcon.ShowBalloonTip(
+                    4500, "语音识别失败", ex.Message, ToolTipIcon.Warning);
+            }
+        }
+
+        /// <summary>点浮条上的 × ，直接丢弃这次录音。</summary>
+        private void CancelVoiceInput()
+        {
+            if (!_voiceInProgress || _voiceStopping)
+            {
+                return;
+            }
+            _voiceStopping = true;
+            _voicePollTimer.Stop();
+
+            VoiceRecorder recorder = _recorder;
+            _recorder = null;
+            if (recorder != null)
+            {
+                try
+                {
+                    recorder.Stop();
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("取消录音失败", ex);
+                }
+                recorder.Dispose();
+            }
+
+            CloseVoiceBar();
+            RestoreSelectionWatchers();
+            _voiceInProgress = false;
+            _voiceStopping = false;
+            Log.Info("录音已取消");
+        }
+
+        private void RestoreSelectionWatchers()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+            if (_rightClickWatcher != null &&
+                _config.EnableRightClick &&
+                !_rightClickWatcher.IsRunning)
+            {
+                _rightClickWatcher.Start();
+            }
+            if (_selectionMonitor != null &&
+                _config.ShowBubbleOnSelection &&
+                !_selectionMonitor.IsRunning)
+            {
+                _selectionMonitor.Start();
+            }
+        }
+
+        private void CloseVoiceBar()
+        {
+            VoiceCaptureForm bar = _voiceBar;
+            _voiceBar = null;
+            if (bar == null || bar.IsDisposed)
+            {
+                return;
+            }
+            bar.StopAnimation();
+            bar.Close();
+        }
+
+        private void ShowVoiceResult(AsrResult result, int elapsedMs)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            string text = result == null ? "" : (result.Text ?? "");
+            if (text.Trim().Length == 0)
+            {
+                _trayIcon.ShowBalloonTip(
+                    3000,
+                    "语音识别",
+                    "这次没有识别到说话内容，再试一次吧。",
+                    ToolTipIcon.Info);
+                return;
+            }
+
+            if (_voiceResult != null && !_voiceResult.IsDisposed)
+            {
+                _voiceResult.Close();
+            }
+
+            VoiceResultForm form = new VoiceResultForm(
+                text,
+                result,
+                elapsedMs,
+                TencentAsr.DescribeEngine(_config.VoiceEngineType),
+                _voiceTargetWindow,
+                _config.VoiceAutoCopy,
+                delegate { return _config; },
+                ShowSettings);
+            _voiceResult = form;
+            form.FormClosed += delegate { _voiceResult = null; };
+            form.RecordAgainRequested += delegate { StartVoiceInput(); };
+            form.Show();
+            form.Activate();
         }
 
         /// <summary>
@@ -1131,7 +1518,28 @@ namespace SelectionTranslator
 
             _disposed = true;
             _firstRunTimer.Stop();
+            _voicePollTimer.Stop();
             Application.Idle -= OnFirstIdle;
+
+            if (_recorder != null)
+            {
+                try
+                {
+                    _recorder.Stop();
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("退出时停止录音失败", ex);
+                }
+                _recorder.Dispose();
+                _recorder = null;
+            }
+            CloseVoiceBar();
+            if (_voiceResult != null && !_voiceResult.IsDisposed)
+            {
+                _voiceResult.Close();
+                _voiceResult = null;
+            }
 
             if (_rightClickWatcher != null)
             {
@@ -1185,6 +1593,8 @@ namespace SelectionTranslator
                 _disposed = true;
                 _firstRunTimer.Stop();
                 _firstRunTimer.Dispose();
+                _voicePollTimer.Stop();
+                _voicePollTimer.Dispose();
 
                 if (_rightClickWatcher != null)
                 {

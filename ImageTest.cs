@@ -203,6 +203,303 @@ namespace SelectionTranslator
                 "腾讯云请求格式探针");
         }
 
+        /// <summary>
+        /// 用假凭证向「一句话识别」发一次真实请求，验证 asr 的签名、
+        /// Action / Version / Content-Type 等公共参数能被服务端解析。
+        /// 预期返回 AuthFailure.*；返回参数错误则说明报文有问题。
+        /// 不读配置、不需要麦克风。
+        /// </summary>
+        public static void RunAsrProbe()
+        {
+            StringBuilder log = new StringBuilder();
+            bool ok = false;
+            try
+            {
+                ServicePointManager.SecurityProtocol |=
+                    SecurityProtocolType.Tls12;
+
+                AppConfig probe = new AppConfig();
+                probe.TencentSecretId =
+                    "AKID00000000000000000000000000";
+                probe.SetTencentSecretKey("probe-only-invalid-key");
+
+                byte[] wav = BuildToneWav(1);
+                log.AppendLine("note=使用假凭证与 1 秒正弦波，仅验证请求格式");
+                log.AppendLine("endpoint=" + TencentAsr.Endpoint);
+                log.AppendLine("action=" + TencentAsr.Action);
+                log.AppendLine("version=" + TencentAsr.Version);
+                log.AppendLine("engine=" + TencentAsr.DefaultEngine);
+                log.AppendLine("wavBytes=" + wav.Length);
+                log.AppendLine("durationMs=" +
+                    VoiceRecorder.DurationMs(wav.Length));
+
+                string code = "NONE";
+                string message = "";
+                try
+                {
+                    AsrResult result = TencentAsr.RecognizeAsync(
+                        probe, wav, VoiceRecorder.DurationMs(wav.Length))
+                        .GetAwaiter().GetResult();
+                    code = "OK";
+                    message = "意外成功：" + result.Text;
+                }
+                catch (TranslationException ex)
+                {
+                    code = ex.Code;
+                    message = ex.Message;
+                }
+                log.AppendLine("serverCode=" + code);
+                log.AppendLine("message=" + message);
+
+                ok = code.StartsWith(
+                    "AuthFailure", StringComparison.Ordinal) ||
+                    code == "OK";
+                if (!ok)
+                {
+                    log.AppendLine(
+                        "hint=未收到鉴权错误，请检查网络或请求格式");
+                }
+                log.AppendLine(ok
+                    ? "RESULT: OK (request format accepted)"
+                    : "RESULT: FAILED");
+            }
+            catch (Exception ex)
+            {
+                log.AppendLine("RESULT: FAILED");
+                log.AppendLine(ex.ToString());
+            }
+            WriteReport("asrprobe.txt", log, ok,
+                "腾讯云语音识别请求格式探针");
+        }
+
+        /// <summary>
+        /// 用已保存的真实凭证识别一段 WAV。不给路径时用 1 秒正弦波
+        /// （只验证签名与报文，识别结果多半为空）。
+        /// </summary>
+        public static void RunAsrTest(string wavPath)
+        {
+            StringBuilder log = new StringBuilder();
+            bool ok = false;
+            try
+            {
+                ServicePointManager.SecurityProtocol |=
+                    SecurityProtocolType.Tls12;
+
+                AppConfig config = ConfigStore.Load();
+                byte[] wav;
+                if (!string.IsNullOrEmpty(wavPath) && File.Exists(wavPath))
+                {
+                    wav = File.ReadAllBytes(wavPath);
+                    log.AppendLine("source=" + wavPath);
+                }
+                else
+                {
+                    wav = BuildToneWav(1);
+                    log.AppendLine("source=generated 1s tone");
+                }
+
+                int durationMs = VoiceRecorder.DurationMs(wav.Length);
+                log.AppendLine("engine=" +
+                    TencentAsr.DescribeEngine(config.VoiceEngineType));
+                log.AppendLine("wavBytes=" + wav.Length);
+                log.AppendLine("durationMs=" + durationMs);
+
+                AsrResult result = TencentAsr.RecognizeAsync(
+                    config, wav, durationMs)
+                    .GetAwaiter().GetResult();
+
+                log.AppendLine("chars=" + result.Text.Length);
+                log.AppendLine("audioDurationMs=" +
+                    result.AudioDurationMs);
+                log.AppendLine("requestId=" + result.RequestId);
+                log.AppendLine("text=" + result.Text);
+                ok = true;
+                log.AppendLine("RESULT: OK");
+            }
+            catch (TranslationException ex)
+            {
+                log.AppendLine("serverCode=" + ex.Code);
+                log.AppendLine("message=" + ex.Message);
+                log.AppendLine("RESULT: FAILED");
+            }
+            catch (Exception ex)
+            {
+                log.AppendLine("RESULT: FAILED");
+                log.AppendLine(ex.ToString());
+            }
+            WriteReport("asrtest.txt", log, ok, "腾讯云语音识别实测");
+        }
+
+        /// <summary>生成一段 440Hz 正弦波 WAV，用于验证链路是否通畅。</summary>
+        private static byte[] BuildToneWav(int seconds)
+        {
+            int byteRate = VoiceRecorder.SampleRate * 2;
+            int total = byteRate * Math.Max(1, seconds);
+            byte[] pcm = new byte[total];
+            for (int i = 0; i < total / 2; i++)
+            {
+                double t = (double)i / VoiceRecorder.SampleRate;
+                short sample = (short)(
+                    Math.Sin(2 * Math.PI * 440.0 * t) * 6000);
+                pcm[i * 2] = (byte)(sample & 0xFF);
+                pcm[i * 2 + 1] = (byte)((sample >> 8) & 0xFF);
+            }
+            return VoiceRecorder.WrapWav(pcm);
+        }
+
+        /// <summary>
+        /// 只测录音链路（不需要凭证、不联网）：录 2 秒，报告设备数、
+        /// 有效音频长度、峰值电平和保存的 wav 路径。
+        /// </summary>
+        public static void RunVoiceTest(int seconds)
+        {
+            StringBuilder log = new StringBuilder();
+            bool ok = false;
+            try
+            {
+                if (seconds <= 0)
+                {
+                    seconds = 2;
+                }
+                int devices = VoiceRecorder.DeviceCount();
+                log.AppendLine("devices=" + devices);
+                log.AppendLine("seconds=" + seconds);
+
+                byte[] wav;
+                int peak;
+                using (VoiceRecorder recorder = new VoiceRecorder())
+                {
+                    recorder.Start();
+                    int waited = 0;
+                    float maxLevel = 0f;
+                    while (waited < seconds * 1000)
+                    {
+                        System.Threading.Thread.Sleep(100);
+                        waited += 100;
+                        if (recorder.Level > maxLevel)
+                        {
+                            maxLevel = recorder.Level;
+                        }
+                    }
+                    wav = recorder.Stop();
+                    peak = (int)(maxLevel * 100);
+                    log.AppendLine("peakLevel=" + peak + "%");
+                    log.AppendLine("reuseFailures=" +
+                        recorder.ReuseFailures);
+                }
+
+                int durationMs = VoiceRecorder.DurationMs(wav.Length);
+                log.AppendLine("wavBytes=" + wav.Length);
+                log.AppendLine("durationMs=" + durationMs);
+
+                string wavPath = Path.Combine(
+                    ConfigStore.DataDirectory, "voicetest.wav");
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                File.WriteAllBytes(wavPath, wav);
+                log.AppendLine("saved=" + wavPath);
+
+                ok = durationMs >= seconds * 1000 - 800;
+                log.AppendLine(ok ? "RESULT: OK" : "RESULT: FAILED");
+            }
+            catch (Exception ex)
+            {
+                log.AppendLine("RESULT: FAILED");
+                log.AppendLine(ex.ToString());
+            }
+            WriteReport("voicetest.txt", log, ok, "麦克风录音自测");
+        }
+
+        /// <summary>
+        /// 把语音相关的三个界面离屏渲染成 PNG，方便在没有显示器的环境下
+        /// 检查布局（输出到 %APPDATA%\SelectionTranslator\ui-*.png）。
+        /// </summary>
+        public static void RunUiPreview()
+        {
+            StringBuilder log = new StringBuilder();
+            bool ok = false;
+            try
+            {
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+
+                using (VoiceCaptureForm bar =
+                    new VoiceCaptureForm("Ctrl+Alt+V"))
+                {
+                    bar.UpdateRecording(
+                        TimeSpan.FromSeconds(4.2), 0.72f);
+                    SaveForm(bar, "ui-voicebar-recording.png", log);
+                    bar.ShowRecognizing("正在识别…");
+                    SaveForm(bar, "ui-voicebar-recognizing.png", log);
+                }
+
+                AsrResult sample = new AsrResult();
+                sample.Text = "今天下午三点开会，记得带上上周的报表。";
+                sample.AudioDurationMs = 4200;
+                sample.RequestId = "83b414b9-8bd8-4d47";
+                using (VoiceResultForm form = new VoiceResultForm(
+                    sample.Text,
+                    sample,
+                    812,
+                    TencentAsr.DescribeEngine("16k_zh"),
+                    IntPtr.Zero,
+                    false,
+                    delegate { return new AppConfig(); },
+                    null))
+                {
+                    SaveForm(form, "ui-voice-result.png", log);
+                }
+
+                using (SettingsForm form = new SettingsForm(new AppConfig()))
+                {
+                    SaveForm(form, "ui-settings.png", log);
+                }
+
+                ok = true;
+                log.AppendLine("RESULT: OK");
+            }
+            catch (Exception ex)
+            {
+                log.AppendLine("RESULT: FAILED");
+                log.AppendLine(ex.ToString());
+            }
+            WriteReport("uipreview.txt", log, ok, "界面离屏预览");
+        }
+
+        private static void SaveForm(
+            Form form, string fileName, StringBuilder log)
+        {
+            // DrawToBitmap 只会画「已经创建句柄并完成布局」的窗体，
+            // 因此在屏幕外真正 Show 一次，再截给自己看。
+            bool wasVisible = form.Visible;
+            if (!wasVisible)
+            {
+                form.StartPosition = FormStartPosition.Manual;
+                form.Location = new Point(-6000, -6000);
+                form.ShowInTaskbar = false;
+                form.Show();
+                Application.DoEvents();
+                form.Refresh();
+                Application.DoEvents();
+            }
+
+            using (Bitmap surface =
+                new Bitmap(form.Width, form.Height))
+            {
+                form.DrawToBitmap(
+                    surface,
+                    new Rectangle(0, 0, form.Width, form.Height));
+                string path = Path.Combine(
+                    ConfigStore.DataDirectory, fileName);
+                surface.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+                log.AppendLine(fileName + " = " +
+                    form.Width + "x" + form.Height);
+            }
+
+            if (!wasVisible)
+            {
+                form.Hide();
+            }
+        }
+
         private static void WriteReport(
             string fileName,
             StringBuilder log,

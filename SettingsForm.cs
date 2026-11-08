@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace SelectionTranslator
@@ -38,6 +39,10 @@ namespace SelectionTranslator
         private readonly ComboBox _tencentRegionBox;
         private readonly ComboBox _tencentConfigBox;
         private readonly Button _ocrTestButton;
+        private readonly CheckBox _voiceEnableBox;
+        private readonly TextBox _hotkeyVoiceField;
+        private readonly ComboBox _voiceEngineBox;
+        private readonly CheckBox _voiceAutoCopyBox;
         private TextBox _capturingField;
         private string _capturingFieldOriginal;
         private readonly Button _testButton;
@@ -51,7 +56,12 @@ namespace SelectionTranslator
             Text = "设置 - 选中文本翻译";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(480, 772);
+            // 内容总高约 900；屏幕不够高时允许滚动，避免按钮被裁掉。
+            int availableHeight =
+                Screen.PrimaryScreen.WorkingArea.Height - 60;
+            ClientSize = new Size(
+                480, Math.Min(930, Math.Max(560, availableHeight)));
+            AutoScroll = true;
             MaximizeBox = false;
             MinimizeBox = false;
             ShowInTaskbar = false;
@@ -267,9 +277,9 @@ namespace SelectionTranslator
             Label hintLabel = new Label();
             hintLabel.Text =
                 "点击快捷键输入框后按下组合键即可自定义。\r\n" +
-                "三个快捷键不能相同。超长文本会自动分段翻译。";
+                "四个快捷键不能相同。超长文本会自动分段翻译。";
             hintLabel.Location = new Point(16, 504);
-            hintLabel.Size = new Size(448, 46);
+            hintLabel.Size = new Size(440, 46);
             hintLabel.ForeColor = Color.FromArgb(90, 98, 112);
             Controls.Add(hintLabel);
 
@@ -279,7 +289,7 @@ namespace SelectionTranslator
             GroupBox tencentGroup = new GroupBox();
             tencentGroup.Text = "文字识别（腾讯云 OCR · GeneralAccurateOCR）";
             tencentGroup.Location = new Point(12, 552);
-            tencentGroup.Size = new Size(456, 168);
+            tencentGroup.Size = new Size(448, 178);
             tencentGroup.Font = Font;
             Controls.Add(tencentGroup);
 
@@ -291,9 +301,9 @@ namespace SelectionTranslator
             tencentGroup.Controls.Add(_useTencentBox);
 
             LinkLabel tencentLink = new LinkLabel();
-            tencentLink.Text = "获取 SecretId / SecretKey";
+            tencentLink.Text = "如何获取密钥？";
             tencentLink.AutoSize = true;
-            tencentLink.Location = new Point(300, 24);
+            tencentLink.Location = new Point(316, 24);
             tencentLink.LinkClicked += OnTencentLinkClicked;
             tencentGroup.Controls.Add(tencentLink);
 
@@ -339,8 +349,8 @@ namespace SelectionTranslator
             _tencentRegionBox = new ComboBox();
             _tencentRegionBox.DropDownStyle =
                 ComboBoxStyle.DropDownList;
-            _tencentRegionBox.Location = new Point(96, 104);
-            _tencentRegionBox.Size = new Size(112, 23);
+            _tencentRegionBox.Location = new Point(60, 104);
+            _tencentRegionBox.Size = new Size(140, 23);
             _tencentRegionBox.Items.AddRange(new object[]
             {
                 "ap-guangzhou", "ap-shanghai", "ap-beijing",
@@ -355,14 +365,14 @@ namespace SelectionTranslator
             Label configLabel = new Label();
             configLabel.Text = "识别模式";
             configLabel.AutoSize = true;
-            configLabel.Location = new Point(218, 108);
+            configLabel.Location = new Point(210, 108);
             tencentGroup.Controls.Add(configLabel);
 
             _tencentConfigBox = new ComboBox();
             _tencentConfigBox.DropDownStyle =
                 ComboBoxStyle.DropDownList;
-            _tencentConfigBox.Location = new Point(286, 104);
-            _tencentConfigBox.Size = new Size(154, 23);
+            _tencentConfigBox.Location = new Point(272, 104);
+            _tencentConfigBox.Size = new Size(168, 23);
             _tencentConfigBox.Items.AddRange(new object[]
             {
                 "MulOCR（多语种）", "OCR（通用）"
@@ -376,38 +386,113 @@ namespace SelectionTranslator
             tencentHint.Text =
                 "识别用腾讯云，翻译仍用百度文本翻译；关闭开关则回退百度图片翻译。\r\n" +
                 "SecretKey 用 Windows DPAPI 加密保存在本机，不会随 exe 拷走。";
-            tencentHint.Location = new Point(12, 134);
-            tencentHint.Size = new Size(432, 30);
+            tencentHint.Location = new Point(12, 136);
+            tencentHint.Size = new Size(424, 36);
             tencentHint.ForeColor = Color.FromArgb(90, 98, 112);
             tencentGroup.Controls.Add(tencentHint);
+
+            // --------------------------------------------------------------
+            // 语音识别（腾讯云一句话识别）
+            // --------------------------------------------------------------
+            GroupBox voiceGroup = new GroupBox();
+            voiceGroup.Text = "语音识别（腾讯云一句话识别 · 按住说话）";
+            voiceGroup.Location = new Point(12, 738);
+            voiceGroup.Size = new Size(448, 142);
+            voiceGroup.Font = Font;
+            Controls.Add(voiceGroup);
+
+            _voiceEnableBox = new CheckBox();
+            _voiceEnableBox.Text = "启用语音识别（按住快捷键说话，松开即识别）";
+            _voiceEnableBox.AutoSize = true;
+            _voiceEnableBox.Location = new Point(12, 22);
+            _voiceEnableBox.Checked = config.EnableVoiceInput;
+            voiceGroup.Controls.Add(_voiceEnableBox);
+
+            Label voiceHotkeyLabel = new Label();
+            voiceHotkeyLabel.Text = "语音快捷键";
+            voiceHotkeyLabel.AutoSize = true;
+            voiceHotkeyLabel.Location = new Point(12, 52);
+            voiceGroup.Controls.Add(voiceHotkeyLabel);
+
+            _hotkeyVoiceField = new TextBox();
+            _hotkeyVoiceField.ReadOnly = true;
+            _hotkeyVoiceField.TextAlign = HorizontalAlignment.Center;
+            _hotkeyVoiceField.Location = new Point(96, 48);
+            _hotkeyVoiceField.Size = new Size(110, 23);
+            _hotkeyVoiceField.Text = config.HotkeyVoiceInput;
+            _hotkeyVoiceField.Click += OnHotkeyFieldClicked;
+            _hotkeyVoiceField.Leave += OnHotkeyFieldLeave;
+            voiceGroup.Controls.Add(_hotkeyVoiceField);
+
+            Label voiceEngineLabel = new Label();
+            voiceEngineLabel.Text = "识别引擎";
+            voiceEngineLabel.AutoSize = true;
+            voiceEngineLabel.Location = new Point(214, 52);
+            voiceGroup.Controls.Add(voiceEngineLabel);
+
+            _voiceEngineBox = new ComboBox();
+            _voiceEngineBox.DropDownStyle = ComboBoxStyle.DropDownList;
+            _voiceEngineBox.Location = new Point(272, 48);
+            _voiceEngineBox.Size = new Size(164, 23);
+            System.Collections.Generic.List<AsrEngineOption> engines =
+                TencentAsr.BuildEngineOptions();
+            for (int i = 0; i < engines.Count; i++)
+            {
+                _voiceEngineBox.Items.Add(engines[i]);
+            }
+            SelectVoiceEngine(config.VoiceEngineType);
+            voiceGroup.Controls.Add(_voiceEngineBox);
+
+            _voiceAutoCopyBox = new CheckBox();
+            _voiceAutoCopyBox.Text = "识别完成后自动复制到剪贴板";
+            _voiceAutoCopyBox.AutoSize = true;
+            _voiceAutoCopyBox.Location = new Point(12, 78);
+            _voiceAutoCopyBox.Checked = config.VoiceAutoCopy;
+            voiceGroup.Controls.Add(_voiceAutoCopyBox);
+
+            Label voiceHint = new Label();
+            voiceHint.Text =
+                "识别结果可编辑，能复制或直接粘贴回原窗口；\r\n" +
+                "与文字识别共用腾讯云凭证，需先在控制台开通「语音识别」。";
+            voiceHint.Location = new Point(12, 100);
+            voiceHint.Size = new Size(424, 36);
+            voiceHint.ForeColor = Color.FromArgb(90, 98, 112);
+            voiceGroup.Controls.Add(voiceHint);
 
             // --------------------------------------------------------------
             // 底部按钮
             // --------------------------------------------------------------
             _ocrTestButton = new Button();
             _ocrTestButton.Text = "测试 OCR";
-            _ocrTestButton.Location = new Point(16, 734);
+            _ocrTestButton.Location = new Point(16, 892);
             _ocrTestButton.Size = new Size(88, 28);
             _ocrTestButton.Click += OnOcrTestClicked;
             Controls.Add(_ocrTestButton);
 
             _testButton = new Button();
             _testButton.Text = "测试翻译";
-            _testButton.Location = new Point(112, 734);
+            _testButton.Location = new Point(112, 892);
             _testButton.Size = new Size(88, 28);
             _testButton.Click += OnTestClicked;
             Controls.Add(_testButton);
 
+            Button micTestButton = new Button();
+            micTestButton.Text = "测试麦克风";
+            micTestButton.Location = new Point(208, 892);
+            micTestButton.Size = new Size(94, 28);
+            micTestButton.Click += OnMicTestClicked;
+            Controls.Add(micTestButton);
+
             Button saveButton = new Button();
             saveButton.Text = "保存";
-            saveButton.Location = new Point(310, 734);
+            saveButton.Location = new Point(310, 892);
             saveButton.Size = new Size(68, 28);
             saveButton.Click += OnSaveClicked;
             Controls.Add(saveButton);
 
             Button cancelButton = new Button();
             cancelButton.Text = "取消";
-            cancelButton.Location = new Point(384, 734);
+            cancelButton.Location = new Point(384, 892);
             cancelButton.Size = new Size(64, 28);
             cancelButton.DialogResult = DialogResult.Cancel;
             Controls.Add(cancelButton);
@@ -511,6 +596,10 @@ namespace SelectionTranslator
                 _tencentConfigBox.SelectedIndex == 1
                     ? "OCR" : "MulOCR";
             edited.UseTencentOcr = _useTencentBox.Checked;
+            edited.EnableVoiceInput = _voiceEnableBox.Checked;
+            edited.HotkeyVoiceInput = _hotkeyVoiceField.Text.Trim();
+            edited.VoiceEngineType = GetSelectedVoiceEngine();
+            edited.VoiceAutoCopy = _voiceAutoCopyBox.Checked;
             return edited;
         }
 
@@ -536,6 +625,34 @@ namespace SelectionTranslator
                 _tencentRegionBox.SelectedItem);
             return string.IsNullOrEmpty(value)
                 ? TencentOcr.DefaultRegion : value;
+        }
+
+        private void SelectVoiceEngine(string code)
+        {
+            string normalized = TencentAsr.NormalizeEngine(code);
+            for (int i = 0; i < _voiceEngineBox.Items.Count; i++)
+            {
+                AsrEngineOption option =
+                    _voiceEngineBox.Items[i] as AsrEngineOption;
+                if (option != null &&
+                    string.Equals(
+                        option.Code,
+                        normalized,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    _voiceEngineBox.SelectedIndex = i;
+                    return;
+                }
+            }
+            _voiceEngineBox.SelectedIndex = 0;
+        }
+
+        private string GetSelectedVoiceEngine()
+        {
+            AsrEngineOption option =
+                _voiceEngineBox.SelectedItem as AsrEngineOption;
+            return option == null
+                ? TencentAsr.DefaultEngine : option.Code;
         }
 
         private void OnShowSecretChanged(object sender, EventArgs e)
@@ -673,6 +790,111 @@ namespace SelectionTranslator
             {
                 _ocrTestButton.Enabled = true;
                 _ocrTestButton.Text = "测试 OCR";
+            }
+        }
+
+        /// <summary>
+        /// 录 3 秒麦克风并真实调用一句话识别，验证麦克风、网络、凭证和引擎。
+        /// </summary>
+        private async void OnMicTestClicked(object sender, EventArgs e)
+        {
+            AppConfig edited = BuildEditedConfig();
+            if (!edited.HasTencentCredentials())
+            {
+                MessageBox.Show(
+                    this,
+                    "请先填写腾讯云 SecretId 和 SecretKey。",
+                    "测试麦克风",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+            if (VoiceRecorder.DeviceCount() <= 0)
+            {
+                MessageBox.Show(
+                    this,
+                    "没有检测到麦克风设备。",
+                    "测试麦克风",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            Button button = sender as Button;
+            if (button != null)
+            {
+                button.Enabled = false;
+            }
+
+            try
+            {
+                if (button != null)
+                {
+                    button.Text = "录音 3 秒…";
+                }
+
+                byte[] wav;
+                using (VoiceRecorder recorder = new VoiceRecorder())
+                {
+                    recorder.Start();
+                    for (int i = 0; i < 15; i++)
+                    {
+                        await Task.Delay(200);
+                        if (button != null && !button.IsDisposed)
+                        {
+                            button.Text = "录音 " +
+                                ((15 - i) * 0.2).ToString("0.0") + " 秒";
+                        }
+                    }
+                    wav = recorder.Stop();
+                }
+
+                int durationMs = VoiceRecorder.DurationMs(wav.Length);
+                if (button != null && !button.IsDisposed)
+                {
+                    button.Text = "识别中…";
+                }
+
+                AsrResult result = await TencentAsr.RecognizeAsync(
+                    edited, wav, durationMs);
+                MessageBox.Show(
+                    this,
+                    "录音 " + (durationMs / 1000.0).ToString("0.0") +
+                    " 秒，识别成功。\r\n\r\n" +
+                    (result.Text.Length > 0
+                        ? "识别内容：" + result.Text
+                        : "服务端返回了空文本，请说得大声一点再试。") +
+                    "\r\n\r\nRequestId：" + result.RequestId,
+                    "测试麦克风",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            catch (TranslationException ex)
+            {
+                MessageBox.Show(
+                    this,
+                    ex.Message,
+                    "测试麦克风失败",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("测试语音识别失败", ex);
+                MessageBox.Show(
+                    this,
+                    "测试失败：" + ex.Message,
+                    "测试麦克风失败",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                if (button != null && !button.IsDisposed)
+                {
+                    button.Enabled = true;
+                    button.Text = "测试麦克风";
+                }
             }
         }
 
@@ -909,18 +1131,35 @@ namespace SelectionTranslator
                 return;
             }
 
-            // 三个快捷键不能相同。
+            if (!HotkeyParser.TryParse(
+                edited.HotkeyVoiceInput,
+                out modifiers,
+                out key))
+            {
+                MessageBox.Show(
+                    this,
+                    "「语音识别快捷键」格式无效。\r\n" +
+                    "请点击输入框后重新按下组合键。",
+                    "保存设置",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            // 四个快捷键不能相同。
             string[] hotkeys = new string[]
             {
                 edited.HotkeyTranslateSelection,
                 edited.HotkeyManualInput,
-                edited.HotkeyScreenshot
+                edited.HotkeyScreenshot,
+                edited.HotkeyVoiceInput
             };
             string[] hotkeyNames = new string[]
             {
                 "翻译选中文本",
                 "手动翻译",
-                "截图翻译"
+                "截图翻译",
+                "语音识别"
             };
             for (int i = 0; i < hotkeys.Length; i++)
             {

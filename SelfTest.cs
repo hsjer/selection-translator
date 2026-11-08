@@ -598,6 +598,185 @@ namespace SelectionTranslator
                     }
                 }
 
+                // ---- 语音识别（一句话识别）----
+                byte[] pcmSample = new byte[3200];   // 100ms 的静音 PCM
+                byte[] wavSample = VoiceRecorder.WrapWav(pcmSample);
+                Check(output, ref ok, "wav total bytes",
+                    wavSample.Length.ToString(),
+                    (VoiceRecorder.HeaderBytes + 3200).ToString());
+                Check(output, ref ok, "wav riff",
+                    Encoding.ASCII.GetString(wavSample, 0, 4), "RIFF");
+                Check(output, ref ok, "wav wave",
+                    Encoding.ASCII.GetString(wavSample, 8, 4), "WAVE");
+                Check(output, ref ok, "wav data",
+                    Encoding.ASCII.GetString(wavSample, 36, 4), "data");
+                Check(output, ref ok, "wav sample rate",
+                    BitConverter.ToInt32(wavSample, 24).ToString(),
+                    VoiceRecorder.SampleRate.ToString());
+                Check(output, ref ok, "wav data length",
+                    BitConverter.ToInt32(wavSample, 40).ToString(),
+                    "3200");
+                Check(output, ref ok, "wav duration ms",
+                    VoiceRecorder.DurationMs(wavSample.Length).ToString(),
+                    "100");
+                Check(output, ref ok, "wav empty duration",
+                    VoiceRecorder.DurationMs(VoiceRecorder.HeaderBytes)
+                        .ToString(), "0");
+
+                Check(output, ref ok, "asr engine default",
+                    TencentAsr.NormalizeEngine(null), "16k_zh");
+                Check(output, ref ok, "asr engine keep known",
+                    TencentAsr.NormalizeEngine("16k_en"), "16k_en");
+                Check(output, ref ok, "asr engine fallback",
+                    TencentAsr.NormalizeEngine("bogus"), "16k_zh");
+                Check(output, ref ok, "asr engine count",
+                    TencentAsr.BuildEngineOptions().Count.ToString(),
+                    "20");
+                Check(output, ref ok, "asr engine label",
+                    TencentAsr.DescribeEngine("16k_ja"),
+                    "16k_ja · 日语");
+
+                // asr 与 ocr 的签名必须不同（service 参与派生密钥）。
+                string payload = "{\"EngSerViceType\":\"16k_zh\"}";
+                string asrAuth = TencentAsr.BuildAuthorization(
+                    "AKIDTEST", "secret", payload, 1599140479);
+                string ocrAuth = TencentOcr.BuildAuthorization(
+                    "AKIDTEST", "secret", "ap-guangzhou",
+                    payload, 1599140479);
+                Check(output, ref ok, "asr auth algorithm",
+                    asrAuth.Substring(0, 16), "TC3-HMAC-SHA256 ");
+                Check(output, ref ok, "asr auth scope",
+                    asrAuth.Contains("/2020-09-03/asr/tc3_request")
+                        ? "yes" : "no", "yes");
+                Check(output, ref ok, "asr auth differs from ocr",
+                    (asrAuth != ocrAuth).ToString(), "True");
+
+                AsrResult asrParsed = TencentAsr.ParseResponse(
+                    "{\"Response\":{\"Result\":\"腾讯云语音识别欢迎您。\"," +
+                    "\"AudioDuration\":2430,\"WordSize\":4," +
+                    "\"RequestId\":\"41ed9283\"}}");
+                Check(output, ref ok, "asr text parsed",
+                    asrParsed.Text, "腾讯云语音识别欢迎您。");
+                Check(output, ref ok, "asr duration parsed",
+                    asrParsed.AudioDurationMs.ToString(), "2430");
+                Check(output, ref ok, "asr request id",
+                    asrParsed.RequestId, "41ed9283");
+
+                string asrErrorCode = "NONE";
+                try
+                {
+                    TencentAsr.ParseResponse(
+                        "{\"Response\":{\"Error\":{\"Code\":" +
+                        "\"FailedOperation.UserNotRegistered\"," +
+                        "\"Message\":\"not registered\"}," +
+                        "\"RequestId\":\"r1\"}}");
+                }
+                catch (TranslationException ex)
+                {
+                    asrErrorCode = ex.Code;
+                }
+                Check(output, ref ok, "asr error code",
+                    asrErrorCode, "FailedOperation.UserNotRegistered");
+
+                Check(output, ref ok, "config voice on by default",
+                    FreshConfig().EnableVoiceInput.ToString(), "True");
+                Check(output, ref ok, "config voice hotkey",
+                    FreshConfig().HotkeyVoiceInput, "Ctrl+Alt+V");
+                Check(output, ref ok, "config voice engine",
+                    FreshConfig().VoiceEngineType, "16k_zh");
+                Check(output, ref ok, "config voice autocopy",
+                    FreshConfig().VoiceAutoCopy.ToString(), "True");
+
+                // 录音浮条与结果窗口都要能正常构建并画出来。
+                using (VoiceCaptureForm bar =
+                    new VoiceCaptureForm("Ctrl+Alt+V"))
+                {
+                    bar.UpdateRecording(
+                        TimeSpan.FromSeconds(3.4), 0.6f);
+                    int panelPixels = 0;
+                    using (Bitmap surface =
+                        new Bitmap(bar.Width, bar.Height))
+                    {
+                        bar.DrawToBitmap(surface,
+                            new Rectangle(0, 0, bar.Width, bar.Height));
+                        for (int y = 0; y < surface.Height; y += 2)
+                        {
+                            for (int x = 0; x < surface.Width; x += 2)
+                            {
+                                Color pixel = surface.GetPixel(x, y);
+                                if (pixel.R == 30 && pixel.G == 34 &&
+                                    pixel.B == 42)
+                                {
+                                    panelPixels++;
+                                }
+                            }
+                        }
+                    }
+                    Check(output, ref ok, "voice bar renders panel",
+                        (panelPixels > 500).ToString(), "True");
+                    bar.ShowRecognizing("正在识别…");
+                    bar.ShowFailed("测试失败");
+                }
+
+                using (VoiceResultForm resultForm = new VoiceResultForm(
+                    "今天天气不错",
+                    asrParsed,
+                    812,
+                    TencentAsr.DescribeEngine("16k_zh"),
+                    IntPtr.Zero,
+                    false,
+                    delegate { return FreshConfig(); },
+                    null))
+                {
+                    TextBox resultBox = (TextBox)typeof(VoiceResultForm)
+                        .GetField(
+                            "_textBox",
+                            BindingFlags.NonPublic |
+                            BindingFlags.Instance)
+                        .GetValue(resultForm);
+                    Check(output, ref ok, "voice result text",
+                        resultBox.Text, "今天天气不错");
+                    using (Bitmap surface =
+                        new Bitmap(resultForm.Width, resultForm.Height))
+                    {
+                        resultForm.DrawToBitmap(surface,
+                            new Rectangle(
+                                0, 0,
+                                resultForm.Width,
+                                resultForm.Height));
+                        Check(output, ref ok, "voice result render",
+                            "True", "True");
+                    }
+                }
+
+                // 设置窗口加了语音区，这里做一次构造 + 绘制冒烟测试，
+                // 免得布局代码在低分辨率机器上抛异常。
+                using (SettingsForm settings =
+                    new SettingsForm(FreshConfig()))
+                {
+                    TextBox voiceHotkey = (TextBox)typeof(SettingsForm)
+                        .GetField(
+                            "_hotkeyVoiceField",
+                            BindingFlags.NonPublic |
+                            BindingFlags.Instance)
+                        .GetValue(settings);
+                    Check(output, ref ok, "settings voice hotkey field",
+                        voiceHotkey.Text, "Ctrl+Alt+V");
+                    Check(output, ref ok, "settings autoscroll",
+                        settings.AutoScroll.ToString(), "True");
+                    using (Bitmap surface = new Bitmap(
+                        settings.Width, settings.Height))
+                    {
+                        settings.DrawToBitmap(surface,
+                            new Rectangle(
+                                0, 0,
+                                settings.Width,
+                                settings.Height));
+                        Check(output, ref ok, "settings render",
+                            "True", "True");
+                    }
+                }
+
                 AppConfig fresh = new AppConfig();
                 Check(output, ref ok, "config tencent on by default",
                     fresh.UseTencentOcr.ToString(), "True");
@@ -670,6 +849,11 @@ namespace SelectionTranslator
                 "selftest.txt");
             File.WriteAllText(path, output.ToString(), Encoding.UTF8);
             Environment.ExitCode = ok ? 0 : 1;
+        }
+
+        private static AppConfig FreshConfig()
+        {
+            return new AppConfig();
         }
 
         private static void AppendResult(

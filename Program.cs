@@ -70,6 +70,40 @@ namespace SelectionTranslator
                 return;
             }
 
+            if (Array.IndexOf(args, "--asrprobe") >= 0)
+            {
+                ImageTest.RunAsrProbe();
+                return;
+            }
+
+            int voiceTestIndex = Array.IndexOf(args, "--voicetest");
+            if (voiceTestIndex >= 0)
+            {
+                int seconds = 2;
+                if (voiceTestIndex + 1 < args.Length)
+                {
+                    int.TryParse(args[voiceTestIndex + 1], out seconds);
+                }
+                ImageTest.RunVoiceTest(seconds);
+                return;
+            }
+
+            if (Array.IndexOf(args, "--uipreview") >= 0)
+            {
+                ImageTest.RunUiPreview();
+                return;
+            }
+
+            int asrTestIndex = Array.IndexOf(args, "--asrtest");
+            if (asrTestIndex >= 0)
+            {
+                string path = asrTestIndex + 1 < args.Length
+                    ? args[asrTestIndex + 1]
+                    : null;
+                ImageTest.RunAsrTest(path);
+                return;
+            }
+
             bool createdNew;
             using (Mutex mutex = new Mutex(
                 true,
