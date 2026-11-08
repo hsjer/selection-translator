@@ -191,7 +191,7 @@ namespace SelectionTranslator
             _firstRunTimer = new System.Windows.Forms.Timer();
             _firstRunTimer.Interval = 800;
             _firstRunTimer.Tick += OnFirstRunTimerTick;
-            if (!HasCredentials())
+            if (!HasCredentials() || FirstRunSetup.JustCompleted)
             {
                 _firstRunTimer.Start();
             }
@@ -391,6 +391,29 @@ namespace SelectionTranslator
         private void OnFirstRunTimerTick(object sender, EventArgs e)
         {
             _firstRunTimer.Stop();
+
+            // 首次运行时告诉用户「三个开关已经替你开好了」。
+            // 没填凭证时设置窗口会紧接着弹出，就不叠一条气泡了。
+            if (FirstRunSetup.JustCompleted)
+            {
+                FirstRunSetup.JustCompleted = false;
+                if (HasCredentials())
+                {
+                    try
+                    {
+                        _trayIcon.ShowBalloonTip(
+                            3200,
+                            AppInfo.Name,
+                            "已自动开启：开机启动、图片右键菜单、打开方式",
+                            ToolTipIcon.Info);
+                    }
+                    catch
+                    {
+                        // 系统关了通知就不提示，不影响功能。
+                    }
+                }
+            }
+
             if (!HasCredentials())
             {
                 ShowSettings();

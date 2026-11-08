@@ -1173,6 +1173,36 @@ namespace SelectionTranslator
                         @"C:\a b\工具侠.exe"),
                     @"Software\Classes\Applications\工具侠.exe");
 
+                // ---- 首次运行自动开启三个开关 ----
+                AppConfig firstRunConfig = new AppConfig();
+                Check(output, ref ok, "first run default flag",
+                    firstRunConfig.FirstRunDone.ToString(), "False");
+                Check(output, ref ok, "first run default autostart",
+                    firstRunConfig.StartWithWindows.ToString(), "False");
+                Check(output, ref ok, "first run default shell menu",
+                    firstRunConfig.EnableImageShellMenu.ToString(),
+                    "True");
+                Check(output, ref ok, "first run needs setup",
+                    FirstRunSetup.NeedsSetup(firstRunConfig).ToString(),
+                    "True");
+                firstRunConfig.FirstRunDone = true;
+                Check(output, ref ok, "first run done skips setup",
+                    FirstRunSetup.NeedsSetup(firstRunConfig).ToString(),
+                    "False");
+                Check(output, ref ok, "first run null config",
+                    FirstRunSetup.NeedsSetup(null).ToString(), "False");
+                Check(output, ref ok, "first run old config migration",
+                    ConfigStore.HasFirstRunDoneSetting(
+                        "{\"EnableImageShellMenu\":true}").ToString(),
+                    "False");
+                Check(output, ref ok, "first run new config detected",
+                    ConfigStore.HasFirstRunDoneSetting(
+                        "{\"FirstRunDone\":true}").ToString(),
+                    "True");
+                Check(output, ref ok, "first run json null safe",
+                    ConfigStore.HasFirstRunDoneSetting(null).ToString(),
+                    "False");
+
                 // 真的写一次 HKCU 再读回来，最后恢复成跑自检之前的模样。
                 bool shellWasEnabled = ShellIntegration.IsEnabled();
                 string shellError;

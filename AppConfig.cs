@@ -49,6 +49,12 @@ namespace SelectionTranslator
         /// <summary>在图片的右键菜单里加「使用工具侠打开图片」。</summary>
         public bool EnableImageShellMenu { get; set; }
 
+        /// <summary>
+        /// 首次运行初始化（开机启动 / 右键菜单 / 打开方式）是否已经跑过。
+        /// 全新安装时为 false，跑完写 true；老配置里没这个字段按 true 处理。
+        /// </summary>
+        public bool FirstRunDone { get; set; }
+
         public AppConfig()
         {
             AppId = "";
@@ -74,6 +80,7 @@ namespace SelectionTranslator
             VoiceInputMethod = InputFocusProbe.MethodType;
             VoiceAutoCopy = false;
             EnableImageShellMenu = true;
+            FirstRunDone = false;
         }
 
         public string GetSecret()
@@ -219,6 +226,14 @@ namespace SelectionTranslator
                 {
                     config.EnableImageShellMenu = true;
                 }
+
+                // 老用户已经有自己的开关状态，别把人家的设置改掉。
+                // 只有「完全没有 FirstRunDone 字段」才当成老配置跳过；
+                // 全新安装（config.json 不存在）在上面已经返回了 false。
+                if (!HasFirstRunDoneSetting(json))
+                {
+                    config.FirstRunDone = true;
+                }
                 return config;
             }
             catch (Exception ex)
@@ -273,6 +288,15 @@ namespace SelectionTranslator
             return json != null &&
                 json.IndexOf(
                     "\"EnableImageShellMenu\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        /// <summary>供自检直接验证老配置迁移逻辑，不依赖真实 config.json。</summary>
+        public static bool HasFirstRunDoneSetting(string json)
+        {
+            return json != null &&
+                json.IndexOf(
+                    "\"FirstRunDone\"",
                     StringComparison.OrdinalIgnoreCase) >= 0;
         }
 

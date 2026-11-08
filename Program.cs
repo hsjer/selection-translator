@@ -183,6 +183,27 @@ namespace SelectionTranslator
                 return;
             }
 
+            // 查看 / 执行一次「首次运行自动配置」。--firstrun 走的是
+            // 与正常启动完全相同的入口，用来验证全新安装时的行为。
+            if (Array.IndexOf(args, "--firstrun") >= 0)
+            {
+                ImageTest.RunFirstRunProbe(true);
+                return;
+            }
+
+            if (Array.IndexOf(args, "--firstprobe") >= 0)
+            {
+                ImageTest.RunFirstRunProbe(false);
+                return;
+            }
+
+            // 手动重跑首次配置（修复被清理过的集成项，不影响普通启动）。
+            if (Array.IndexOf(args, "--firstsetup") >= 0)
+            {
+                FirstRunSetup.ForceRun();
+                return;
+            }
+
             int viewerPreviewIndex = Array.IndexOf(args, "--viewerpreview");
             if (viewerPreviewIndex >= 0)
             {
@@ -192,6 +213,11 @@ namespace SelectionTranslator
                 ImageTest.RunViewerPreview(path);
                 return;
             }
+
+            // 第一次真正运行（双击 exe、或第一次用图片打开）时，
+            // 自动开启开机启动、图片右键菜单和「打开方式」。诊断命令
+            // 已经在上面提前 return，不会被这套初始化影响。
+            FirstRunSetup.Run();
 
             // 直接把图片拖到 exe 上，或用「打开方式」指定本程序：
             // 这时候只开一个图片查看器窗口，不启动托盘常驻。

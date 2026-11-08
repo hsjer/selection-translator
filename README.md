@@ -201,7 +201,8 @@ HKCU\...\Explorer\FileExts\.png\OpenWithProgids → 追加值 ToolboxHero.Image
 - 翻译后在图片上点选 / 框选文字直接复制（原文或译文，按阅读顺序拼接）
 - 未配置腾讯云凭证时自动回退百度图片翻译，功能不中断
 - 图片工具：深色轻量查看器，就地转格式（PNG/JPG/BMP/GIF/TIFF）、压缩、改尺寸、重命名、旋转、裁剪、另存、复制，可滚动缩放/拖动平移、同目录循环切换
-- 资源管理器集成：在任意图片上右键 →「使用工具侠打开图片」（只写 HKCU，可随时开关，不抢文件关联）
+- 资源管理器集成：在任意图片上右键 →「使用工具侠打开图片」，或「打开方式」→「工具侠」（只写 HKCU，可随时开关，不抢文件关联）
+- **首次运行自动配置**：把 exe 拷到新电脑第一次双击时，自动开启「开机自动启动 + 图片右键菜单 + 打开方式」三项并打上 `FirstRunDone` 标记，之后不再重复、也不覆盖用户手动改过的开关
 - 托盘菜单：翻译选中文本、手动翻译、截图翻译…、语音识别（按住说话）、翻译剪贴板、打开图片…、图片右键菜单 / 打开方式、关闭所有桌面贴图、设置、开机启动、退出
 - 开机自动启动写在 `HKCU\...\Run\工具侠`；每次启动都会校正路径，并清掉任务管理器 / 启动管理工具写下的「已禁用」标记，所以程序换目录、改名字、被优化软件关掉过，下次手动启动一次就自动修好
 - 百度翻译 API（通用文本翻译，回退时含图片翻译）+ 腾讯云 OCR（GeneralAccurateOCR）+ 腾讯云语音识别（SentenceRecognition），全部自行实现 TC3-HMAC-SHA256 签名
@@ -248,14 +249,15 @@ $env:ST_OUTPUT_NAME = "_next.exe"; .\build.ps1
 - **密钥不进代码、也不进 exe**：百度 AppID / 密钥、腾讯云 SecretId / SecretKey 只存在本机 `%APPDATA%\SelectionTranslator\config.json`，密钥用 Windows DPAPI 加密（绑定当前账户，换台电脑解不开）。`release\工具侠.exe` 是**零预置凭证**的干净构建，谁下载都要自己填。
 - **日志不写凭证**：诊断命令只输出 `hasBaiduCredentials=True/False` 这类布尔状态，运行日志不记录 AppID、SecretId、密钥或签名值。
 - 清空本机凭证：把 `config.json` 里 `AppId`、`SecretProtected`、`TencentSecretId`、`TencentSecretKeyProtected` 四个字段置空（或直接删掉文件，其余设置会回默认），下次启动即为未配置状态。
+- **配置不跟着 exe 走**：单文件复制给别人时，设置、快捷键、凭证都留在原机器的 `%APPDATA%`，新机器等于全新安装，会按上面的「首次运行自动配置」把三个开关打开，然后要求自己填 API 凭证。这也正是 `release` 版可以放心分发的原因。
 - 仓库不含 `config.json` 和任何日志（`dist/`、`.workbuddy/` 已被 `.gitignore` 排除）；请勿把本机 `config.json` 或 `%APPDATA%\SelectionTranslator\*.txt` 提交、打包或截图外发。
 
 ## 首次使用
 
 1. 打开 [百度翻译开放平台](https://fanyi-api.baidu.com/manage/developer)，注册并创建应用，开通「通用翻译」，拿到 **AppID** 和 **密钥**。
 2. （推荐，用于截图识别）打开 [腾讯云访问密钥控制台](https://console.cloud.tencent.com/cam/capi)，在 [文字识别 OCR](https://console.cloud.tencent.com/ocr) 开通服务，创建 **SecretId** 和 **SecretKey**。不填也能用，但截图识别会回退到百度图片翻译（需在百度侧单独开通该服务）。想用语音识别，再到 [语音识别控制台](https://console.cloud.tencent.com/asr) 开通服务（与 OCR 共用同一对密钥）。
-3. 运行 `工具侠.exe`。
-4. 右键托盘图标 →「设置…」，填入百度 AppID / 密钥，以及腾讯云 SecretId / SecretKey；选择目标语言后，可分别点「测试翻译」「测试 OCR」「测试麦克风」（会录 3 秒真实调用一次）确认可用，再保存。
+3. 运行 `工具侠.exe`。**第一次运行时会自动开启三件事**：开机自动启动、图片右键菜单、图片「打开方式」里的「工具侠」——不用手动去托盘里逐个勾选。这一步只在全新安装时做一次，结果写进 `config.json` 的 `FirstRunDone` 标记；之后你手动关掉哪个开关，下次启动都不会被强行改回来。老配置文件（没有这个标记）按「已经跑过」处理，不会动你原来的设置。
+4. 右键托盘图标 →「设置…」，填入百度 AppID / 密钥，以及腾讯云 SecretId / SecretKey；选择目标语言后，可分别点「测试翻译」「测试 OCR」「测试麦克风」（会录 3 秒真实调用一次）确认可用，再保存。第一次运行且没填凭证时，设置窗口会自己在几秒后弹出。
 5. （可选）在设置中自定义快捷键：点击任一快捷键输入框，按下想要的组合键即可。
 6. 在任意应用中选中文字：
    - 选中后自动浮出「译」按钮，点击即可翻译；
@@ -382,7 +384,7 @@ Content-Type: application/json; charset=utf-8
 Get-Content "$env:APPDATA\SelectionTranslator\selftest.txt"
 ```
 
-自检（共 231 项）覆盖文本翻译 MD5 签名、自动目标语言判断、DPAPI 加解密、文本分段，图片翻译的 MD5 签名、固定参数（cuid/mac）、语种映射与目标语种校验，截图浮层的构造与选区导出冒烟测试，exe / 托盘图标资源，结果窗口的 `rect` 解析、按阅读顺序拼接选字文本、贴合图解码与画布绘制冒烟测试，**TC3-HMAC-SHA256 签名固定向量**、腾讯云 OCR 响应解析（含 `Polygon` 回退、鉴权错误映射）、阅读顺序、目标语种归一化、管道结果拼装、两套 `Prepare` 路径。语音识别部分新增：WAV 头字节级校验（RIFF/WAVE/fmt/data、采样率、data 长度、时长换算）、引擎码归一与列表、`asr` 与 `ocr` 签名必须不同、`SentenceRecognition` 响应与错误码解析、录音浮条（含完成态）的渲染冒烟测试、焦点默认放行分类（未知控件类名 / 资源管理器 / 空类名都放行，桌面 / 菜单 / 无效窗口拦截）、上屏闸门校验、`KEYEVENTF_UNICODE` 输入序列构造、换行/控制字符归一、上屏方式归一与设置窗口上屏方式下拉，以及仅识别模式（结果无译文、窗口不绘制译文遮罩、默认复制原文）的回归用例。图片工具部分新增：格式/扩展名归一与中文标签、体积与位数格式化、路径中间省略、PNG 落盘→读回→尺寸校验、缩放 / 旋转 / 裁剪（含越界返回 null）、32 位透明图转 JPEG 自动铺白、同名不覆盖的 `(1)` 命名、带后缀命名、重命名成功与三类失败原因、同目录图片数量与自然序、以及查看器构造冒烟测试。窗口拾取部分新增：桌面 / 工作窗类名识别、最小可截尺寸、越界夹取（含完全在屏幕外返回空）。图标部分新增：7 档尺寸清单、16px 实际像素有不透明内容且四角透明、ICO 文件头与帧数。改名与右键菜单部分新增：显示名 / 内部标识、菜单文案与注册表路径、带空格路径的命令行加引号与去引号、空路径、图标值格式，以及**真的往 HKCU 写一次再删掉**的注册 / 读回 / 反注册往返测试（跑完自动恢复原状态），开机启动命令行加引号与 Run 键路径。「打开方式」部分新增：ProgID / 8 种扩展名清单、两条候选表路径、Applications 键名、ProgID 命令行读回、候选值写入与反注册后不残留（同样是真的写一次 HKCU 再恢复）。
+自检（共 240 项）覆盖文本翻译 MD5 签名、自动目标语言判断、DPAPI 加解密、文本分段，图片翻译的 MD5 签名、固定参数（cuid/mac）、语种映射与目标语种校验，截图浮层的构造与选区导出冒烟测试，exe / 托盘图标资源，结果窗口的 `rect` 解析、按阅读顺序拼接选字文本、贴合图解码与画布绘制冒烟测试，**TC3-HMAC-SHA256 签名固定向量**、腾讯云 OCR 响应解析（含 `Polygon` 回退、鉴权错误映射）、阅读顺序、目标语种归一化、管道结果拼装、两套 `Prepare` 路径。语音识别部分新增：WAV 头字节级校验（RIFF/WAVE/fmt/data、采样率、data 长度、时长换算）、引擎码归一与列表、`asr` 与 `ocr` 签名必须不同、`SentenceRecognition` 响应与错误码解析、录音浮条（含完成态）的渲染冒烟测试、焦点默认放行分类（未知控件类名 / 资源管理器 / 空类名都放行，桌面 / 菜单 / 无效窗口拦截）、上屏闸门校验、`KEYEVENTF_UNICODE` 输入序列构造、换行/控制字符归一、上屏方式归一与设置窗口上屏方式下拉，以及仅识别模式（结果无译文、窗口不绘制译文遮罩、默认复制原文）的回归用例。图片工具部分新增：格式/扩展名归一与中文标签、体积与位数格式化、路径中间省略、PNG 落盘→读回→尺寸校验、缩放 / 旋转 / 裁剪（含越界返回 null）、32 位透明图转 JPEG 自动铺白、同名不覆盖的 `(1)` 命名、带后缀命名、重命名成功与三类失败原因、同目录图片数量与自然序、以及查看器构造冒烟测试。窗口拾取部分新增：桌面 / 工作窗类名识别、最小可截尺寸、越界夹取（含完全在屏幕外返回空）。图标部分新增：7 档尺寸清单、16px 实际像素有不透明内容且四角透明、ICO 文件头与帧数。改名与右键菜单部分新增：显示名 / 内部标识、菜单文案与注册表路径、带空格路径的命令行加引号与去引号、空路径、图标值格式，以及**真的往 HKCU 写一次再删掉**的注册 / 读回 / 反注册往返测试（跑完自动恢复原状态），开机启动命令行加引号与 Run 键路径。「打开方式」部分新增：ProgID / 8 种扩展名清单、两条候选表路径、Applications 键名、ProgID 命令行读回、候选值写入与反注册后不残留（同样是真的写一次 HKCU 再恢复）。首次运行部分新增：全新配置的默认三个开关值、NeedsSetup 的三种边界（新配置 / 已完成 / null）、以及老配置缺少 FirstRunDone 字段时的迁移判定。
 
 真实请求诊断（使用当前已保存的凭证，不输出密钥）：
 
@@ -441,6 +443,12 @@ Get-Content "$env:APPDATA\SelectionTranslator\uipreview.txt"
 # 离屏渲染图片查看器与四个工具对话框（ui-viewer*.png）
 .\dist\工具侠.exe --viewerpreview
 Get-Content "$env:APPDATA\SelectionTranslator\viewerpreview.txt"
+
+# 首次运行自动配置：查看状态 / 手动执行一次（与正常启动同一入口）/ 强制修复
+.\dist\工具侠.exe --firstprobe
+.\dist\工具侠.exe --firstrun
+.\dist\工具侠.exe --firstsetup
+Get-Content "$env:APPDATA\SelectionTranslator\firstprobe.txt"
 
 # 图片右键菜单 + 打开方式：注册 / 移除 / 查看状态 / 让 Shell 解析验证
 .\dist\工具侠.exe --shellon
@@ -516,9 +524,10 @@ ImageToolDialogs.cs           转格式 / 压缩 / 改尺寸 / 重命名 / 提�
 DarkUi.cs                     深色调色板、按钮、输入框、矢量图标、无边框窗口基类
 AppInfo.cs                    产品名「工具侠」与内部标识（界面文字统一从这里取）
 ShellIntegration.cs           图片右键菜单 + 打开方式注册（HKCU，可开关、可自愈路径）
+FirstRunSetup.cs              首次运行自动开启三个开关（带 FirstRunDone 标记）
 AppConfig.cs / SettingsForm.cs 配置（两套凭证）与设置界面
 TrayApplicationContext.cs     托盘、全局热键与流程编排
-SelfTest.cs                    自检用例（231 项）
+SelfTest.cs                    自检用例（240 项）
 ImageTest.cs                   真实请求诊断（--imagetest / --typetest / --viewerpreview 等）
 IconFactory.cs / app.ico      托盘与 exe 图标（多尺寸）
 build.ps1                     使用系统 csc.exe 编译并嵌入图标

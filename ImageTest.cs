@@ -809,6 +809,70 @@ namespace SelectionTranslator
             WriteReport("shelltoggle.txt", log, ok, "图片右键菜单");
         }
 
+        /// <summary>
+        /// 打印首次运行自动配置的状态。带 apply 时会真的执行一遍
+        /// 与正常启动完全相同的 FirstRunSetup.Run()，用于验证全新安装场景。
+        /// </summary>
+        public static void RunFirstRunProbe(bool apply)
+        {
+            StringBuilder log = new StringBuilder();
+            bool ok = true;
+            try
+            {
+                AppendFirstRunState(log, "before");
+                if (apply)
+                {
+                    FirstRunSetup.Run();
+                    log.AppendLine("");
+                    log.AppendLine("--- FirstRunSetup.Run() 已执行 ---");
+                    AppendFirstRunState(log, "after");
+
+                    AppConfig after = ConfigStore.Load();
+                    ok = File.Exists(ConfigStore.ConfigPath) &&
+                        after.FirstRunDone &&
+                        after.StartWithWindows &&
+                        after.EnableImageShellMenu &&
+                        StartupManager.IsEnabled() &&
+                        ShellIntegration.IsEnabled() &&
+                        ShellIntegration.IsOpenWithEnabled();
+                }
+                log.AppendLine(ok ? "RESULT: OK" : "RESULT: FAILED");
+            }
+            catch (Exception ex)
+            {
+                ok = false;
+                log.AppendLine("RESULT: FAILED");
+                log.AppendLine(ex.ToString());
+            }
+            Environment.ExitCode = ok ? 0 : 1;
+            WriteReport(
+                "firstprobe.txt", log, ok, "首次运行自动配置");
+        }
+
+        private static void AppendFirstRunState(
+            StringBuilder log, string prefix)
+        {
+            AppConfig config = ConfigStore.Load();
+            log.AppendLine(prefix + ".configPath = " +
+                ConfigStore.ConfigPath);
+            log.AppendLine(prefix + ".configExists = " +
+                File.Exists(ConfigStore.ConfigPath));
+            log.AppendLine(prefix + ".firstRunDone = " +
+                config.FirstRunDone);
+            log.AppendLine(prefix + ".needsSetup = " +
+                FirstRunSetup.NeedsSetup(config));
+            log.AppendLine(prefix + ".startWithWindows = " +
+                config.StartWithWindows);
+            log.AppendLine(prefix + ".enableImageShellMenu = " +
+                config.EnableImageShellMenu);
+            log.AppendLine(prefix + ".runKeyEnabled = " +
+                StartupManager.IsEnabled());
+            log.AppendLine(prefix + ".shellEnabled = " +
+                ShellIntegration.IsEnabled());
+            log.AppendLine(prefix + ".openWithEnabled = " +
+                ShellIntegration.IsOpenWithEnabled());
+        }
+
         /// <summary>让 Shell 亲自解析新 ProgID，确认「打开方式」真的认得它。</summary>
         public static void RunAssocProbe()
         {
