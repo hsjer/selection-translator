@@ -729,7 +729,7 @@ namespace SelectionTranslator
                     bar.ShowFailed("测试失败");
                 }
 
-                // ---- 只有输入框才触发 + 文字直接上屏 ----
+                // ---- 不限制输入框：默认放行，只排除明确非输入场景 ----
                 Check(output, ref ok, "focus editable edit",
                     InputFocusProbe.IsEditableClass("Edit").ToString(),
                     "True");
@@ -739,7 +739,7 @@ namespace SelectionTranslator
                 Check(output, ref ok, "focus editable scintilla",
                     InputFocusProbe.IsEditableClass("Scintilla")
                         .ToString(), "True");
-                Check(output, ref ok, "focus editable explorer",
+                Check(output, ref ok, "focus editable explorer token",
                     InputFocusProbe.IsEditableClass("CabinetWClass")
                         .ToString(), "False");
                 Check(output, ref ok, "focus host chrome",
@@ -754,9 +754,70 @@ namespace SelectionTranslator
                 Check(output, ref ok, "focus excluded menu",
                     InputFocusProbe.IsExcludedClass("#32768")
                         .ToString(), "True");
+
+                bool nonInput;
+                string focusReason;
+                InputFocusProbe.ClassifyFocus(
+                    "SomeCustomDrawnInputWnd", false, false, true,
+                    out nonInput, out focusReason);
+                Check(output, ref ok, "focus unknown class allowed",
+                    nonInput.ToString(), "False");
+                Check(output, ref ok, "focus unknown class reason",
+                    focusReason, "未知控件（默认按输入框处理）");
+                InputFocusProbe.ClassifyFocus(
+                    "CabinetWClass", false, false, true,
+                    out nonInput, out focusReason);
+                Check(output, ref ok, "focus explorer allowed",
+                    nonInput.ToString(), "False");
+                InputFocusProbe.ClassifyFocus(
+                    "", false, false, true,
+                    out nonInput, out focusReason);
+                Check(output, ref ok, "focus empty class allowed",
+                    nonInput.ToString(), "False");
+                InputFocusProbe.ClassifyFocus(
+                    "Progman", false, false, true,
+                    out nonInput, out focusReason);
+                Check(output, ref ok, "focus desktop blocked",
+                    nonInput.ToString(), "True");
+                InputFocusProbe.ClassifyFocus(
+                    "Edit", false, true, true,
+                    out nonInput, out focusReason);
+                Check(output, ref ok, "focus menu blocked",
+                    nonInput.ToString(), "True");
+                InputFocusProbe.ClassifyFocus(
+                    "Edit", false, false, false,
+                    out nonInput, out focusReason);
+                Check(output, ref ok, "focus dead window blocked",
+                    nonInput.ToString(), "True");
+                InputFocusProbe.ClassifyFocus(
+                    "CustomWnd", true, false, true,
+                    out nonInput, out focusReason);
+                Check(output, ref ok, "focus caret reason",
+                    focusReason, "检测到文本光标");
+
+                FocusTarget allowedTarget = new FocusTarget();
+                allowedTarget.ForegroundWindow = new IntPtr(1234);
+                Check(output, ref ok, "insert allowed unknown",
+                    InputFocusProbe.CanInsertInto(
+                        allowedTarget, "中文").ToString(), "True");
+                FocusTarget desktopTarget = new FocusTarget();
+                desktopTarget.ForegroundWindow = new IntPtr(1234);
+                desktopTarget.IsLikelyNonInput = true;
+                Check(output, ref ok, "insert blocked desktop",
+                    InputFocusProbe.CanInsertInto(
+                        desktopTarget, "中文").ToString(), "False");
+                Check(output, ref ok, "insert blocked empty text",
+                    InputFocusProbe.CanInsertInto(
+                        allowedTarget, "").ToString(), "False");
+                Check(output, ref ok, "insert blocked null target",
+                    InputFocusProbe.CanInsertInto(
+                        null, "中文").ToString(), "False");
+                Check(output, ref ok, "insert blocked no window",
+                    InputFocusProbe.CanInsertInto(
+                        new FocusTarget(), "中文").ToString(), "False");
                 Check(output, ref ok, "focus probe no crash",
                     InputFocusProbe.Probe().Describe()
-                        .Contains("editable=") ? "yes" : "no", "yes");
+                        .Contains("nonInput=") ? "yes" : "no", "yes");
 
                 Check(output, ref ok, "focus method default",
                     InputFocusProbe.NormalizeMethod(null), "type");

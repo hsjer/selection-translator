@@ -470,7 +470,7 @@ namespace SelectionTranslator
 
             Label voiceHint = new Label();
             voiceHint.Text =
-                "光标在输入框里才触发，松开后文字直接上屏；\r\n" +
+                "任意输入框都能用，不限控件类型，松开即直接上屏；\r\n" +
                 "个别软件打不出字时改用「剪贴板粘贴」。";
             voiceHint.Location = new Point(12, 104);
             voiceHint.Size = new Size(424, 40);

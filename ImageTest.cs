@@ -412,7 +412,7 @@ namespace SelectionTranslator
         }
 
         /// <summary>
-        /// 验证「只有输入框才触发」以及「文字直接上屏」。
+        /// 验证「任意输入框都放行」以及「文字直接上屏」。
         /// 命令行启动后给 3 秒，让用户把光标点进目标输入框。
         /// text 为空时只做焦点探测，不写任何东西。
         /// </summary>
@@ -430,9 +430,9 @@ namespace SelectionTranslator
                 log.AppendLine(target.Describe());
                 log.AppendLine("method=type");
 
-                if (!target.IsEditable)
+                if (target.IsLikelyNonInput)
                 {
-                    log.AppendLine("当前焦点不是输入框，未写入任何内容。");
+                    log.AppendLine("当前是桌面 / 菜单等明确非输入场景，未模拟键入。");
                     log.AppendLine("RESULT: FAILED");
                 }
                 else if (string.IsNullOrEmpty(text))

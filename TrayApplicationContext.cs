@@ -173,7 +173,7 @@ namespace SelectionTranslator
             _voicePollTimer.Tick += OnVoicePollTick;
 
             // 从托盘菜单点「语音输入」时菜单还占着前台，等它收起、
-            // 焦点回到原输入框后再做焦点判定。
+            // 焦点回到原窗口后再记录焦点快照。
             _voiceMenuDelayTimer = new System.Windows.Forms.Timer();
             _voiceMenuDelayTimer.Interval = 260;
             _voiceMenuDelayTimer.Tick += OnVoiceMenuDelayTick;
@@ -706,7 +706,7 @@ namespace SelectionTranslator
         }
 
         /// <summary>
-        /// 按住快捷键开始录音：只有光标确实在输入框里才启动；
+        /// 按住快捷键开始录音：不限制输入框类型，任何控件都直接录音；
         /// 松开后上传腾讯云「一句话识别」，文字直接送回那个光标处，
         /// 全程不弹出任何需要操作的窗口。
         /// 热键 API 只投递按下消息，拿不到松开消息，所以主键状态靠
@@ -747,20 +747,12 @@ namespace SelectionTranslator
                 return;
             }
 
-            // 微信输入法式体验的前提：光标必须在输入框里。
-            // 不在输入框就不录音，免得说完之后没有地方落字。
+            // 只记录焦点快照，不做任何「是不是输入框」的拦截：
+            // 自绘控件、浏览器、聊天窗口、终端等一律允许，避免白名单
+            // 漏判导致按键没反应。只有桌面/菜单这类明确非输入场景，
+            // 才在上屏阶段改成把文字放进剪贴板兜底。
             FocusTarget focus = InputFocusProbe.Probe();
-            Log.Info("语音输入焦点探测：" + focus.Describe());
-            if (!focus.IsEditable)
-            {
-                _trayIcon.ShowBalloonTip(
-                    3200,
-                    "语音识别",
-                    "请先把光标点进输入框，再按住 " +
-                        _config.HotkeyVoiceInput + " 说话。",
-                    ToolTipIcon.Info);
-                return;
-            }
+            Log.Info("语音输入焦点快照：" + focus.Describe());
 
             _voiceTarget = focus;
             _voiceStartedUtc = DateTime.UtcNow;
@@ -1004,6 +996,7 @@ namespace SelectionTranslator
             AsrResult result, int elapsedMs)
         {
             VoiceCaptureForm bar = DetachVoiceBar();
+            FocusTarget voiceTarget = _voiceTarget;
             string text = result == null
                 ? "" : (result.Text ?? "").Trim();
             try
@@ -1024,7 +1017,7 @@ namespace SelectionTranslator
 
                 VoiceInsertOutcome outcome =
                     await InputFocusProbe.InsertAsync(
-                        _voiceTarget,
+                        voiceTarget,
                         text,
                         _config.VoiceInputMethod,
                         _config.VoiceAutoCopy);
@@ -1038,9 +1031,20 @@ namespace SelectionTranslator
                     return;
                 }
 
-                string note = outcome == VoiceInsertOutcome.WindowChanged
-                    ? "窗口已切换，文字已复制到剪贴板"
-                    : "无法写入输入框，已复制到剪贴板";
+                string note;
+                if (outcome == VoiceInsertOutcome.WindowChanged)
+                {
+                    note = "窗口已切换，文字已复制到剪贴板";
+                }
+                else if (voiceTarget != null &&
+                    voiceTarget.IsLikelyNonInput)
+                {
+                    note = "当前不是输入框，文字已复制到剪贴板";
+                }
+                else
+                {
+                    note = "无法写入输入框，已复制到剪贴板";
+                }
                 Log.Info("语音识别：" + note);
                 ClipboardHelper.SetText(text);
                 ShowBarNote(bar, false, note);

@@ -15,7 +15,8 @@ namespace SelectionTranslator
 
     /// <summary>
     /// 按下语音键那一刻的焦点快照。
-    /// 只认「真正能接收文字的控件」，不在输入框里就不启动录音。
+    /// 判定采用「默认放行」：任何控件都当输入框处理，只有明确的桌面 /
+    /// 菜单 / 任务栏 / 无窗口才标记为不适合直接键入。
     /// </summary>
     internal sealed class FocusTarget
     {
@@ -26,7 +27,10 @@ namespace SelectionTranslator
         public string ClassName;
         public string Reason;
         public bool HasCaret;
+        /// <summary>是否允许往这个焦点送字（默认 true，不再靠白名单）。</summary>
         public bool IsEditable;
+        /// <summary>明确不是输入场景，模拟键入会被系统吞掉或误触发快捷键。</summary>
+        public bool IsLikelyNonInput;
 
         public string Describe()
         {
@@ -38,20 +42,24 @@ namespace SelectionTranslator
                 " pid=" + ProcessId +
                 " caret=" + HasCaret +
                 " editable=" + IsEditable +
+                " nonInput=" + IsLikelyNonInput +
                 " reason=" + (Reason ?? "");
         }
     }
 
     /// <summary>
-    /// 微信输入法式的语音上屏：先确认光标在输入框里，识别完成后把文字
-    /// 直接送到那个光标处，全程不弹出任何需要操作的窗口。
+    /// 微信输入法式的语音上屏：不限制输入框类型，识别完成后把文字
+    /// 直接送到当时的光标处，全程不弹出任何需要操作的窗口。
     /// </summary>
     internal static class InputFocusProbe
     {
         public const string MethodType = "type";
         public const string MethodPaste = "paste";
 
-        /// <summary>明确的可编辑控件类名。</summary>
+        /// <summary>
+        /// 已知输入控件类名，只用于日志里说明「这是个什么控件」，
+        /// 不再作为是否允许语音输入的准入条件。
+        /// </summary>
         private static readonly string[] EditableTokens = new string[]
         {
             "edit",             // Edit / RichEdit20W / RichEdit50W / TEdit / ATL:Edit
@@ -67,8 +75,8 @@ namespace SelectionTranslator
         };
 
         /// <summary>
-        /// 自绘输入框的宿主窗口：浏览器、Office、Electron、Qt、微信等。
-        /// 这类窗口即使没有 Win32 插入符，也应当允许语音输入。
+        /// 常见自绘输入框的宿主窗口，同样只用于日志说明。
+        /// 未知类名一律放行，避免漏判把用户挡在外面。
         /// </summary>
         private static readonly string[] HostTokens = new string[]
         {
@@ -91,7 +99,11 @@ namespace SelectionTranslator
             "netuijuggler"
         };
 
-        /// <summary>这些窗口无论如何都不算输入框。</summary>
+        /// <summary>
+        /// 唯一的排除清单：这些是桌面 / 任务栏 / 菜单等系统窗口，
+        /// 往里模拟键入没有任何意义，还可能触发系统快捷键。
+        /// 除此之外一律不限制。
+        /// </summary>
         private static readonly string[] ExcludedTokens = new string[]
         {
             "progman",
@@ -162,12 +174,74 @@ namespace SelectionTranslator
             return false;
         }
 
+        /// <summary>
+        /// 纯逻辑分类：默认放行，只有明确的非输入场景才拦截。
+        /// 抽成独立函数，便于自检覆盖任意未知控件类名。
+        /// </summary>
+        public static void ClassifyFocus(
+            string className,
+            bool hasCaret,
+            bool menuMode,
+            bool windowOk,
+            out bool nonInput,
+            out string reason)
+        {
+            nonInput = false;
+            reason = "";
+            if (!windowOk)
+            {
+                nonInput = true;
+                reason = "没有可用的前台窗口";
+                return;
+            }
+            if (IsExcludedClass(className))
+            {
+                nonInput = true;
+                reason = "桌面 / 菜单 / 任务栏";
+                return;
+            }
+            if (menuMode)
+            {
+                nonInput = true;
+                reason = "菜单正在弹出";
+                return;
+            }
+
+            // 下面只决定日志里怎么写，不影响是否放行。
+            if (IsEditableClass(className))
+            {
+                reason = "输入控件";
+            }
+            else if (hasCaret)
+            {
+                reason = "检测到文本光标";
+            }
+            else if (IsHostClass(className))
+            {
+                reason = "输入宿主窗口";
+            }
+            else
+            {
+                reason = "未知控件（默认按输入框处理）";
+            }
+        }
+
+        /// <summary>是否允许把文字模拟键入到这个焦点。</summary>
+        public static bool CanInsertInto(FocusTarget target, string text)
+        {
+            return target != null &&
+                !target.IsLikelyNonInput &&
+                target.ForegroundWindow != IntPtr.Zero &&
+                !string.IsNullOrEmpty(text);
+        }
+
         public static FocusTarget Probe()
         {
             FocusTarget target = new FocusTarget();
             target.ForegroundWindow = NativeMethods.GetForegroundWindow();
             target.ClassName = "";
-            target.Reason = "未检测到输入框";
+            target.IsEditable = true;
+            target.Reason = "默认放行";
 
             NativeMethods.GUITHREADINFO info =
                 new NativeMethods.GUITHREADINFO();
@@ -192,6 +266,8 @@ namespace SelectionTranslator
 
             if (focus == IntPtr.Zero)
             {
+                target.IsEditable = false;
+                target.IsLikelyNonInput = true;
                 target.Reason = "没有前台窗口";
                 return target;
             }
@@ -205,43 +281,27 @@ namespace SelectionTranslator
             int length = NativeMethods.GetClassName(focus, name, name.Capacity);
             target.ClassName = length > 0 ? name.ToString() : "";
 
-            if (IsExcludedClass(target.ClassName))
-            {
-                target.Reason = "当前是桌面 / 菜单，不是输入框";
-                return target;
-            }
-            if (gotInfo &&
+            bool menuMode = gotInfo &&
                 (info.flags & (
                     NativeMethods.GUI_INMENUMODE |
                     NativeMethods.GUI_POPUPMENUMODE |
-                    NativeMethods.GUI_SYSTEMMENUMODE)) != 0)
-            {
-                target.Reason = "菜单正在弹出";
-                return target;
-            }
-            if (!NativeMethods.IsWindow(focus) ||
-                !NativeMethods.IsWindowVisible(focus) ||
-                !NativeMethods.IsWindowEnabled(focus))
-            {
-                target.Reason = "焦点窗口不可用";
-                return target;
-            }
+                    NativeMethods.GUI_SYSTEMMENUMODE)) != 0;
+            bool windowOk = NativeMethods.IsWindow(focus) &&
+                NativeMethods.IsWindowVisible(focus) &&
+                NativeMethods.IsWindowEnabled(focus);
 
-            if (IsEditableClass(target.ClassName))
-            {
-                target.IsEditable = true;
-                target.Reason = "输入控件";
-            }
-            else if (target.HasCaret)
-            {
-                target.IsEditable = true;
-                target.Reason = "检测到文本光标";
-            }
-            else if (IsHostClass(target.ClassName))
-            {
-                target.IsEditable = true;
-                target.Reason = "输入宿主窗口";
-            }
+            bool nonInput;
+            string reason;
+            ClassifyFocus(
+                target.ClassName,
+                target.HasCaret,
+                menuMode,
+                windowOk,
+                out nonInput,
+                out reason);
+            target.IsLikelyNonInput = nonInput;
+            target.IsEditable = !nonInput;
+            target.Reason = reason;
             return target;
         }
 
@@ -310,6 +370,8 @@ namespace SelectionTranslator
 
         /// <summary>
         /// 把文字送回按下语音键时那个窗口的光标处。
+        /// 不做输入框类型限制；仅当焦点明确不是输入场景（桌面/菜单）时
+        /// 放弃模拟键入，让调用方把结果放进剪贴板兜底。
         /// 期间只要前台窗口变了就拒绝写入，避免把字打进别的程序。
         /// </summary>
         public static async Task<VoiceInsertOutcome> InsertAsync(
@@ -318,8 +380,7 @@ namespace SelectionTranslator
             string method,
             bool keepClipboardText)
         {
-            if (target == null || !target.IsEditable ||
-                string.IsNullOrEmpty(text))
+            if (!CanInsertInto(target, text))
             {
                 return VoiceInsertOutcome.Failed;
             }
