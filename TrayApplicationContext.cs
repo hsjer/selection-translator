@@ -115,6 +115,11 @@ namespace SelectionTranslator
             clipboardItem.Click += OnTranslateClipboardClicked;
             _trayMenu.Items.Add(clipboardItem);
 
+            ToolStripMenuItem imageItem =
+                new ToolStripMenuItem("打开图片…");
+            imageItem.Click += OnOpenImageClicked;
+            _trayMenu.Items.Add(imageItem);
+
             _trayMenu.Items.Add(new ToolStripSeparator());
 
             ToolStripMenuItem settingsItem =
@@ -1440,6 +1445,12 @@ namespace SelectionTranslator
                 return;
             }
             ShowTranslation(text, Cursor.Position);
+        }
+
+        /// <summary>从托盘打开图片工具（查看 / 转格式 / 压缩 / 改尺寸）。</summary>
+        private void OnOpenImageClicked(object sender, EventArgs e)
+        {
+            ImageViewerForm.ShowOpenDialog(null);
         }
 
         private void ShowTranslation(string text, Point location)

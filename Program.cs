@@ -121,6 +121,38 @@ namespace SelectionTranslator
                 return;
             }
 
+            int viewerPreviewIndex = Array.IndexOf(args, "--viewerpreview");
+            if (viewerPreviewIndex >= 0)
+            {
+                string path = viewerPreviewIndex + 1 < args.Length
+                    ? args[viewerPreviewIndex + 1]
+                    : null;
+                ImageTest.RunViewerPreview(path);
+                return;
+            }
+
+            // 直接把图片拖到 exe 上，或用「打开方式」指定本程序：
+            // 这时候只开一个图片查看器窗口，不启动托盘常驻。
+            if (args.Length > 0 && System.IO.File.Exists(args[0]) &&
+                ImageToolKit.IsImagePath(args[0]))
+            {
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                Application.SetUnhandledExceptionMode(
+                    UnhandledExceptionMode.CatchException);
+                Application.ThreadException += OnThreadException;
+
+                ImageViewerForm viewer = new ImageViewerForm();
+                viewer.OpenPath(args[0]);
+                if (!viewer.HasImage)
+                {
+                    viewer.Dispose();
+                    return;
+                }
+                Application.Run(viewer);
+                return;
+            }
+
             bool createdNew;
             using (Mutex mutex = new Mutex(
                 true,

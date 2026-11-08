@@ -941,6 +941,195 @@ namespace SelectionTranslator
                         "True");
                 }
 
+                // ---- 图片工具（查看 / 转换 / 压缩 / 改尺寸）----
+                string imageFolder = Path.Combine(
+                    Path.GetTempPath(), "st-image-selftest");
+                if (Directory.Exists(imageFolder))
+                {
+                    Directory.Delete(imageFolder, true);
+                }
+                Directory.CreateDirectory(imageFolder);
+                try
+                {
+                    Check(output, ref ok, "image format jpeg ext",
+                        ImageFormatOption.FromExtension(".jpeg").Key,
+                        "jpg");
+                    Check(output, ref ok, "image format tif ext",
+                        ImageFormatOption.FromExtension(".tiff").Key,
+                        "tif");
+                    Check(output, ref ok, "image format unknown ext",
+                        ImageFormatOption.FromExtension(".xyz").Key,
+                        "png");
+                    Check(output, ref ok, "image format labels",
+                        ImageFormatOption.Find("tif").Label, "TIFF");
+                    Check(output, ref ok, "image bits 24",
+                        ImageToolKit.DescribeBits(PixelFormat.Format24bppRgb),
+                        "24 位");
+                    Check(output, ref ok, "image bits alpha",
+                        ImageToolKit.DescribeBits(
+                            PixelFormat.Format32bppArgb), "32 位");
+                    Check(output, ref ok, "image size kb",
+                        ImageToolKit.FormatSize(21463), "20.96 KB");
+                    Check(output, ref ok, "image size bytes",
+                        ImageToolKit.FormatSize(512), "512 B");
+                    Check(output, ref ok, "image accept png",
+                        ImageToolKit.IsImagePath("a.PNG").ToString(),
+                        "True");
+                    Check(output, ref ok, "image reject txt",
+                        ImageToolKit.IsImagePath("a.txt").ToString(),
+                        "False");
+                    Check(output, ref ok, "image shorten path",
+                        ImageToolKit.ShortenPath(
+                            @"D:\下载\C#从入门到放弃\img\a.png", 18)
+                            .Contains("…").ToString(), "True");
+
+                    string png = Path.Combine(imageFolder, "sample.png");
+                    using (Bitmap sample = new Bitmap(120, 80))
+                    {
+                        using (Graphics graphics =
+                            Graphics.FromImage(sample))
+                        {
+                            graphics.Clear(Color.SteelBlue);
+                        }
+
+                        string saveError;
+                        Check(output, ref ok, "image save png",
+                            ImageToolKit.Save(sample, png, "png", 90,
+                                out saveError).ToString(), "True");
+                        Check(output, ref ok, "image save png err",
+                            saveError == null ? "null" : saveError,
+                            "null");
+
+                        Bitmap loaded = ImageToolKit.Load(png, out saveError);
+                        Check(output, ref ok, "image load size",
+                            loaded == null ? "null"
+                                : loaded.Width + "x" + loaded.Height,
+                            "120x80");
+                        Check(output, ref ok, "image detect format",
+                            ImageToolKit.DetectFormatName(loaded, ".png"),
+                            "PNG");
+
+                        ImageFileInfo info = ImageToolKit.Describe(
+                            png, loaded,
+                            ImageToolKit.SiblingImages(png));
+                        Check(output, ref ok, "image info name",
+                            info.Name, "sample.png");
+                        Check(output, ref ok, "image info index",
+                            info.Index.ToString(), "1");
+                        Check(output, ref ok, "image info size",
+                            (info.SizeBytes > 0).ToString(), "True");
+
+                        using (Bitmap resized =
+                            ImageToolKit.Resize(loaded, 60, 40))
+                        {
+                            Check(output, ref ok, "image resize",
+                                resized.Width + "x" + resized.Height,
+                                "60x40");
+                        }
+
+                        using (Bitmap flipped =
+                            ImageToolKit.Rotate(loaded, true))
+                        {
+                            Check(output, ref ok, "image rotate",
+                                flipped.Width + "x" + flipped.Height,
+                                "80x120");
+                        }
+
+                        using (Bitmap cropped = ImageToolKit.Crop(
+                            loaded, new Rectangle(10, 10, 50, 30)))
+                        {
+                            Check(output, ref ok, "image crop",
+                                cropped == null ? "null"
+                                    : cropped.Width + "x" + cropped.Height,
+                                "50x30");
+                        }
+
+                        Check(output, ref ok, "image crop out of range",
+                            (ImageToolKit.Crop(loaded,
+                                new Rectangle(500, 500, 10, 10)) == null)
+                                .ToString(), "True");
+
+                        // 带透明通道的图转 JPEG 要能自动铺白底。
+                        using (Bitmap alpha = new Bitmap(
+                            40, 40, PixelFormat.Format32bppArgb))
+                        {
+                            string alphaError;
+                            byte[] jpeg = ImageToolKit.Encode(
+                                alpha, "jpg", 80, out alphaError);
+                            Check(output, ref ok, "image alpha to jpeg",
+                                (jpeg != null && jpeg.Length > 0)
+                                    .ToString(), "True");
+                        }
+
+                        string unique = ImageToolKit.UniquePath(png);
+                        Check(output, ref ok, "image unique path",
+                            (unique != png && !File.Exists(unique))
+                                .ToString(), "True");
+                        Check(output, ref ok, "image unique suffix",
+                            unique.EndsWith("sample (1).png",
+                                StringComparison.Ordinal).ToString(),
+                            "True");
+
+                        string suffixed = ImageToolKit.WithSuffix(
+                            png, "_small", ".jpg");
+                        Check(output, ref ok, "image suffix name",
+                            Path.GetFileName(suffixed), "sample_small.jpg");
+
+                        loaded.Dispose();
+                    }
+
+                    string renamed;
+                    string renameError;
+                    Check(output, ref ok, "image rename ok",
+                        ImageToolKit.TryRename(png, "renamed",
+                            out renamed, out renameError).ToString(),
+                        "True");
+                    Check(output, ref ok, "image rename applied",
+                        (File.Exists(renamed) && !File.Exists(png))
+                            .ToString(), "True");
+                    Check(output, ref ok, "image rename empty",
+                        ImageToolKit.TryRename(renamed, "  ",
+                            out renamed, out renameError).ToString(),
+                        "False");
+                    Check(output, ref ok, "image rename empty reason",
+                        renameError, "名称不能为空");
+                    Check(output, ref ok, "image rename bad chars",
+                        ImageToolKit.TryRename(renamed, "a/b",
+                            out renamed, out renameError).ToString(),
+                        "False");
+
+                    string second = Path.Combine(
+                        imageFolder, "renamed 2.bmp");
+                    using (Bitmap extra = new Bitmap(20, 20))
+                    {
+                        extra.Save(second, ImageFormat.Bmp);
+                    }
+                    System.Collections.Generic.List<string> siblings =
+                        ImageToolKit.SiblingImages(renamed);
+                    Check(output, ref ok, "image siblings count",
+                        siblings.Count.ToString(), "2");
+                    Check(output, ref ok, "image siblings order",
+                        Path.GetFileName(siblings[0]), "renamed 2.bmp");
+                }
+                finally
+                {
+                    try
+                    {
+                        Directory.Delete(imageFolder, true);
+                    }
+                    catch
+                    {
+                        // 临时目录清不掉不影响自检结论。
+                    }
+                }
+
+                using (ImageViewerForm viewer = new ImageViewerForm())
+                {
+                    Check(output, ref ok, "viewer minimum width",
+                        (viewer.MinimumSize.Width >= 700).ToString(),
+                        "True");
+                }
+
                 LineTranslationResult emptyLines =
                     BaiduTranslator.TranslateLinesAsync(
                         fresh,

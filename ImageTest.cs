@@ -585,6 +585,157 @@ namespace SelectionTranslator
             WriteReport("uipreview.txt", log, ok, "界面离屏预览");
         }
 
+        /// <summary>
+        /// 把图片查看器与四个工具对话框离屏渲染成 PNG（ui-viewer*.png）。
+        /// 没有指定图片时现场生成一张渐变样图，保证任何机器上都能看布局。
+        /// </summary>
+        public static void RunViewerPreview(string path)
+        {
+            StringBuilder log = new StringBuilder();
+            bool ok = false;
+            try
+            {
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                string sample = string.IsNullOrEmpty(path)
+                    ? BuildSampleImage()
+                    : path;
+                log.AppendLine("sample: " + sample);
+
+                using (ImageViewerForm viewer = new ImageViewerForm())
+                {
+                    SaveForm(viewer, "ui-viewer-empty.png", log);
+                    viewer.OpenPath(sample);
+                    SaveForm(viewer, "ui-viewer.png", log);
+                }
+                SaveGlyphSheet(log);
+
+                string error;
+                using (Bitmap image = ImageToolKit.Load(sample, out error))
+                {
+                    if (image == null)
+                    {
+                        throw new InvalidOperationException(
+                            "无法加载样图：" + error);
+                    }
+                    ImageFileInfo info = ImageToolKit.Describe(
+                        sample, image, ImageToolKit.SiblingImages(sample));
+                    log.AppendLine(string.Format(
+                        "info: {0} {1} {2}x{3} {4}",
+                        info.Name, info.FormatName,
+                        info.Width, info.Height,
+                        ImageToolKit.FormatSize(info.SizeBytes)));
+
+                    using (ImageConvertDialog dialog =
+                        new ImageConvertDialog(info, image))
+                    {
+                        SaveForm(dialog, "ui-viewer-convert.png", log);
+                    }
+                    using (ImageCompressDialog dialog =
+                        new ImageCompressDialog(info, image))
+                    {
+                        SaveForm(dialog, "ui-viewer-compress.png", log);
+                    }
+                    using (ImageResizeDialog dialog =
+                        new ImageResizeDialog(image.Width, image.Height))
+                    {
+                        SaveForm(dialog, "ui-viewer-resize.png", log);
+                    }
+                    using (ImageRenameDialog dialog =
+                        new ImageRenameDialog(info.Name))
+                    {
+                        SaveForm(dialog, "ui-viewer-rename.png", log);
+                    }
+                }
+
+                ok = true;
+                log.AppendLine("RESULT: OK");
+            }
+            catch (Exception ex)
+            {
+                log.AppendLine("RESULT: FAILED");
+                log.AppendLine(ex.ToString());
+            }
+            WriteReport("viewerpreview.txt", log, ok, "图片查看器离屏预览");
+        }
+
+        /// <summary>
+        /// 把所有矢量图标放大画在一张图上，用来肉眼核对图形是否画对
+        /// （ui-viewer-glyphs.png）。
+        /// </summary>
+        private static void SaveGlyphSheet(StringBuilder log)
+        {
+            GlyphKind[] kinds = new GlyphKind[]
+            {
+                GlyphKind.Prev, GlyphKind.Next, GlyphKind.Fit,
+                GlyphKind.Actual, GlyphKind.ZoomIn, GlyphKind.ZoomOut,
+                GlyphKind.RotateLeft, GlyphKind.RotateRight,
+                GlyphKind.Crop, GlyphKind.Copy, GlyphKind.Save,
+                GlyphKind.Open, GlyphKind.Undo, GlyphKind.Minimize,
+                GlyphKind.Maximize, GlyphKind.Restore, GlyphKind.Close
+            };
+            int cell = 96;
+            int columns = 6;
+            int rows = (kinds.Length + columns - 1) / columns;
+            using (Bitmap sheet = new Bitmap(
+                columns * cell, rows * (cell + 18)))
+            using (Graphics g = Graphics.FromImage(sheet))
+            {
+                g.Clear(DarkUi.Window);
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                for (int i = 0; i < kinds.Length; i++)
+                {
+                    int x = (i % columns) * cell;
+                    int y = (i / columns) * (cell + 18);
+                    DarkUi.DrawGlyph(g, kinds[i],
+                        new Rectangle(x, y, cell, cell),
+                        DarkUi.Text, 1.8f);
+                    DarkUi.Text2(g, kinds[i].ToString(), DarkUi.FontSmall,
+                        DarkUi.TextFaint,
+                        new Rectangle(x, y + cell, cell, 18),
+                        DarkUi.CenterMiddle);
+                }
+                string path = Path.Combine(
+                    ConfigStore.DataDirectory, "ui-viewer-glyphs.png");
+                sheet.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+                log.AppendLine("ui-viewer-glyphs.png = " +
+                    sheet.Width + "x" + sheet.Height);
+            }
+        }
+
+        /// <summary>生成一张带渐变和文字的样图，供界面预览使用。</summary>
+        private static string BuildSampleImage()
+        {
+            string target = Path.Combine(
+                ConfigStore.DataDirectory, "sample-image.png");
+            using (Bitmap bitmap = new Bitmap(1200, 800))
+            {
+                using (Graphics g = Graphics.FromImage(bitmap))
+                {
+                    using (System.Drawing.Drawing2D.LinearGradientBrush brush =
+                        new System.Drawing.Drawing2D.LinearGradientBrush(
+                            new Rectangle(0, 0, 1200, 800),
+                            Color.FromArgb(24, 48, 96),
+                            Color.FromArgb(168, 96, 40), 35f))
+                    {
+                        g.FillRectangle(brush, 0, 0, 1200, 800);
+                    }
+                    using (SolidBrush disc = new SolidBrush(
+                        Color.FromArgb(120, 255, 255, 255)))
+                    {
+                        g.FillEllipse(disc, 120, 160, 420, 420);
+                    }
+                    using (Font font = new Font("Microsoft YaHei UI", 64f,
+                        FontStyle.Bold, GraphicsUnit.Pixel))
+                    using (SolidBrush ink = new SolidBrush(Color.White))
+                    {
+                        g.DrawString("图片工具", font, ink, 120f, 600f);
+                    }
+                }
+                bitmap.Save(target, System.Drawing.Imaging.ImageFormat.Png);
+            }
+            return target;
+        }
+
         private static void SaveForm(
             Form form, string fileName, StringBuilder log)
         {

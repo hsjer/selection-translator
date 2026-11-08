@@ -271,5 +271,45 @@ namespace SelectionTranslator
 
         [DllImport("user32.dll")]
         public static extern bool IsWindowEnabled(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern bool ReleaseCapture();
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        public static extern IntPtr SendMessage(
+            IntPtr hWnd,
+            int msg,
+            IntPtr wParam,
+            IntPtr lParam);
+
+        [DllImport("dwmapi.dll", PreserveSig = true)]
+        private static extern int DwmSetWindowAttribute(
+            IntPtr hwnd,
+            int attribute,
+            ref int value,
+            int size);
+
+        /// <summary>
+        /// 让无边框窗口在 Windows 11 上使用系统圆角（Windows 10 会直接
+        /// 返回错误码，忽略即可），同时把弹窗的标题栏设成深色。
+        /// </summary>
+        public static void EnableRoundedCorners(IntPtr handle)
+        {
+            if (handle == IntPtr.Zero)
+            {
+                return;
+            }
+            try
+            {
+                int round = 2; // DWMWCP_ROUND
+                DwmSetWindowAttribute(handle, 33, ref round, sizeof(int));
+                int dark = 1; // DWMWA_USE_IMMERSIVE_DARK_MODE
+                DwmSetWindowAttribute(handle, 20, ref dark, sizeof(int));
+            }
+            catch
+            {
+                // 老系统上没有 dwmapi 的这两个属性，保持默认外观。
+            }
+        }
     }
 }
