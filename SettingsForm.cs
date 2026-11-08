@@ -54,7 +54,7 @@ namespace SelectionTranslator
         {
             Config = config;
 
-            Text = "设置 - 选中文本翻译";
+            Text = "设置 - " + AppInfo.Name;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterScreen;
             // 内容总高约 900；屏幕不够高时允许滚动，避免按钮被裁掉。
@@ -709,7 +709,7 @@ namespace SelectionTranslator
                 MessageBox.Show(
                     this,
                     "无法打开浏览器：" + ex.Message,
-                    "选中文本翻译",
+                    AppInfo.Name,
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
             }
@@ -1032,7 +1032,7 @@ namespace SelectionTranslator
                 MessageBox.Show(
                     this,
                     "无法打开浏览器：" + ex.Message,
-                    "选中文本翻译",
+                    AppInfo.Name,
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
             }

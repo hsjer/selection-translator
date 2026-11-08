@@ -622,6 +622,13 @@ namespace SelectionTranslator
         // 想重新截图需要再按一次快捷键（或 Esc 取消后重按）。
         private bool _selectionLocked;
 
+        // ---- 窗口直接选取 ----
+        // 鼠标悬停在一个窗口上时把整窗高亮出来，单击即截这个窗口，
+        // 不用先把整个窗口小心翼翼地圈一遍。
+        private Rectangle _hoverRect = Rectangle.Empty;
+        private WindowTarget _hoverWindow;
+        private Point _hoverPoint = new Point(int.MinValue, int.MinValue);
+
         private readonly ToolbarPanel _toolbar;
         private readonly List<IconButton> _buttons =
             new List<IconButton>();
@@ -899,9 +906,79 @@ namespace SelectionTranslator
 
                 DrawSelectionChrome(g);
             }
+            else if (!_hoverRect.IsEmpty)
+            {
+                DrawHoverWindow(g);
+            }
             else
             {
                 DrawHint(g);
+            }
+        }
+
+        /// <summary>
+        /// 悬停高亮：把鼠标底下那个窗口按原样画亮，描一圈蓝边，
+        /// 并在左上角标出尺寸和「单击截取此窗口」。
+        /// </summary>
+        private void DrawHoverWindow(Graphics g)
+        {
+            Rectangle rect = _hoverRect;
+            if (rect.Width < 2 || rect.Height < 2)
+            {
+                return;
+            }
+
+            Rectangle visible = Rectangle.Intersect(
+                rect, new Rectangle(Point.Empty, ClientSize));
+            if (visible.Width < 1 || visible.Height < 1)
+            {
+                return;
+            }
+
+            GraphicsState state = g.Save();
+            g.SetClip(visible, CombineMode.Replace);
+            g.DrawImage(_screen, 0, 0);
+            g.Restore(state);
+
+            using (Pen pen = new Pen(AccentColor, 2f))
+            {
+                g.DrawRectangle(pen, rect.X, rect.Y,
+                    rect.Width - 1, rect.Height - 1);
+            }
+
+            string size = rect.Width + " × " + rect.Height;
+            string tip = "单击截取此窗口";
+            using (Font font = new Font(
+                "Microsoft YaHei UI", 11f, FontStyle.Regular,
+                GraphicsUnit.Pixel))
+            using (StringFormat format = new StringFormat())
+            using (SolidBrush back = new SolidBrush(
+                Color.FromArgb(235, 26, 32, 44)))
+            using (SolidBrush fore = new SolidBrush(Color.White))
+            using (SolidBrush dim = new SolidBrush(
+                Color.FromArgb(180, 255, 255, 255)))
+            {
+                format.Alignment = StringAlignment.Near;
+                format.LineAlignment = StringAlignment.Center;
+                SizeF sizeText = g.MeasureString(size, font);
+                SizeF tipText = g.MeasureString(tip, font);
+                float w = sizeText.Width + tipText.Width + 28f;
+                float h = 24f;
+                float x = rect.X;
+                float y = rect.Y - h - 6f;
+                if (y < 2f)
+                {
+                    y = rect.Y + 6f;
+                }
+                x = Math.Max(2f, Math.Min(x, ClientSize.Width - w - 2f));
+                RectangleF label = new RectangleF(x, y, w, h);
+                g.FillRectangle(back, label);
+                g.DrawString(size, font, fore,
+                    new RectangleF(label.X + 9f, label.Y,
+                        sizeText.Width + 4f, h), format);
+                g.DrawString(tip, font, dim,
+                    new RectangleF(label.X + 9f + sizeText.Width + 6f,
+                        label.Y, tipText.Width + 4f, h), format);
             }
         }
 
@@ -988,7 +1065,7 @@ namespace SelectionTranslator
 
         private void DrawHint(Graphics g)
         {
-            const string line1 = "拖动鼠标框选要识别的区域";
+            const string line1 = "拖动框选区域，或直接单击一个窗口截整窗";
             const string line2 = "左键 / 右键均可 · Esc 取消";
             using (Font font = new Font(
                 "Microsoft YaHei UI", 15f, FontStyle.Bold,
@@ -1110,6 +1187,10 @@ namespace SelectionTranslator
                 _numberCounter = 1;
                 _selection = new Rectangle(e.X, e.Y, 1, 1);
                 _toolbar.Visible = false;
+                // 开始拖框后就不再显示窗口高亮，避免两层框叠在一起。
+                _hoverWindow = null;
+                _hoverRect = Rectangle.Empty;
+                _hoverPoint = new Point(int.MinValue, int.MinValue);
             }
 
             // 文字 / 序号是「单击即完成」，不需要鼠标捕获；否则
@@ -1131,6 +1212,7 @@ namespace SelectionTranslator
 
             if (_dragMode == DragMode.None)
             {
+                UpdateHoverWindow(current);
                 UpdateCursor(current);
                 return;
             }
@@ -1197,6 +1279,11 @@ namespace SelectionTranslator
                         _tool = Tool.None;
                         SyncToolButtons();
                     }
+                    else if (_tool == Tool.None && TryPickHoveredWindow())
+                    {
+                        // 单击某个窗口 → 直接把整个窗口作为选区，
+                        // 不用再沿着窗口边缘一点点圈。
+                    }
                     else
                     {
                         _selection = Rectangle.Empty;
@@ -1243,6 +1330,99 @@ namespace SelectionTranslator
         private bool HasSelection()
         {
             return _selection.Width >= 10 && _selection.Height >= 10;
+        }
+
+        /// <summary>
+        /// 刷新「鼠标底下的窗口」高亮。只在还没框选、也没在标注时生效，
+        /// 每次鼠标移动最多重新枚举一次窗口（同一点直接跳过）。
+        /// </summary>
+        private void UpdateHoverWindow(Point client)
+        {
+            if (_hoverPoint == client)
+            {
+                return;
+            }
+            _hoverPoint = client;
+
+            if (_selectionLocked || _tool != Tool.None)
+            {
+                ClearHoverWindow();
+                return;
+            }
+
+            WindowTarget target = WindowPicker.PickAt(PointToScreen(client));
+            Rectangle rect = Rectangle.Empty;
+            if (target != null)
+            {
+                Point origin = PointToClient(
+                    new Point(target.Bounds.Left, target.Bounds.Top));
+                rect = WindowPicker.Clamp(
+                    new Rectangle(origin, target.Bounds.Size),
+                    new Rectangle(Point.Empty, ClientSize));
+            }
+
+            bool sameTarget = target == null
+                ? _hoverWindow == null
+                : (_hoverWindow != null &&
+                    _hoverWindow.Handle == target.Handle);
+            if (sameTarget && rect == _hoverRect)
+            {
+                return;
+            }
+
+            _hoverWindow = target;
+            _hoverRect = rect;
+            Invalidate();
+        }
+
+        private void ClearHoverWindow()
+        {
+            _hoverPoint = new Point(int.MinValue, int.MinValue);
+            if (_hoverWindow == null && _hoverRect.IsEmpty)
+            {
+                return;
+            }
+            _hoverWindow = null;
+            _hoverRect = Rectangle.Empty;
+            Invalidate();
+        }
+
+        /// <summary>鼠标底下的窗口是否可以直接整窗截取。</summary>
+        private Rectangle HoverWindowRect()
+        {
+            if (_hoverWindow == null || _hoverRect.IsEmpty)
+            {
+                return Rectangle.Empty;
+            }
+            return WindowPicker.IsUsable(_hoverRect)
+                ? _hoverRect : Rectangle.Empty;
+        }
+
+        /// <summary>单击命中窗口时，把选区设成整窗。返回是否命中。</summary>
+        private bool TryPickHoveredWindow()
+        {
+            WindowTarget target = WindowPicker.PickAt(
+                PointToScreen(_dragStart));
+            if (target == null)
+            {
+                return false;
+            }
+
+            Point origin = PointToClient(
+                new Point(target.Bounds.Left, target.Bounds.Top));
+            Rectangle rect = WindowPicker.Clamp(
+                new Rectangle(origin, target.Bounds.Size),
+                new Rectangle(Point.Empty, ClientSize));
+            if (!WindowPicker.IsUsable(rect))
+            {
+                return false;
+            }
+
+            _selection = rect;
+            _hoverWindow = null;
+            _hoverRect = Rectangle.Empty;
+            _hoverPoint = new Point(int.MinValue, int.MinValue);
+            return true;
         }
 
         private void MoveSelection(Point current)

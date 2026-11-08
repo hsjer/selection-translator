@@ -289,6 +289,48 @@ namespace SelectionTranslator
             ref int value,
             int size);
 
+        // ---- 窗口拾取（截图时直接点一个窗口）----
+
+        public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        public static extern bool EnumWindows(
+            EnumWindowsProc callback, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern bool GetWindowRect(
+            IntPtr hWnd, out RECT rect);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        public static extern int GetWindowText(
+            IntPtr hWnd, StringBuilder text, int maxCount);
+
+        [DllImport("user32.dll")]
+        public static extern int GetWindowLong(IntPtr hWnd, int index);
+
+        /// <summary>DWM 的真实外框（不含 Win10 那圈看不见的缩放手柄）。</summary>
+        [DllImport("dwmapi.dll", PreserveSig = true)]
+        public static extern int DwmGetWindowAttribute(
+            IntPtr hwnd,
+            int attribute,
+            out RECT value,
+            int size);
+
+        /// <summary>同上的 int 版，用来查 DWMWA_CLOAKED。</summary>
+        [DllImport("dwmapi.dll", PreserveSig = true)]
+        public static extern int DwmGetWindowAttributeInt(
+            IntPtr hwnd,
+            int attribute,
+            out int value,
+            int size);
+
+        public const int GWL_EXSTYLE = -20;
+        public const int WS_EX_TRANSPARENT = 0x00000020;
+        public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+
         /// <summary>
         /// 让无边框窗口在 Windows 11 上使用系统圆角（Windows 10 会直接
         /// 返回错误码，忽略即可），同时把弹窗的标题栏设成深色。

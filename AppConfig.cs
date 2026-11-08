@@ -45,6 +45,10 @@ namespace SelectionTranslator
         /// <summary>除了上屏之外，是否顺便把识别文字留在剪贴板里。</summary>
         public bool VoiceAutoCopy { get; set; }
 
+        // ---- 资源管理器集成 ----
+        /// <summary>在图片的右键菜单里加「使用工具侠打开图片」。</summary>
+        public bool EnableImageShellMenu { get; set; }
+
         public AppConfig()
         {
             AppId = "";
@@ -69,6 +73,7 @@ namespace SelectionTranslator
             VoiceEngineType = TencentAsr.DefaultEngine;
             VoiceInputMethod = InputFocusProbe.MethodType;
             VoiceAutoCopy = false;
+            EnableImageShellMenu = true;
         }
 
         public string GetSecret()
@@ -208,6 +213,12 @@ namespace SelectionTranslator
                 {
                     config.ShowBubbleOnSelection = true;
                 }
+
+                // 图片右键菜单也是后加的，旧配置里没有这个字段。
+                if (!HasImageShellMenuSetting(json))
+                {
+                    config.EnableImageShellMenu = true;
+                }
                 return config;
             }
             catch (Exception ex)
@@ -254,6 +265,14 @@ namespace SelectionTranslator
             return json != null &&
                 json.IndexOf(
                     "\"ShowBubbleOnSelection\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool HasImageShellMenuSetting(string json)
+        {
+            return json != null &&
+                json.IndexOf(
+                    "\"EnableImageShellMenu\"",
                     StringComparison.OrdinalIgnoreCase) >= 0;
         }
 

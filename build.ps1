@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $framework = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319"
@@ -44,7 +44,8 @@ if ($sources.Count -eq 0) {
 $outputDirectory = Join-Path $root "dist"
 New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
 # 允许通过环境变量临时指定输出名，便于在程序运行时先编译到旁路口径做验证。
-$exeName = "SelectionTranslator.exe"
+# 产品对外叫「工具侠」，可执行文件也用同名，任务管理器里一眼能认出来。
+$exeName = "工具侠.exe"
 if ($env:ST_OUTPUT_NAME) {
     $exeName = $env:ST_OUTPUT_NAME
 }
@@ -60,10 +61,12 @@ if (-not (Test-Path $icon)) {
     }
     Write-Host "Generating app.ico..."
     $generatorExe = Join-Path $outputDirectory "MakeIcon.exe"
+    # 图标画法在 AppIcon.cs（与托盘共用一份），所以要一起编译。
+    $iconRenderSource = Join-Path $root "AppIcon.cs"
     & $csc "/nologo" "/target:exe" "/out:$generatorExe" `
         "/reference:$(Join-Path $framework 'System.dll')" `
         "/reference:$(Join-Path $framework 'System.Drawing.dll')" `
-        $generatorSource
+        $iconRenderSource $generatorSource
     if ($LASTEXITCODE -ne 0) {
         throw "Icon generator build failed with exit code $LASTEXITCODE"
     }

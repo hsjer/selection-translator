@@ -1123,6 +1123,136 @@ namespace SelectionTranslator
                     }
                 }
 
+                // ---- 名称与资源管理器「使用工具侠打开图片」----
+                Check(output, ref ok, "app name", AppInfo.Name, "工具侠");
+                Check(output, ref ok, "app id stable",
+                    AppInfo.Id, "SelectionTranslator");
+                Check(output, ref ok, "shell menu text",
+                    ShellIntegration.MenuText, "使用工具侠打开图片");
+                Check(output, ref ok, "shell key path",
+                    ShellIntegration.MenuKeyPath,
+                    @"Software\Classes\SystemFileAssociations\image\shell\ToolboxHero");
+                Check(output, ref ok, "shell command quotes",
+                    ShellIntegration.BuildCommand(
+                        @"C:\Program Files\工具侠.exe"),
+                    "\"C:\\Program Files\\工具侠.exe\" \"%1\"");
+                Check(output, ref ok, "shell command strips quotes",
+                    ShellIntegration.BuildCommand(
+                        "\"C:\\a b\\工具侠.exe\""),
+                    "\"C:\\a b\\工具侠.exe\" \"%1\"");
+                Check(output, ref ok, "shell command blank",
+                    ShellIntegration.BuildCommand("   "), "");
+                Check(output, ref ok, "shell icon value",
+                    ShellIntegration.BuildIconValue(@"C:\a\b.exe"),
+                    "\"C:\\a\\b.exe\",0");
+                Check(output, ref ok, "shell trim quotes",
+                    ShellIntegration.TrimQuotes("\"x y\""), "x y");
+
+                // 真的写一次 HKCU 再读回来，最后恢复成跑自检之前的模样。
+                bool shellWasEnabled = ShellIntegration.IsEnabled();
+                string shellError;
+                try
+                {
+                    Check(output, ref ok, "shell register",
+                        ShellIntegration.SetEnabled(true,
+                            @"C:\临时 目录\工具侠.exe",
+                            out shellError).ToString(), "True");
+                    Check(output, ref ok, "shell register readback",
+                        ShellIntegration.IsCurrent(
+                            @"C:\临时 目录\工具侠.exe").ToString(),
+                        "True");
+                    Check(output, ref ok, "shell register enabled",
+                        ShellIntegration.IsEnabled().ToString(), "True");
+                    Check(output, ref ok, "shell unregister",
+                        ShellIntegration.SetEnabled(false, null,
+                            out shellError).ToString(), "True");
+                    Check(output, ref ok, "shell unregister disabled",
+                        ShellIntegration.IsEnabled().ToString(), "False");
+                }
+                finally
+                {
+                    ShellIntegration.SetEnabled(
+                        shellWasEnabled,
+                        Application.ExecutablePath,
+                        out shellError);
+                }
+
+                // ---- 截图时直接点窗口 ----
+                Check(output, ref ok, "picker shell progman",
+                    WindowPicker.IsShellSurface("Progman").ToString(),
+                    "True");
+                Check(output, ref ok, "picker shell workerw",
+                    WindowPicker.IsShellSurface("WorkerW").ToString(),
+                    "True");
+                Check(output, ref ok, "picker app window",
+                    WindowPicker.IsShellSurface(
+                        "Chrome_WidgetWin_1").ToString(), "False");
+                Check(output, ref ok, "picker empty class",
+                    WindowPicker.IsShellSurface("").ToString(), "False");
+                Check(output, ref ok, "picker usable big",
+                    WindowPicker.IsUsable(
+                        new Rectangle(0, 0, 100, 80)).ToString(), "True");
+                Check(output, ref ok, "picker reject tiny",
+                    WindowPicker.IsUsable(
+                        new Rectangle(0, 0, 10, 10)).ToString(), "False");
+                Check(output, ref ok, "picker clamp inside",
+                    WindowPicker.Clamp(
+                        new Rectangle(-10, -10, 50, 50),
+                        new Rectangle(0, 0, 100, 100))
+                        .ToString(), "{X=0,Y=0,Width=40,Height=40}");
+                Check(output, ref ok, "picker clamp outside",
+                    WindowPicker.Clamp(
+                        new Rectangle(200, 200, 50, 50),
+                        new Rectangle(0, 0, 100, 100))
+                        .ToString(), "{X=0,Y=0,Width=0,Height=0}");
+
+                // ---- 图标 ----
+                Check(output, ref ok, "icon size count",
+                    AppIcon.IcoSizes.Length.ToString(), "7");
+                using (Bitmap icon16 = AppIcon.Render(16))
+                {
+                    Check(output, ref ok, "icon 16 size",
+                        icon16.Width + "x" + icon16.Height, "16x16");
+                    Check(output, ref ok, "icon 16 has ink",
+                        (icon16.GetPixel(8, 8).A > 0).ToString(), "True");
+                    Check(output, ref ok, "icon 16 corner clear",
+                        (icon16.GetPixel(0, 0).A == 0).ToString(), "True");
+                }
+                string icoPath = Path.Combine(
+                    Path.GetTempPath(), "st-icon-test.ico");
+                try
+                {
+                    AppIcon.WriteIco(icoPath);
+                    byte[] header = File.ReadAllBytes(icoPath);
+                    Check(output, ref ok, "icon ico magic",
+                        (header.Length > 6 &&
+                            header[0] == 0 && header[1] == 0 &&
+                            header[2] == 1 && header[3] == 0)
+                            .ToString(), "True");
+                    Check(output, ref ok, "icon ico frame count",
+                        BitConverter.ToInt16(header, 4).ToString(), "7");
+                }
+                finally
+                {
+                    try
+                    {
+                        File.Delete(icoPath);
+                    }
+                    catch
+                    {
+                        // 删不掉不影响结论。
+                    }
+                }
+
+                // ---- 开机启动项 ----
+                Check(output, ref ok, "startup command built",
+                    (StartupManager.BuildCommand().StartsWith("\"") &&
+                        StartupManager.BuildCommand().EndsWith("\""))
+                        .ToString(), "True");
+                Check(output, ref ok, "startup run key path",
+                    StartupManager.RunKeyPathForTest,
+                    @"Software\Microsoft\Windows\CurrentVersion\Run");
+
                 using (ImageViewerForm viewer = new ImageViewerForm())
                 {
                     Check(output, ref ok, "viewer minimum width",

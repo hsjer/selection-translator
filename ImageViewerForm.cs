@@ -40,7 +40,7 @@ namespace SelectionTranslator
 
         public ImageViewerForm()
         {
-            Text = "图片查看器";
+            Text = "图片查看器 - " + AppInfo.Name;
             ClientSize = new Size(1080, 720);
             MinimumSize = new Size(760, 520);
             KeyPreview = true;
@@ -442,8 +442,8 @@ namespace SelectionTranslator
         private void UpdateTitle()
         {
             Text = _path == null
-                ? "图片查看器"
-                : Path.GetFileName(_path) + " - 图片查看器";
+                ? "图片查看器 - " + AppInfo.Name
+                : Path.GetFileName(_path) + " - " + AppInfo.Name;
         }
 
         private void RefreshInfo()

@@ -1,10 +1,10 @@
-# 选中文本翻译（Windows）
+# 工具侠（Windows 托盘小工具：翻译 · 截图识字 · 语音输入 · 图片工具）
 
-一个轻量的 Windows 托盘小工具：在任意应用里选中文字，旁边会自动浮出一个「译」按钮，点击即可用百度翻译 API 翻译。也支持右键、全局快捷键，以及**截图翻译**（框选屏幕 → 就地标注 → 识别图中文字并把译文直接显示在图片上，可选中复制）。截图后也可以**只取文字**：一键把 OCR 识别出的原文复制到剪贴板，不弹窗口、不显示译文。
+一个轻量的 Windows 托盘小工具**工具侠**（原「选中文本翻译」）：在任意应用里选中文字，旁边会自动浮出一个「译」按钮，点击即可用百度翻译 API 翻译。也支持右键、全局快捷键，以及**截图翻译**（框选屏幕 → 就地标注 → 识别图中文字并把译文直接显示在图片上，可选中复制）。截图后也可以**只取文字**：一键把 OCR 识别出的原文复制到剪贴板，不弹窗口、不显示译文。
 
 图片文字处理采用**双服务分工**：**腾讯云 GeneralAccurateOCR** 负责识别文字和坐标，**百度通用文本翻译**负责把识别出的文字逐行翻译；两者拼在一起把译文叠加回原图。只取字时只调腾讯云 OCR，完全不调用翻译接口。未配置腾讯云凭证（或在设置里关闭开关）时自动回退到百度图片翻译接口。
 
-此外还带了一个**轻量图片工具**：托盘菜单「打开图片…」或把图片拖到 exe 上，即可用深色查看器看图，并就地完成格式转换、压缩、改尺寸、重命名、旋转、裁剪与另存（见下文「图片工具」）。
+此外还带了一个**轻量图片工具**：托盘菜单「打开图片…」、在图片上**右键选「使用工具侠打开图片」**，或把图片拖到 exe 上，即可用深色查看器看图，并就地完成格式转换、压缩、改尺寸、重命名、旋转、裁剪与另存（见下文「图片工具」）。
 
 ## 为什么不是系统右键菜单
 
@@ -20,7 +20,10 @@ Windows 没有公开接口可以往**所有应用**的文本右键菜单里统�
 
 按 `Ctrl+Alt+S`（或托盘菜单「截图翻译…」）进入全屏截图浮层：
 
-1. **框选**：按住鼠标**左键或右键**拖拽。松开后选区锁定（一次快捷键只截一张图），光标由十字变回普通箭头，选区出现蓝色边框、8 个缩放手柄和 `宽 × 高` 尺寸标签，下方自动浮出图标工具栏。手柄上仍显示缩放光标，选区内拖动可移动选区；右键单击只退出当前标注工具，不会重新框选。想再截一张请重按 `Ctrl+Alt+S`。
+1. **选区**：两种方式，随便哪种都行。
+   - **直接点一个窗口**：鼠标移到目标窗口上，整个窗口会被高亮（按原图亮度重新绘出、描一圈蓝边，左上角标出尺寸和「单击截取此窗口」），**单击即把整个窗口作为选区**，不用沿着窗口边缘小心翼翼地圈。窗口边界取 DWM 的真实外框（`DWMWA_EXTENDED_FRAME_BOUNDS`），不会多出 Win10 那圈看不见的缩放手柄。
+   - **自由框选**：按住鼠标**左键或右键**拖拽，松手即定。
+   两种方式松开后选区都会锁定（一次快捷键只截一张图），光标由十字变回普通箭头，选区出现蓝色边框、8 个缩放手柄和 `宽 × 高` 尺寸标签，下方自动浮出图标工具栏。手柄上仍显示缩放光标，选区内拖动可移动选区；右键单击只退出当前标注工具，不会重新框选。想再截一张请重按 `Ctrl+Alt+S`。
 2. **就地标注**：工具栏从左到右是矩形、椭圆、箭头、画笔、文字、序号、高亮、马赛克、撤销、裁剪、颜色、线宽、保存、钉在桌面、翻译、取字、取消、完成。`Ctrl+Z` 撤销，数字键 `1`–`8` 快速切换工具；颜色有 6 种、线宽 3 档。
 3. **结束方式**：
    - **完成 ✓（对号）**：合成图（含标注）直接复制到剪贴板，浮层随即关闭，**不弹出任何窗口**；
@@ -31,6 +34,8 @@ Windows 没有公开接口可以往**所有应用**的文本右键菜单里统�
    - **取消 ✕ / Esc**：放弃本次截图。
 
 > 所有标注都在浮层里就地完成。**旧版独立的截图编辑器窗口已经移除**，截图后不会再弹出带裁剪 / 画笔 / 马赛克的编辑界面。
+
+> **窗口拾取规则**：按 Z 序找鼠标下第一个属于**其他进程**的可见顶层窗口，跳过桌面（`Progman` / `WorkerW`）、任务栏、工具窗口（输入法候选、浮动提示）、小于 24px 的条状窗口，以及 DWM 隐藏（cloaked）的幽灵窗口 —— 那些「Windows 输入体验」之类的全屏影子层会把真正的目标挡住。所以在桌面或任务栏上悬停不会高亮，直接拖框就好。
 
 **桌面贴图**：左键拖动移动、`Ctrl` + 滚轮缩放、右键菜单可复制 / 保存 / 调整透明度 / 切换置顶 / 缩放 / 关闭，`Esc` 或双击关闭；鼠标悬停时右上角出现关闭按钮。托盘菜单「关闭所有桌面贴图」可一次清理。再次按截图快捷键时贴图会临时隐藏，不会被拍进新截图。翻译结果窗口的工具条里也有「钉在桌面」。
 
@@ -91,11 +96,12 @@ Windows 没有公开接口可以往**所有应用**的文本右键菜单里统�
 
 ## 图片工具（打开 / 转格式 / 压缩 / 改尺寸）
 
-一个不联网、零依赖的深色图片查看器，专注「看图 + 改文件」这件小事。入口有三个：
+一个不联网、零依赖的深色图片查看器，专注「看图 + 改文件」这件小事。入口有四个：
 
+- **在任意图片上右键 →「使用工具侠打开图片」**（默认开启，见下）；
 - 托盘菜单「打开图片…」；
-- 命令行 `SelectionTranslator.exe "D:\图片\a.png"`；
-- **把图片直接拖到 exe 上**，或在资源管理器里「打开方式」选它 —— 这时只开查看器窗口，不启动托盘常驻。
+- 命令行 `工具侠.exe "D:\图片\a.png"`；
+- **把图片直接拖到 exe 上**，或在资源管理器里「打开方式」选它 —— 后面这两种只开查看器窗口，不启动托盘常驻。
 
 **界面**：无边框深色窗口（Win11 自动圆角），自绘标题栏显示文件名与 `3 / 19` 位置，中间是画布，右侧「图片信息」卡片，底部悬浮一条圆角图标工具条。全部图形都是 GDI+ 手绘矢量，不引入任何 UI 库或图片资源。
 
@@ -124,6 +130,32 @@ Windows 没有公开接口可以往**所有应用**的文本右键菜单里统�
 
 > 压缩固定输出 JPEG（体积收益最大）；动图 GIF 只处理第一帧；不支持 WebP / HEIC / AVIF（系统 GDI+ 没有对应编解码器，硬塞第三方库会破坏「单文件」）。
 
+### 图片右键菜单
+
+第一次运行（或启动托盘）时，程序会在 **当前用户** 的注册表里挂一项右键菜单：
+
+```text
+HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\image\shell\ToolboxHero
+  (默认)            = 使用工具侠打开图片
+  Icon              = "<程序路径>",0
+  MultiSelectModel  = Single
+  command\(默认)     = "<程序路径>" "%1"
+```
+
+- 挂在 `SystemFileAssociations\image` 下，所以 png / jpg / jpeg / bmp / gif / tif / tiff 这些「图片」类型都能看到，**不影响**文件关联和「打开方式」列表；
+- **只写 HKCU，不需要管理员权限**，也不会弹 UAC；关掉开关就整棵子键删掉，系统里不留痕迹；
+- 托盘菜单「图片右键菜单：使用工具侠打开」可以随时开关（前面带勾），状态每次都从注册表回读；
+- 程序被挪了目录、改了名字，下次启动托盘或下次从右键菜单打开图片时会自动把路径修正过来；
+- **Windows 11 提示**：这个位置属于经典菜单，Win11 默认收在「显示更多选项」（`Shift+F10` 或右键 → 显示更多选项）里。想让它出现在 Win11 新菜单的第一层，需要注册 `IExplorerCommand` COM 组件，代价是要写一堆 COM 注册项，跟「单文件绿色」冲突，所以没做。
+
+等价的命令行（调试或脚本里用）：
+
+```powershell
+.\工具侠.exe --shellon     # 注册右键菜单（指向当前 exe）
+.\工具侠.exe --shelloff    # 移除
+.\工具侠.exe --shellprobe  # 打印当前注册状态
+```
+
 ## 功能
 
 - 任意应用选中文本 → 自动浮出「译」按钮，点击即翻译（无需右键）
@@ -132,6 +164,7 @@ Windows 没有公开接口可以往**所有应用**的文本右键菜单里统�
 - 全局快捷键截图翻译（默认 `Ctrl+Alt+S`，可在设置中自定义）
 - 全局快捷键语音输入（默认 `Ctrl+Alt+V`）：不限制输入框类型，按住说话、松开即识别，文字直接上屏，不弹结果窗口
 - 截图浮层：左键/右键框选、选区锁定、8 手柄调整、尺寸标签、18 个线性图标就地标注（含序号、马赛克、裁剪、贴图、取字）
+- 截图可以直接点一个窗口整窗截取：悬停高亮 + DWM 真实外框，跳过桌面 / 任务栏 / 工具窗口 / 幽灵层
 - 桌面贴图：置顶无边框小窗，可拖动、缩放、调透明度，托盘菜单一键关闭全部
 - 截图就地标注完成后「对号」直接复制到剪贴板，不再弹出编辑窗口
 - 「取字」OCR：只用腾讯云识别文字，打开仅识别窗口，由你自己点选 / 框选要复制的文字（不自动全量复制）
@@ -140,7 +173,9 @@ Windows 没有公开接口可以往**所有应用**的文本右键菜单里统�
 - 翻译后在图片上点选 / 框选文字直接复制（原文或译文，按阅读顺序拼接）
 - 未配置腾讯云凭证时自动回退百度图片翻译，功能不中断
 - 图片工具：深色轻量查看器，就地转格式（PNG/JPG/BMP/GIF/TIFF）、压缩、改尺寸、重命名、旋转、裁剪、另存、复制，可滚动缩放/拖动平移、同目录循环切换
-- 托盘菜单：翻译选中文本、手动翻译、截图翻译…、语音识别（按住说话）、翻译剪贴板、打开图片…、关闭所有桌面贴图、设置、开机启动、退出
+- 资源管理器集成：在任意图片上右键 →「使用工具侠打开图片」（只写 HKCU，可随时开关，不抢文件关联）
+- 托盘菜单：翻译选中文本、手动翻译、截图翻译…、语音识别（按住说话）、翻译剪贴板、打开图片…、图片右键菜单、关闭所有桌面贴图、设置、开机启动、退出
+- 开机自动启动写在 `HKCU\...\Run\工具侠`；每次启动都会校正路径，并清掉任务管理器 / 启动管理工具写下的「已禁用」标记，所以程序换目录、改名字、被优化软件关掉过，下次手动启动一次就自动修好
 - 百度翻译 API（通用文本翻译，回退时含图片翻译）+ 腾讯云 OCR（GeneralAccurateOCR）+ 腾讯云语音识别（SentenceRecognition），全部自行实现 TC3-HMAC-SHA256 签名
 - 自动目标语言：中文→英文，其他→中文；也可固定目标语言（文本与图片分别设置）
 - 百度密钥、腾讯云 SecretKey 都用 Windows DPAPI 加密后保存在当前用户目录
@@ -168,7 +203,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 生成：
 
 ```text
-dist\SelectionTranslator.exe
+dist\工具侠.exe
 ```
 
 `app.ico` 是 16/24/32/48/64/128/256px 多尺寸图标，`build.ps1` 用 `/win32icon` 把它嵌进 exe（资源管理器 / 任务栏看到的图标），同时用 `/resource` 嵌入同一份数据供托盘图标复用。若 `app.ico` 缺失，构建脚本会自动编译 `tools\MakeIcon.cs` 现场生成，不依赖任何第三方库；想换图标时删掉 `app.ico` 再重新编译即可。
@@ -182,7 +217,7 @@ $env:ST_OUTPUT_NAME = "_next.exe"; .\build.ps1
 
 ## 凭证与隐私
 
-- **密钥不进代码、也不进 exe**：百度 AppID / 密钥、腾讯云 SecretId / SecretKey 只存在本机 `%APPDATA%\SelectionTranslator\config.json`，密钥用 Windows DPAPI 加密（绑定当前账户，换台电脑解不开）。`release\SelectionTranslator.exe` 是**零预置凭证**的干净构建，谁下载都要自己填。
+- **密钥不进代码、也不进 exe**：百度 AppID / 密钥、腾讯云 SecretId / SecretKey 只存在本机 `%APPDATA%\SelectionTranslator\config.json`，密钥用 Windows DPAPI 加密（绑定当前账户，换台电脑解不开）。`release\工具侠.exe` 是**零预置凭证**的干净构建，谁下载都要自己填。
 - **日志不写凭证**：诊断命令只输出 `hasBaiduCredentials=True/False` 这类布尔状态，运行日志不记录 AppID、SecretId、密钥或签名值。
 - 清空本机凭证：把 `config.json` 里 `AppId`、`SecretProtected`、`TencentSecretId`、`TencentSecretKeyProtected` 四个字段置空（或直接删掉文件，其余设置会回默认），下次启动即为未配置状态。
 - 仓库不含 `config.json` 和任何日志（`dist/`、`.workbuddy/` 已被 `.gitignore` 排除）；请勿把本机 `config.json` 或 `%APPDATA%\SelectionTranslator\*.txt` 提交、打包或截图外发。
@@ -191,7 +226,7 @@ $env:ST_OUTPUT_NAME = "_next.exe"; .\build.ps1
 
 1. 打开 [百度翻译开放平台](https://fanyi-api.baidu.com/manage/developer)，注册并创建应用，开通「通用翻译」，拿到 **AppID** 和 **密钥**。
 2. （推荐，用于截图识别）打开 [腾讯云访问密钥控制台](https://console.cloud.tencent.com/cam/capi)，在 [文字识别 OCR](https://console.cloud.tencent.com/ocr) 开通服务，创建 **SecretId** 和 **SecretKey**。不填也能用，但截图识别会回退到百度图片翻译（需在百度侧单独开通该服务）。想用语音识别，再到 [语音识别控制台](https://console.cloud.tencent.com/asr) 开通服务（与 OCR 共用同一对密钥）。
-3. 运行 `SelectionTranslator.exe`。
+3. 运行 `工具侠.exe`。
 4. 右键托盘图标 →「设置…」，填入百度 AppID / 密钥，以及腾讯云 SecretId / SecretKey；选择目标语言后，可分别点「测试翻译」「测试 OCR」「测试麦克风」（会录 3 秒真实调用一次）确认可用，再保存。
 5. （可选）在设置中自定义快捷键：点击任一快捷键输入框，按下想要的组合键即可。
 6. 在任意应用中选中文字：
@@ -310,74 +345,93 @@ Content-Type: application/json; charset=utf-8
 
 `config.json` 中 `SecretProtected`（百度密钥）和 `TencentSecretKeyProtected`（腾讯云 SecretKey）是 DPAPI 加密后的 Base64，只能由当前 Windows 用户解密。不要直接把该文件发给别人。
 
-`dist\SelectionTranslator.exe` 是单文件、无第三方 DLL，可以单独拷到别的 Windows 电脑（需自带 .NET Framework 4.8，Win10/11 已内置）；但**密钥不会跟着走**：新机器上要在设置里重新填百度 AppID / 密钥，以及（可选）腾讯云 SecretId / SecretKey。
+`dist\工具侠.exe` 是单文件、无第三方 DLL，可以单独拷到别的 Windows 电脑（需自带 .NET Framework 4.8，Win10/11 已内置）；但**密钥不会跟着走**：新机器上要在设置里重新填百度 AppID / 密钥，以及（可选）腾讯云 SecretId / SecretKey。
 
 ## 自检
 
 ```powershell
-.\dist\SelectionTranslator.exe --selftest
+.\dist\工具侠.exe --selftest
 Get-Content "$env:APPDATA\SelectionTranslator\selftest.txt"
 ```
 
-自检（共 187 项）覆盖文本翻译 MD5 签名、自动目标语言判断、DPAPI 加解密、文本分段，图片翻译的 MD5 签名、固定参数（cuid/mac）、语种映射与目标语种校验，截图浮层的构造与选区导出冒烟测试，exe / 托盘图标资源，结果窗口的 `rect` 解析、按阅读顺序拼接选字文本、贴合图解码与画布绘制冒烟测试，**TC3-HMAC-SHA256 签名固定向量**、腾讯云 OCR 响应解析（含 `Polygon` 回退、鉴权错误映射）、阅读顺序、目标语种归一化、管道结果拼装、两套 `Prepare` 路径。语音识别部分新增：WAV 头字节级校验（RIFF/WAVE/fmt/data、采样率、data 长度、时长换算）、引擎码归一与列表、`asr` 与 `ocr` 签名必须不同、`SentenceRecognition` 响应与错误码解析、录音浮条（含完成态）的渲染冒烟测试、焦点默认放行分类（未知控件类名 / 资源管理器 / 空类名都放行，桌面 / 菜单 / 无效窗口拦截）、上屏闸门校验、`KEYEVENTF_UNICODE` 输入序列构造、换行/控制字符归一、上屏方式归一与设置窗口上屏方式下拉，以及仅识别模式（结果无译文、窗口不绘制译文遮罩、默认复制原文）的回归用例。图片工具部分新增：格式/扩展名归一与中文标签、体积与位数格式化、路径中间省略、PNG 落盘→读回→尺寸校验、缩放 / 旋转 / 裁剪（含越界返回 null）、32 位透明图转 JPEG 自动铺白、同名不覆盖的 `(1)` 命名、带后缀命名、重命名成功与三类失败原因、同目录图片数量与自然序、以及查看器构造冒烟测试。
+自检（共 217 项）覆盖文本翻译 MD5 签名、自动目标语言判断、DPAPI 加解密、文本分段，图片翻译的 MD5 签名、固定参数（cuid/mac）、语种映射与目标语种校验，截图浮层的构造与选区导出冒烟测试，exe / 托盘图标资源，结果窗口的 `rect` 解析、按阅读顺序拼接选字文本、贴合图解码与画布绘制冒烟测试，**TC3-HMAC-SHA256 签名固定向量**、腾讯云 OCR 响应解析（含 `Polygon` 回退、鉴权错误映射）、阅读顺序、目标语种归一化、管道结果拼装、两套 `Prepare` 路径。语音识别部分新增：WAV 头字节级校验（RIFF/WAVE/fmt/data、采样率、data 长度、时长换算）、引擎码归一与列表、`asr` 与 `ocr` 签名必须不同、`SentenceRecognition` 响应与错误码解析、录音浮条（含完成态）的渲染冒烟测试、焦点默认放行分类（未知控件类名 / 资源管理器 / 空类名都放行，桌面 / 菜单 / 无效窗口拦截）、上屏闸门校验、`KEYEVENTF_UNICODE` 输入序列构造、换行/控制字符归一、上屏方式归一与设置窗口上屏方式下拉，以及仅识别模式（结果无译文、窗口不绘制译文遮罩、默认复制原文）的回归用例。图片工具部分新增：格式/扩展名归一与中文标签、体积与位数格式化、路径中间省略、PNG 落盘→读回→尺寸校验、缩放 / 旋转 / 裁剪（含越界返回 null）、32 位透明图转 JPEG 自动铺白、同名不覆盖的 `(1)` 命名、带后缀命名、重命名成功与三类失败原因、同目录图片数量与自然序、以及查看器构造冒烟测试。窗口拾取部分新增：桌面 / 工作窗类名识别、最小可截尺寸、越界夹取（含完全在屏幕外返回空）。图标部分新增：7 档尺寸清单、16px 实际像素有不透明内容且四角透明、ICO 文件头与帧数。改名与右键菜单部分新增：显示名 / 内部标识、菜单文案与注册表路径、带空格路径的命令行加引号与去引号、空路径、图标值格式，以及**真的往 HKCU 写一次再删掉**的注册 / 读回 / 反注册往返测试（跑完自动恢复原状态），以及开机启动命令行加引号与 Run 键路径。
 
 真实请求诊断（使用当前已保存的凭证，不输出密钥）：
 
 ```powershell
 # 只取字（自动选引擎）
-.\dist\SelectionTranslator.exe --ocrtest "C:\path\to\screenshot.png"
+.\dist\工具侠.exe --ocrtest "C:\path\to\screenshot.png"
 Get-Content "$env:APPDATA\SelectionTranslator\ocrtest.txt"
 
 # 识别 + 翻译整条链路（自动选引擎）
-.\dist\SelectionTranslator.exe --imagetest "C:\path\to\screenshot.png"
+.\dist\工具侠.exe --imagetest "C:\path\to\screenshot.png"
 Get-Content "$env:APPDATA\SelectionTranslator\imagetest.txt"
 
 # 只调腾讯云 OCR，逐行打印坐标与原文
-.\dist\SelectionTranslator.exe --tencenttest "C:\path\to\screenshot.png"
+.\dist\工具侠.exe --tencenttest "C:\path\to\screenshot.png"
 Get-Content "$env:APPDATA\SelectionTranslator\tencenttest.txt"
 
 # 验证百度「逐行文本翻译」通道（不需要腾讯云凭证）
-.\dist\SelectionTranslator.exe --linetest
+.\dist\工具侠.exe --linetest
 Get-Content "$env:APPDATA\SelectionTranslator\linetest.txt"
 
 # 验证腾讯云签名 / 公共参数格式（用假凭证，预期 AuthFailure.*）
-.\dist\SelectionTranslator.exe --tencentprobe
+.\dist\工具侠.exe --tencentprobe
 Get-Content "$env:APPDATA\SelectionTranslator\tencentprobe.txt"
 
 # 只测录音链路（不需要凭证）：录 3 秒，报告设备数/有效时长/峰值电平
-.\dist\SelectionTranslator.exe --voicetest 3
+.\dist\工具侠.exe --voicetest 3
 Get-Content "$env:APPDATA\SelectionTranslator\voicetest.txt"
 
 # 用真实凭证识别一个 wav（不给路径则用 1 秒正弦波，只验证报文）
-.\dist\SelectionTranslator.exe --asrtest "C:\path\to\speech.wav"
+.\dist\工具侠.exe --asrtest "C:\path\to\speech.wav"
 Get-Content "$env:APPDATA\SelectionTranslator\asrtest.txt"
 
 # 验证 asr 的签名 / 公共参数格式（用假凭证，预期 AuthFailure.*）
-.\dist\SelectionTranslator.exe --asrprobe
+.\dist\工具侠.exe --asrprobe
 Get-Content "$env:APPDATA\SelectionTranslator\asrprobe.txt"
 
 # 强制走旧的百度图片翻译回退路径
-.\dist\SelectionTranslator.exe --baiduimagetest "C:\path\to\screenshot.png"
+.\dist\工具侠.exe --baiduimagetest "C:\path\to\screenshot.png"
 Get-Content "$env:APPDATA\SelectionTranslator\imagetest.txt"
 
 # 延时 3 秒探测当前焦点（验证任意控件都放行，只排除桌面/菜单）
-.\dist\SelectionTranslator.exe --focustest
+.\dist\工具侠.exe --focustest
 Get-Content "$env:APPDATA\SelectionTranslator\focustest.txt"
 
 # 延时 3 秒后把文字打进当前光标处（先点开记事本，再运行）
-.\dist\SelectionTranslator.exe --inputtest "中文语音上屏 123"
+.\dist\工具侠.exe --inputtest "中文语音上屏 123"
 
 # 真实回环：屏幕外建一个 TextBox，注入后读回文本比对
-.\dist\SelectionTranslator.exe --typetest
+.\dist\工具侠.exe --typetest
 Get-Content "$env:APPDATA\SelectionTranslator\typetest.txt"
 
 # 离屏渲染界面预览图（ui-*.png）
-.\dist\SelectionTranslator.exe --uipreview
+.\dist\工具侠.exe --uipreview
 Get-Content "$env:APPDATA\SelectionTranslator\uipreview.txt"
 
 # 离屏渲染图片查看器与四个工具对话框（ui-viewer*.png）
-.\dist\SelectionTranslator.exe --viewerpreview
+.\dist\工具侠.exe --viewerpreview
 Get-Content "$env:APPDATA\SelectionTranslator\viewerpreview.txt"
+
+# 图片右键菜单：注册 / 移除 / 查看当前状态
+.\dist\工具侠.exe --shellon
+.\dist\工具侠.exe --shelloff
+.\dist\工具侠.exe --shellprobe
+Get-Content "$env:APPDATA\SelectionTranslator\shellprobe.txt"
+
+# 开机启动项：看它到底指向哪个 exe、是否被禁用
+.\dist\工具侠.exe --startupprobe
+Get-Content "$env:APPDATA\SelectionTranslator\startupprobe.txt"
+
+# 截图窗口拾取：列出可见顶层窗口 / 在指定坐标试一次拾取
+.\dist\工具侠.exe --windowlist
+.\dist\工具侠.exe --windowprobe 960 500
+Get-Content "$env:APPDATA\SelectionTranslator\windowprobe.txt"
+
+# 图标各尺寸预览 + 截图浮层的窗口高亮效果
+.\dist\工具侠.exe --iconpreview
+.\dist\工具侠.exe --overlaypreview
 
 ```
 
@@ -398,6 +452,8 @@ Get-Content "$env:APPDATA\SelectionTranslator\viewerpreview.txt"
 - 逐行译文按 OCR 行一一对齐；如果接口把多行合并或某行过长，程序会做数量对齐，个别文字块可能回退显示原文而非译文。
 - 图片过窄、文字过小或倾斜、背景复杂时识别效果会下降；长宽比超过 3:1 的限制只存在于百度图片翻译回退路径。
 - 截图浮层中的马赛克仅作用于当前显示的截图，不会修改系统剪贴板中的原始内容。
+- 窗口直选只能命中**顶层窗口**：想要截图里的某个子面板（浏览器里的单个标签页内容、软件里的一个子区域），还是用自由框选；而受 DRM 保护的画面（部分播放器）本身就会截成黑屏，与拾取方式无关。
+- 全屏独占的游戏窗口无法被普通浮层覆盖，这类场景请用系统自带的截图工具。
 - 语音识别需要麦克风，并且要在腾讯云控制台**单独开通「语音识别 ASR」**；只开通 OCR 时调用会返回 `FailedOperation.UserNotRegistered`。
 - 语音一次最长 60 秒（接口限制），超时会自动截断收尾；连续说话请分多次录入。
 - 语音输入不限制输入框类型；只有当前焦点明确是桌面 / 任务栏 / 弹出菜单时才不模拟键入，识别结果改放剪贴板并提示 `Ctrl+V`。
@@ -419,6 +475,8 @@ VoiceCaptureForm.cs           录音浮条（不抢焦点；录音/识别/已上
 InputFocusProbe.cs            焦点快照（默认放行） + 文字直投（Unicode 键入 / 剪贴板粘贴）
 PicturePipeline.cs            识别 + 翻译管道，统一产出结果结构
 ScreenshotCaptureForm.cs      一体化截图浮层（框选/标注/工具栏）
+WindowPicker.cs               窗口拾取（Z 序枚举 + DWM 真实外框 + 幽灵层过滤）
+AppIcon.cs                    图标绘制（蓝底圆角 + 白色扳手，托盘与 ico 共用）
 ImageTranslationForm.cs       图片翻译结果窗口（译文贴图上/选字复制）
 PinnedImageForm.cs            桌面贴图窗口（置顶/拖动/缩放）
 ImageViewerForm.cs            图片查看器主窗口（标题栏/画布/信息卡片/工具条）
@@ -426,9 +484,11 @@ ImageViewerParts.cs           画布（缩放/平移/裁剪选框）、信息面
 ImageToolKit.cs               图片读写/编码/缩放/旋转/裁剪/命名（无 UI 依赖）
 ImageToolDialogs.cs           转格式 / 压缩 / 改尺寸 / 重命名 / 提示框
 DarkUi.cs                     深色调色板、按钮、输入框、矢量图标、无边框窗口基类
+AppInfo.cs                    产品名「工具侠」与内部标识（界面文字统一从这里取）
+ShellIntegration.cs           图片右键菜单注册（HKCU，可开关、可自愈路径）
 AppConfig.cs / SettingsForm.cs 配置（两套凭证）与设置界面
 TrayApplicationContext.cs     托盘、全局热键与流程编排
-SelfTest.cs                    自检用例（187 项）
+SelfTest.cs                    自检用例（217 项）
 ImageTest.cs                   真实请求诊断（--imagetest / --typetest / --viewerpreview 等）
 IconFactory.cs / app.ico      托盘与 exe 图标（多尺寸）
 build.ps1                     使用系统 csc.exe 编译并嵌入图标

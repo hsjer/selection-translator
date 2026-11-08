@@ -772,6 +772,297 @@ namespace SelectionTranslator
             }
         }
 
+        /// <summary>命令行开关右键菜单：true=注册，false=移除。</summary>
+        public static void RunShellToggle(bool enable)
+        {
+            StringBuilder log = new StringBuilder();
+            bool ok;
+            try
+            {
+                string error;
+                ok = ShellIntegration.SetEnabled(
+                    enable, Application.ExecutablePath, out error);
+                log.AppendLine("action = " + (enable ? "on" : "off"));
+                log.AppendLine("exe = " + Application.ExecutablePath);
+                log.AppendLine("keyPath = " + ShellIntegration.MenuKeyPath);
+                log.AppendLine("enabled = " + ShellIntegration.IsEnabled());
+                log.AppendLine("command = " + ShellIntegration.GetCommand());
+                if (!ok)
+                {
+                    log.AppendLine("error = " + error);
+                }
+                log.AppendLine(ok ? "RESULT: OK" : "RESULT: FAILED");
+            }
+            catch (Exception ex)
+            {
+                ok = false;
+                log.AppendLine("RESULT: FAILED");
+                log.AppendLine(ex.ToString());
+            }
+            Environment.ExitCode = ok ? 0 : 1;
+            WriteReport("shelltoggle.txt", log, ok, "图片右键菜单");
+        }
+
+        /// <summary>打印当前图片右键菜单的注册状态，方便排查「右键没出现」。 </summary>
+        public static void RunShellProbe()
+        {
+            StringBuilder log = new StringBuilder();
+            bool ok = true;
+            try
+            {
+                log.AppendLine("exe = " + Application.ExecutablePath);
+                log.AppendLine("menuText = " + ShellIntegration.MenuText);
+                log.AppendLine("keyPath = " + ShellIntegration.MenuKeyPath);
+                log.AppendLine("enabled = " + ShellIntegration.IsEnabled());
+                log.AppendLine("current = " +
+                    ShellIntegration.IsCurrent(Application.ExecutablePath));
+                log.AppendLine("command = " + ShellIntegration.GetCommand());
+                log.AppendLine("RESULT: OK");
+            }
+            catch (Exception ex)
+            {
+                ok = false;
+                log.AppendLine("RESULT: FAILED");
+                log.AppendLine(ex.ToString());
+            }
+            WriteReport("shellprobe.txt", log, ok, "图片右键菜单状态");
+        }
+
+        /// <summary>
+        /// 离屏渲染截图浮层的「窗口悬停高亮」效果，只导出高亮区域周围的一块，
+        /// 便于确认边框、尺寸标签、提示文字的排版。
+        /// </summary>
+        public static void RunOverlayPreview()
+        {
+            StringBuilder log = new StringBuilder();
+            bool ok = true;
+            try
+            {
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                using (ScreenshotCaptureForm form =
+                    new ScreenshotCaptureForm())
+                {
+                    Rectangle hover = new Rectangle(
+                        Math.Max(40, form.ClientSize.Width / 2 - 380),
+                        Math.Max(120, form.ClientSize.Height / 2 - 260),
+                        720, 460);
+
+                    typeof(ScreenshotCaptureForm).GetField(
+                        "_hoverRect",
+                        System.Reflection.BindingFlags.NonPublic |
+                        System.Reflection.BindingFlags.Instance)
+                        .SetValue(form, hover);
+                    typeof(ScreenshotCaptureForm).GetField(
+                        "_hoverPoint",
+                        System.Reflection.BindingFlags.NonPublic |
+                        System.Reflection.BindingFlags.Instance)
+                        .SetValue(form, new Point(0, 0));
+
+                    using (Bitmap surface = new Bitmap(
+                        form.ClientSize.Width,
+                        form.ClientSize.Height))
+                    {
+                        form.DrawToBitmap(surface, new Rectangle(
+                            0, 0, surface.Width, surface.Height));
+
+                        Rectangle crop = new Rectangle(
+                            Math.Max(0, hover.X - 30),
+                            Math.Max(0, hover.Y - 46),
+                            Math.Min(surface.Width - Math.Max(0, hover.X - 30),
+                                hover.Width + 60),
+                            Math.Min(surface.Height - Math.Max(0, hover.Y - 46),
+                                hover.Height + 80));
+                        using (Bitmap part = new Bitmap(
+                            crop.Width, crop.Height))
+                        {
+                            using (Graphics g = Graphics.FromImage(part))
+                            {
+                                g.DrawImage(surface,
+                                    new Rectangle(0, 0, crop.Width, crop.Height),
+                                    crop, GraphicsUnit.Pixel);
+                            }
+                            part.Save(Path.Combine(
+                                ConfigStore.DataDirectory,
+                                "ui-capture-hover.png"),
+                                System.Drawing.Imaging.ImageFormat.Png);
+                        }
+                    }
+                    log.AppendLine("ui-capture-hover.png = " +
+                        hover.Width + "x" + hover.Height);
+                }
+                log.AppendLine("RESULT: OK");
+            }
+            catch (Exception ex)
+            {
+                ok = false;
+                log.AppendLine("RESULT: FAILED");
+                log.AppendLine(ex.ToString());
+            }
+            WriteReport("overlaypreview.txt", log, ok, "截图浮层预览");
+        }
+
+        /// <summary>打印开机启动项的真实状态（路径、是否被禁用）。</summary>
+        public static void RunStartupProbe()
+        {
+            StringBuilder log = new StringBuilder();
+            bool ok = true;
+            try
+            {
+                log.AppendLine("exe = " + Application.ExecutablePath);
+                log.AppendLine("enabled = " + StartupManager.IsEnabled());
+                log.AppendLine("command = " + StartupManager.GetCommand());
+                log.AppendLine("expected = " + StartupManager.BuildCommand());
+                log.AppendLine("current = " + StartupManager.IsCurrent());
+                log.AppendLine("RESULT: OK");
+            }
+            catch (Exception ex)
+            {
+                ok = false;
+                log.AppendLine("RESULT: FAILED");
+                log.AppendLine(ex.ToString());
+            }
+            WriteReport("startupprobe.txt", log, ok, "开机启动状态");
+        }
+
+        /// <summary>列出可见顶层窗口，用于确认拾取器看到的坐标系。</summary>
+        public static void RunWindowList()
+        {
+            StringBuilder log = new StringBuilder();
+            bool ok = true;
+            try
+            {
+                List<WindowTarget> items = WindowPicker.ListTopLevel(40);
+                log.AppendLine("count = " + items.Count);
+                for (int i = 0; i < items.Count; i++)
+                {
+                    log.AppendLine(items[i].Describe());
+                }
+                log.AppendLine("RESULT: OK");
+            }
+            catch (Exception ex)
+            {
+                ok = false;
+                log.AppendLine("RESULT: FAILED");
+                log.AppendLine(ex.ToString());
+            }
+            WriteReport("windowlist.txt", log, ok, "顶层窗口列表");
+        }
+
+        /// <summary>延时 3 秒后打印鼠标底下那个窗口（验证整窗拾取）。</summary>
+        public static void RunWindowProbe(int x, int y)
+        {
+            StringBuilder log = new StringBuilder();
+            bool ok = false;
+            try
+            {
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                Point cursor;
+                if (x == int.MinValue)
+                {
+                    log.AppendLine("等待 3 秒，请把鼠标停在要截的窗口上…");
+                    System.Threading.Thread.Sleep(3000);
+                    cursor = Cursor.Position;
+                }
+                else
+                {
+                    cursor = new Point(x, y);
+                }
+
+                log.AppendLine("cursor = " + cursor.X + "," + cursor.Y);
+                WindowTarget target = WindowPicker.PickAt(cursor);
+                if (target == null)
+                {
+                    log.AppendLine("window = (none)");
+                }
+                else
+                {
+                    log.AppendLine("window = " + target.Describe());
+                    log.AppendLine("usable = " +
+                        WindowPicker.IsUsable(target.Bounds));
+                    ok = WindowPicker.IsUsable(target.Bounds);
+                }
+                log.AppendLine(ok ? "RESULT: OK" : "RESULT: FAILED");
+            }
+            catch (Exception ex)
+            {
+                log.AppendLine("RESULT: FAILED");
+                log.AppendLine(ex.ToString());
+            }
+            WriteReport("windowprobe.txt", log, ok, "窗口拾取");
+        }
+
+        /// <summary>渲染图标：一张 256 原尺寸，一张小尺寸放大对照，方便肉眼验收。</summary>
+        public static void RunIconPreview()
+        {
+            StringBuilder log = new StringBuilder();
+            bool ok = true;
+            try
+            {
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+
+                using (Bitmap big = AppIcon.Render(256))
+                {
+                    big.Save(
+                        Path.Combine(
+                            ConfigStore.DataDirectory, "ui-icon-256.png"),
+                        System.Drawing.Imaging.ImageFormat.Png);
+                }
+
+                int[] small = new int[] { 16, 24, 32, 48 };
+                int zoom = 8;
+                int pad = 14;
+                int cell = 48 * zoom;
+                int width = pad + small.Length * (cell + pad);
+                int height = pad + cell + 10 + 18;
+                using (Bitmap sheet = new Bitmap(
+                    width, height, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+                using (Graphics g = Graphics.FromImage(sheet))
+                {
+                    g.Clear(Color.FromArgb(30, 31, 34));
+                    g.InterpolationMode =
+                        System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+                    g.PixelOffsetMode =
+                        System.Drawing.Drawing2D.PixelOffsetMode.Half;
+                    using (Font font = new Font(
+                        "Segoe UI", 11f, FontStyle.Regular,
+                        GraphicsUnit.Pixel))
+                    using (SolidBrush ink = new SolidBrush(
+                        Color.FromArgb(190, 195, 205)))
+                    {
+                        for (int i = 0; i < small.Length; i++)
+                        {
+                            int x = pad + i * (cell + pad);
+                            using (Bitmap icon = AppIcon.Render(small[i]))
+                            {
+                                int side = small[i] * zoom;
+                                g.DrawImage(icon, new Rectangle(
+                                    x + (cell - side) / 2,
+                                    pad + (cell - side) / 2,
+                                    side, side));
+                            }
+                            g.DrawString(small[i] + "px", font, ink,
+                                x + 4, pad + cell + 6);
+                        }
+                    }
+                    sheet.Save(
+                        Path.Combine(
+                            ConfigStore.DataDirectory, "ui-icon-sheet.png"),
+                        System.Drawing.Imaging.ImageFormat.Png);
+                }
+
+                log.AppendLine("ui-icon-256.png");
+                log.AppendLine("ui-icon-sheet.png = 16/24/32/48 @8x");
+                log.AppendLine("RESULT: OK");
+            }
+            catch (Exception ex)
+            {
+                ok = false;
+                log.AppendLine("RESULT: FAILED");
+                log.AppendLine(ex.ToString());
+            }
+            WriteReport("iconpreview.txt", log, ok, "图标预览");
+        }
+
         private static void WriteReport(
             string fileName,
             StringBuilder log,

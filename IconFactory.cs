@@ -50,38 +50,8 @@ namespace SelectionTranslator
         /// <summary>兜底：老版本 exe / 资源缺失时运行期画一个同样的图标。</summary>
         private static Icon DrawFallbackIcon()
         {
-            using (Bitmap bitmap = new Bitmap(32, 32))
+            using (Bitmap bitmap = AppIcon.Render(32))
             {
-                using (Graphics graphics = Graphics.FromImage(bitmap))
-                {
-                    graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                    graphics.TextRenderingHint =
-                        TextRenderingHint.AntiAliasGridFit;
-
-                    using (SolidBrush background =
-                        new SolidBrush(Color.FromArgb(45, 110, 220)))
-                    {
-                        graphics.FillEllipse(background, 0, 0, 31, 31);
-                    }
-
-                    using (Font font = new Font(
-                        "Microsoft YaHei UI",
-                        15F,
-                        FontStyle.Bold,
-                        GraphicsUnit.Pixel))
-                    using (StringFormat format = new StringFormat())
-                    {
-                        format.Alignment = StringAlignment.Center;
-                        format.LineAlignment = StringAlignment.Center;
-                        graphics.DrawString(
-                            "译",
-                            font,
-                            Brushes.White,
-                            new RectangleF(0, 0, 32, 32),
-                            format);
-                    }
-                }
-
                 IntPtr handle = bitmap.GetHicon();
                 try
                 {

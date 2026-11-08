@@ -121,6 +121,62 @@ namespace SelectionTranslator
                 return;
             }
 
+            if (Array.IndexOf(args, "--overlaypreview") >= 0)
+            {
+                ImageTest.RunOverlayPreview();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--startupprobe") >= 0)
+            {
+                ImageTest.RunStartupProbe();
+                return;
+            }
+
+            int windowProbeIndex = Array.IndexOf(args, "--windowprobe");
+            if (windowProbeIndex >= 0)
+            {
+                int x = int.MinValue;
+                int y = int.MinValue;
+                if (windowProbeIndex + 2 < args.Length)
+                {
+                    int.TryParse(args[windowProbeIndex + 1], out x);
+                    int.TryParse(args[windowProbeIndex + 2], out y);
+                }
+                ImageTest.RunWindowProbe(x, y);
+                return;
+            }
+
+            if (Array.IndexOf(args, "--windowlist") >= 0)
+            {
+                ImageTest.RunWindowList();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--iconpreview") >= 0)
+            {
+                ImageTest.RunIconPreview();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--shellon") >= 0)
+            {
+                ImageTest.RunShellToggle(true);
+                return;
+            }
+
+            if (Array.IndexOf(args, "--shelloff") >= 0)
+            {
+                ImageTest.RunShellToggle(false);
+                return;
+            }
+
+            if (Array.IndexOf(args, "--shellprobe") >= 0)
+            {
+                ImageTest.RunShellProbe();
+                return;
+            }
+
             int viewerPreviewIndex = Array.IndexOf(args, "--viewerpreview");
             if (viewerPreviewIndex >= 0)
             {
@@ -136,6 +192,18 @@ namespace SelectionTranslator
             if (args.Length > 0 && System.IO.File.Exists(args[0]) &&
                 ImageToolKit.IsImagePath(args[0]))
             {
+                // 这类启动通常是右键菜单/「打开方式」进来的，
+                // 顺手把注册项对齐到当前 exe，程序被挪了目录也能自愈。
+                try
+                {
+                    ShellIntegration.Sync(
+                        ConfigStore.Load(), Application.ExecutablePath);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("同步图片右键菜单失败", ex);
+                }
+
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 Application.SetUnhandledExceptionMode(
@@ -156,14 +224,15 @@ namespace SelectionTranslator
             bool createdNew;
             using (Mutex mutex = new Mutex(
                 true,
-                "Local\\SelectionTranslator",
+                "Local\\" + AppInfo.Id,
                 out createdNew))
             {
                 if (!createdNew)
                 {
                     MessageBox.Show(
-                        "「选中文本翻译」已经在运行。\r\n请查看任务栏右下角的托盘图标。",
-                        "选中文本翻译",
+                        "「" + AppInfo.Name + "」已经在运行。\r\n" +
+                        "请查看任务栏右下角的托盘图标。",
+                        AppInfo.Name,
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Information);
                     return;
@@ -190,7 +259,7 @@ namespace SelectionTranslator
                     MessageBox.Show(
                         "程序发生错误：" + ex.Message +
                         "\r\n\r\n日志：" + Log.FilePath,
-                        "选中文本翻译",
+                        AppInfo.Name,
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Error);
                 }
@@ -205,7 +274,7 @@ namespace SelectionTranslator
             MessageBox.Show(
                 "发生错误：" + e.Exception.Message +
                 "\r\n\r\n日志：" + Log.FilePath,
-                "选中文本翻译",
+                AppInfo.Name,
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
         }

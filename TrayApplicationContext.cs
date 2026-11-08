@@ -40,6 +40,7 @@ namespace SelectionTranslator
         private TranslationForm _translationForm;
         private ImageTranslationForm _translationWindow;
         private ToolStripMenuItem _closePinsItem;
+        private ToolStripMenuItem _shellMenuItem;
         // 防止热键在浮层显示期间重复触发、嵌套打开第二个截图会话。
         private bool _captureInProgress;
 
@@ -73,14 +74,31 @@ namespace SelectionTranslator
             _config = ConfigStore.Load();
             _config.StartWithWindows = StartupManager.IsEnabled();
 
+            // 老版本把启动项写在 SelectionTranslator 这个名字下，
+            // 被启动管理工具禁用过、或程序换过目录时这里一次性纠正。
+            if (_config.StartWithWindows)
+            {
+                StartupManager.EnsureCurrent();
+            }
+
             _trayIconImage = IconFactory.Create();
             _trayMenu = new ContextMenuStrip();
             _trayIcon = new NotifyIcon();
             _trayIcon.Icon = _trayIconImage;
-            _trayIcon.Text = "选中文本翻译";
+            _trayIcon.Text = AppInfo.Name;
             _trayIcon.Visible = true;
             _trayIcon.ContextMenuStrip = _trayMenu;
             _trayIcon.DoubleClick += OnTrayDoubleClick;
+
+            // 每次展开菜单都回读一次注册表，保证勾选状态和系统里真实一致
+            // （用户可能在别处用注册表工具改过）。
+            _trayMenu.Opening += delegate
+            {
+                if (_shellMenuItem != null && !_shellMenuItem.IsDisposed)
+                {
+                    _shellMenuItem.Checked = ShellIntegration.IsEnabled();
+                }
+            };
 
             _translateMenuItem =
                 new ToolStripMenuItem("翻译选中文本");
@@ -119,6 +137,13 @@ namespace SelectionTranslator
                 new ToolStripMenuItem("打开图片…");
             imageItem.Click += OnOpenImageClicked;
             _trayMenu.Items.Add(imageItem);
+
+            // 资源管理器右键菜单的开关。默认开启，首次启动就会写进 HKCU。
+            _shellMenuItem = new ToolStripMenuItem(
+                "图片右键菜单：使用" + AppInfo.Name + "打开");
+            _shellMenuItem.Click += OnShellMenuClicked;
+            _trayMenu.Items.Add(_shellMenuItem);
+            SyncShellMenu();
 
             _trayMenu.Items.Add(new ToolStripSeparator());
 
@@ -1410,7 +1435,7 @@ namespace SelectionTranslator
                 {
                     _trayIcon.ShowBalloonTip(
                         2500,
-                        "选中文本翻译",
+                        AppInfo.Name,
                         "没有检测到选中的文本。请先选中文字，或使用托盘菜单的「翻译剪贴板」。",
                         ToolTipIcon.Info);
                     return;
@@ -1422,7 +1447,7 @@ namespace SelectionTranslator
                 Log.Error("翻译选中文本失败", ex);
                 _trayIcon.ShowBalloonTip(
                     3000,
-                    "选中文本翻译",
+                    AppInfo.Name,
                     "读取选中文本失败：" + ex.Message,
                     ToolTipIcon.Warning);
             }
@@ -1439,7 +1464,7 @@ namespace SelectionTranslator
             {
                 _trayIcon.ShowBalloonTip(
                     2500,
-                    "选中文本翻译",
+                    AppInfo.Name,
                     "剪贴板中没有文本。",
                     ToolTipIcon.Info);
                 return;
@@ -1451,6 +1476,62 @@ namespace SelectionTranslator
         private void OnOpenImageClicked(object sender, EventArgs e)
         {
             ImageViewerForm.ShowOpenDialog(null);
+        }
+
+        /// <summary>启动时把右键菜单对齐到当前 exe，勾选状态取注册表的真实值。</summary>
+        private void SyncShellMenu()
+        {
+            ShellIntegration.Sync(_config, Application.ExecutablePath);
+            if (_shellMenuItem != null && !_shellMenuItem.IsDisposed)
+            {
+                _shellMenuItem.Checked = ShellIntegration.IsEnabled();
+            }
+        }
+
+        private void OnShellMenuClicked(object sender, EventArgs e)
+        {
+            bool want = !_shellMenuItem.Checked;
+            string error;
+            if (!ShellIntegration.SetEnabled(
+                want, Application.ExecutablePath, out error))
+            {
+                _shellMenuItem.Checked = ShellIntegration.IsEnabled();
+                MessageBox.Show(
+                    "修改图片右键菜单失败：" +
+                        (error ?? "系统拒绝了这次写入。") +
+                        "\r\n\r\n可以换一个目录重新运行程序再试。",
+                    AppInfo.Name,
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            _config.EnableImageShellMenu = want;
+            try
+            {
+                ConfigStore.Save(_config);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("保存右键菜单开关失败", ex);
+            }
+
+            _shellMenuItem.Checked = want;
+            try
+            {
+                _trayIcon.ShowBalloonTip(
+                    2600,
+                    AppInfo.Name,
+                    want
+                        ? "已添加。在任意图片上右键，选「" +
+                            ShellIntegration.MenuText + "」。"
+                        : "已移除。图片右键菜单里不再显示这一项。",
+                    ToolTipIcon.Info);
+            }
+            catch
+            {
+                // 气泡提示失败不影响功能。
+            }
         }
 
         private void ShowTranslation(string text, Point location)
@@ -1536,7 +1617,7 @@ namespace SelectionTranslator
                 Log.Error("保存配置失败", ex);
                 MessageBox.Show(
                     "保存配置失败：" + ex.Message,
-                    "选中文本翻译",
+                    AppInfo.Name,
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
             }
@@ -1599,7 +1680,7 @@ namespace SelectionTranslator
                 Log.Error("切换开机启动失败", ex);
                 MessageBox.Show(
                     "设置开机启动失败：" + ex.Message,
-                    "选中文本翻译",
+                    AppInfo.Name,
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
             }
