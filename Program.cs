@@ -16,6 +16,12 @@ namespace SelectionTranslator
                 return;
             }
 
+            if (Array.IndexOf(args, "--hotkeyprobe") >= 0)
+            {
+                SelfTest.RunHotkeyProbe();
+                return;
+            }
+
             int imageTestIndex = Array.IndexOf(args, "--imagetest");
             if (imageTestIndex >= 0)
             {

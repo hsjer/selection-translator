@@ -49,6 +49,93 @@ namespace SelectionTranslator
                 Check(output, ref ok, "DPAPI roundtrip",
                     unprotectedValue, "test-secret");
 
+                // 快捷键录入：Keys.ControlKey(键码 17) 与
+                // Keys.Control(修饰符标志) 是两回事，旧代码只判断后者，
+                // 才会把单独按下的 Ctrl 当成主键录成「Ctrl+ControlKey」。
+                Check(output, ref ok, "mod flag ctrl",
+                    HotkeyParser.ModifierFlagFromKeyCode(
+                        Keys.ControlKey).ToString(),
+                    NativeMethods.MOD_CONTROL.ToString());
+                Check(output, ref ok, "mod flag shift",
+                    HotkeyParser.ModifierFlagFromKeyCode(
+                        Keys.ShiftKey).ToString(),
+                    NativeMethods.MOD_SHIFT.ToString());
+                Check(output, ref ok, "mod flag alt",
+                    HotkeyParser.ModifierFlagFromKeyCode(
+                        Keys.Menu).ToString(),
+                    NativeMethods.MOD_ALT.ToString());
+                Check(output, ref ok, "mod flag win",
+                    HotkeyParser.ModifierFlagFromKeyCode(
+                        Keys.LWin).ToString(),
+                    NativeMethods.MOD_WIN.ToString());
+                Check(output, ref ok, "plain key is not mod",
+                    HotkeyParser.IsModifierKeyCode(Keys.T).ToString(),
+                    "False");
+
+                int parsedMods;
+                Keys parsedKey;
+                Check(output, ref ok, "reject ControlKey hotkey",
+                    HotkeyParser.TryParse(
+                        "Ctrl+ControlKey",
+                        out parsedMods, out parsedKey).ToString(),
+                    "False");
+                Check(output, ref ok, "reject ShiftKey hotkey",
+                    HotkeyParser.TryParse(
+                        "Ctrl+ShiftKey",
+                        out parsedMods, out parsedKey).ToString(),
+                    "False");
+                Check(output, ref ok, "accept ctrl shift z",
+                    HotkeyParser.TryParse(
+                        "Ctrl+Shift+Z",
+                        out parsedMods, out parsedKey).ToString(),
+                    "True");
+                Check(output, ref ok, "ctrl shift z roundtrip",
+                    HotkeyParser.Format(parsedMods, parsedKey),
+                    "Ctrl+Shift+Z");
+                Check(output, ref ok, "accept single F5",
+                    HotkeyParser.TryParse(
+                        "F5", out parsedMods, out parsedKey).ToString(),
+                    "True");
+                Check(output, ref ok, "single F5 no modifier",
+                    parsedMods.ToString(), "0");
+                Check(output, ref ok, "standalone F5",
+                    HotkeyParser.IsStandaloneKey(Keys.F5).ToString(),
+                    "True");
+                Check(output, ref ok, "letter needs modifier",
+                    HotkeyParser.IsStandaloneKey(Keys.A).ToString(),
+                    "False");
+                Check(output, ref ok, "capture prefix",
+                    HotkeyParser.FormatModifiers(
+                        NativeMethods.MOD_CONTROL |
+                        NativeMethods.MOD_ALT),
+                    "Ctrl+Alt+");
+
+                string composed;
+                Check(output, ref ok, "compose ctrl+T",
+                    HotkeyParser.TryCompose(
+                        NativeMethods.MOD_CONTROL, Keys.T,
+                        out composed).ToString() + " " + composed,
+                    "True Ctrl+T");
+                Check(output, ref ok, "compose ctrl+alt+shift+Z",
+                    HotkeyParser.TryCompose(
+                        NativeMethods.MOD_CONTROL |
+                        NativeMethods.MOD_ALT |
+                        NativeMethods.MOD_SHIFT,
+                        Keys.Z, out composed).ToString() + " " + composed,
+                    "True Ctrl+Alt+Shift+Z");
+                Check(output, ref ok, "compose bare letter rejected",
+                    HotkeyParser.TryCompose(
+                        0, Keys.A, out composed).ToString(),
+                    "False");
+                Check(output, ref ok, "compose bare F8",
+                    HotkeyParser.TryCompose(
+                        0, Keys.F8, out composed).ToString() + " " + composed,
+                    "True F8");
+                Check(output, ref ok, "compose mod key rejected",
+                    HotkeyParser.TryCompose(
+                        0, Keys.ControlKey, out composed).ToString(),
+                    "False");
+
                 // 分段翻译：长文本应被拆成多段，每段 UTF-8 字节数都不超过上限，
                 // 且拼接后能还原原文。
                 StringBuilder longText = new StringBuilder();
@@ -1355,6 +1442,102 @@ namespace SelectionTranslator
                 "selftest.txt");
             File.WriteAllText(path, output.ToString(), Encoding.UTF8);
             Environment.ExitCode = ok ? 0 : 1;
+        }
+
+        /// <summary>
+        /// 端到端复现用户报的录入流程：点一下输入框 → 按住 Ctrl →
+        /// 再按 T，应得到 Ctrl+T 而不是 Ctrl+ControlKey。
+        /// 结果写到 %APPDATA%\SelectionTranslator\hotkeyprobe.txt。
+        /// </summary>
+        public static void RunHotkeyProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool pass = true;
+            try
+            {
+                Application.EnableVisualStyles();
+                using (SettingsForm form =
+                    new SettingsForm(new AppConfig()))
+                {
+                    form.Show();
+                    form.Activate();
+                    Application.DoEvents();
+
+                    BindingFlags flags =
+                        BindingFlags.Instance | BindingFlags.NonPublic;
+                    TextBox field = (TextBox)typeof(SettingsForm)
+                        .GetField("_hotkeyTranslateField", flags)
+                        .GetValue(form);
+                    MethodInfo clicked = typeof(SettingsForm)
+                        .GetMethod("OnHotkeyFieldClicked", flags);
+                    MethodInfo down = typeof(SettingsForm)
+                        .GetMethod("OnSettingsKeyDown", flags);
+
+                    field.Focus();
+                    Application.DoEvents();
+                    output.AppendLine("focused=" + field.ContainsFocus);
+                    if (!field.ContainsFocus)
+                    {
+                        pass = false;
+                    }
+
+                    clicked.Invoke(form,
+                        new object[] { field, EventArgs.Empty });
+                    output.AppendLine("after click: " + field.Text);
+                    down.Invoke(form, new object[] { form,
+                        new KeyEventArgs(Keys.ControlKey) });
+                    output.AppendLine("after Ctrl: " + field.Text);
+                    down.Invoke(form, new object[] { form,
+                        new KeyEventArgs(Keys.T) });
+                    output.AppendLine("after T: " + field.Text);
+                    if (field.Text != "Ctrl+T")
+                    {
+                        pass = false;
+                    }
+
+                    clicked.Invoke(form,
+                        new object[] { field, EventArgs.Empty });
+                    down.Invoke(form, new object[] { form,
+                        new KeyEventArgs(Keys.ControlKey) });
+                    down.Invoke(form, new object[] { form,
+                        new KeyEventArgs(Keys.ShiftKey) });
+                    down.Invoke(form, new object[] { form,
+                        new KeyEventArgs(Keys.F5) });
+                    output.AppendLine("after Ctrl+Shift+F5: " +
+                        field.Text);
+                    if (field.Text != "Ctrl+Shift+F5")
+                    {
+                        pass = false;
+                    }
+
+                    // 不带修饰键的普通字母会全局拦截打字，应当拒绝。
+                    clicked.Invoke(form,
+                        new object[] { field, EventArgs.Empty });
+                    down.Invoke(form, new object[] { form,
+                        new KeyEventArgs(Keys.A) });
+                    output.AppendLine("after bare A: " + field.Text);
+                    if (field.Text !=
+                        "请加 Ctrl / Alt / Shift，或按 F1–F12")
+                    {
+                        pass = false;
+                    }
+                    form.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                pass = false;
+                output.AppendLine("EXCEPTION: " + ex);
+            }
+
+            output.AppendLine(pass ? "RESULT: OK" : "RESULT: FAILED");
+            Directory.CreateDirectory(ConfigStore.DataDirectory);
+            File.WriteAllText(
+                Path.Combine(
+                    ConfigStore.DataDirectory, "hotkeyprobe.txt"),
+                output.ToString(),
+                Encoding.UTF8);
+            Environment.ExitCode = pass ? 0 : 1;
         }
 
         private static AppConfig FreshConfig()

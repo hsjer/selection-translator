@@ -46,6 +46,7 @@ namespace SelectionTranslator
         private readonly CheckBox _voiceAutoCopyBox;
         private TextBox _capturingField;
         private string _capturingFieldOriginal;
+        private int _captureModifiers;
         private readonly Button _testButton;
 
         public AppConfig Config { get; private set; }
@@ -237,8 +238,7 @@ namespace SelectionTranslator
             _hotkeyTranslateField.Location = new Point(180, 402);
             _hotkeyTranslateField.Size = new Size(120, 24);
             _hotkeyTranslateField.Text = config.HotkeyTranslateSelection;
-            _hotkeyTranslateField.Click += OnHotkeyFieldClicked;
-            _hotkeyTranslateField.Leave += OnHotkeyFieldLeave;
+            BindHotkeyField(_hotkeyTranslateField);
             Controls.Add(_hotkeyTranslateField);
 
             Label hotkeyManualLabel = new Label();
@@ -253,12 +253,11 @@ namespace SelectionTranslator
             _hotkeyManualField.Location = new Point(180, 436);
             _hotkeyManualField.Size = new Size(120, 24);
             _hotkeyManualField.Text = config.HotkeyManualInput;
-            _hotkeyManualField.Click += OnHotkeyFieldClicked;
-            _hotkeyManualField.Leave += OnHotkeyFieldLeave;
+            BindHotkeyField(_hotkeyManualField);
             Controls.Add(_hotkeyManualField);
 
             Label hotkeyScreenshotLabel = new Label();
-            hotkeyScreenshotLabel.Text = "截图翻译快捷键";
+            hotkeyScreenshotLabel.Text = "截图快捷键";
             hotkeyScreenshotLabel.AutoSize = true;
             hotkeyScreenshotLabel.Location = new Point(16, 470);
             Controls.Add(hotkeyScreenshotLabel);
@@ -269,16 +268,15 @@ namespace SelectionTranslator
             _hotkeyScreenshotField.Location = new Point(180, 470);
             _hotkeyScreenshotField.Size = new Size(120, 24);
             _hotkeyScreenshotField.Text = config.HotkeyScreenshot;
-            _hotkeyScreenshotField.Click += OnHotkeyFieldClicked;
-            _hotkeyScreenshotField.Leave += OnHotkeyFieldLeave;
+            BindHotkeyField(_hotkeyScreenshotField);
             Controls.Add(_hotkeyScreenshotField);
 
             KeyDown += OnSettingsKeyDown;
 
             Label hintLabel = new Label();
             hintLabel.Text =
-                "点击快捷键输入框后按下组合键即可自定义。\r\n" +
-                "四个快捷键不能相同。超长文本会自动分段翻译。";
+                "点击输入框后直接按键：按住 Ctrl / Alt / Shift / Win 不松，再按一个键。\r\n" +
+                "也可只按 F1–F12 等功能键；四个快捷键的组合不能完全相同。";
             hintLabel.Location = new Point(16, 504);
             hintLabel.Size = new Size(440, 46);
             hintLabel.ForeColor = Color.FromArgb(90, 98, 112);
@@ -421,8 +419,7 @@ namespace SelectionTranslator
             _hotkeyVoiceField.Location = new Point(96, 48);
             _hotkeyVoiceField.Size = new Size(110, 23);
             _hotkeyVoiceField.Text = config.HotkeyVoiceInput;
-            _hotkeyVoiceField.Click += OnHotkeyFieldClicked;
-            _hotkeyVoiceField.Leave += OnHotkeyFieldLeave;
+            BindHotkeyField(_hotkeyVoiceField);
             voiceGroup.Controls.Add(_hotkeyVoiceField);
 
             Label voiceEngineLabel = new Label();
@@ -591,6 +588,10 @@ namespace SelectionTranslator
 
         private AppConfig BuildEditedConfig()
         {
+            // 用户可能点「确定」时还停在录入状态，先把提示文字还原，
+            // 否则会把「请按下组合键…」当成快捷键存进配置。
+            CancelCapture();
+
             AppConfig edited = new AppConfig();
             edited.AppId = _appIdBox.Text.Trim();
             edited.SetSecret(_secretBox.Text.Trim());
@@ -619,6 +620,11 @@ namespace SelectionTranslator
             edited.VoiceEngineType = GetSelectedVoiceEngine();
             edited.VoiceInputMethod = GetSelectedVoiceMethod();
             edited.VoiceAutoCopy = _voiceAutoCopyBox.Checked;
+
+            // 这两项在设置窗口里没有对应控件，别因为点了一次「保存」
+            // 就把首次运行标记和右键菜单开关重置掉。
+            edited.FirstRunDone = Config.FirstRunDone;
+            edited.EnableImageShellMenu = Config.EnableImageShellMenu;
             return edited;
         }
 
@@ -924,37 +930,78 @@ namespace SelectionTranslator
             }
         }
 
+        private void BindHotkeyField(TextBox field)
+        {
+            field.Click += OnHotkeyFieldClicked;
+            field.Enter += OnHotkeyFieldClicked;
+            field.Leave += OnHotkeyFieldLeave;
+        }
+
         /// <summary>
-        /// 点击快捷键输入框进入捕获模式。
+        /// 点一下（或 Tab 进入）输入框就直接开始接收按键，无需第二次点击。
         /// </summary>
         private void OnHotkeyFieldClicked(object sender, EventArgs e)
         {
             TextBox field = sender as TextBox;
-            if (field == null)
+            if (field == null || _capturingField == field)
             {
                 return;
             }
 
+            CancelCapture();
             _capturingFieldOriginal = field.Text;
-            field.Text = "请按下快捷键…";
             _capturingField = field;
+            _captureModifiers = 0;
+            field.BackColor = Color.FromArgb(230, 242, 255);
+            ShowCaptureHint("");
         }
 
-        /// <summary>
-        /// 快捷键输入框失去焦点时取消捕获并恢复原文。
-        /// </summary>
+        /// <summary>输入框失去焦点时取消捕获并恢复原文。</summary>
         private void OnHotkeyFieldLeave(object sender, EventArgs e)
         {
             if (_capturingField == sender)
             {
-                _capturingField.Text = _capturingFieldOriginal;
-                _capturingField = null;
-                _capturingFieldOriginal = "";
+                CancelCapture();
             }
         }
 
+        private void CancelCapture()
+        {
+            if (_capturingField == null)
+            {
+                return;
+            }
+
+            TextBox field = _capturingField;
+            _capturingField = null;
+            _captureModifiers = 0;
+            field.BackColor = SystemColors.Window;
+            field.Text = _capturingFieldOriginal;
+            _capturingFieldOriginal = "";
+        }
+
+        private void ShowCaptureHint(string message)
+        {
+            if (_capturingField == null)
+            {
+                return;
+            }
+            if (!string.IsNullOrEmpty(message))
+            {
+                _capturingField.Text = message;
+                return;
+            }
+
+            string prefix = HotkeyParser.FormatModifiers(_captureModifiers);
+            _capturingField.Text = prefix.Length > 0
+                ? prefix + "…"
+                : "请按下组合键…";
+        }
+
         /// <summary>
-        /// 表单级 KeyDown：捕获快捷键组合。
+        /// 表单级 KeyDown：先累积按住过的修饰键，直到按下非修饰键才完成录入。
+        /// 修饰键松开不清空累积，所以「按 Ctrl 松开、再按 Alt、再按 T」
+        /// 也能得到 Ctrl+Alt+T；按住 Ctrl 不松直接按 T 则得到 Ctrl+T。
         /// </summary>
         private void OnSettingsKeyDown(object sender, KeyEventArgs e)
         {
@@ -964,55 +1011,52 @@ namespace SelectionTranslator
                 return;
             }
 
-            // Esc 取消捕获。
-            if (e.KeyCode == Keys.Escape)
-            {
-                _capturingField.Text = _capturingFieldOriginal;
-                _capturingField = null;
-                _capturingFieldOriginal = "";
-                e.Handled = true;
-                e.SuppressKeyPress = true;
-                return;
-            }
-
-            // 纯修饰键：等待最终按键。
-            if (e.KeyCode == Keys.Control ||
-                e.KeyCode == Keys.Alt ||
-                e.KeyCode == Keys.Shift ||
-                e.KeyCode == Keys.LWin ||
-                e.KeyCode == Keys.RWin)
-            {
-                return;
-            }
-
-            // 组合键：把 e.Modifiers 转为 MOD_* 位掩码。
-            int modifiers = 0;
-            if ((e.Modifiers & Keys.Control) != 0)
-            {
-                modifiers |= NativeMethods.MOD_CONTROL;
-            }
-            if ((e.Modifiers & Keys.Alt) != 0)
-            {
-                modifiers |= NativeMethods.MOD_ALT;
-            }
-            if ((e.Modifiers & Keys.Shift) != 0)
-            {
-                modifiers |= NativeMethods.MOD_SHIFT;
-            }
-            if ((e.Modifiers & Keys.LWin) != 0 ||
-                (e.Modifiers & Keys.RWin) != 0)
-            {
-                modifiers |= NativeMethods.MOD_WIN;
-            }
-
-            string hotkey = HotkeyParser.Format(
-                modifiers,
-                e.KeyCode);
-            _capturingField.Text = hotkey;
-            _capturingField = null;
-            _capturingFieldOriginal = "";
+            // 捕获期间吞掉所有按键，避免 Alt / F10 触发菜单、文本框响铃。
             e.Handled = true;
             e.SuppressKeyPress = true;
+
+            if (e.KeyCode == Keys.Escape)
+            {
+                CancelCapture();
+                return;
+            }
+            if (e.KeyCode == Keys.Back || e.KeyCode == Keys.Delete)
+            {
+                _captureModifiers = 0;
+                ShowCaptureHint("");
+                return;
+            }
+
+            int flag = HotkeyParser.ModifierFlagFromKeyCode(e.KeyCode);
+            if (flag != 0)
+            {
+                _captureModifiers |= flag;
+                ShowCaptureHint("");
+                return;
+            }
+
+            if (e.KeyCode == Keys.None ||
+                HotkeyParser.IsModifierKeyCode(e.KeyCode))
+            {
+                return;
+            }
+
+            string hotkey;
+            if (!HotkeyParser.TryCompose(
+                _captureModifiers, e.KeyCode, out hotkey))
+            {
+                ShowCaptureHint(_captureModifiers == 0
+                    ? "请加 Ctrl / Alt / Shift，或按 F1–F12"
+                    : "这个组合不可用");
+                return;
+            }
+
+            TextBox field = _capturingField;
+            _capturingField = null;
+            _captureModifiers = 0;
+            _capturingFieldOriginal = "";
+            field.BackColor = SystemColors.Window;
+            field.Text = hotkey;
         }
 
         private void OnPlatformLinkClicked(
@@ -1149,7 +1193,7 @@ namespace SelectionTranslator
             {
                 MessageBox.Show(
                     this,
-                    "「截图翻译快捷键」格式无效。\r\n" +
+                    "「截图快捷键」格式无效。\r\n" +
                     "请点击输入框后重新按下组合键。",
                     "保存设置",
                     MessageBoxButtons.OK,
@@ -1184,7 +1228,7 @@ namespace SelectionTranslator
             {
                 "翻译选中文本",
                 "手动翻译",
-                "截图翻译",
+                "截图",
                 "语音识别"
             };
             for (int i = 0; i < hotkeys.Length; i++)

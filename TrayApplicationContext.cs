@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Threading;
@@ -24,6 +25,10 @@ namespace SelectionTranslator
         private readonly Icon _trayIconImage;
         private readonly HotkeyWindow _hotkeyWindow;
         private readonly System.Windows.Forms.Timer _firstRunTimer;
+        // 注册失败的快捷键 id；菜单展开时标注「被占用」，让用户知道
+        // 「按了没反应」是热键冲突，而不是功能坏了。
+        private readonly HashSet<int> _hotkeyFailures =
+            new HashSet<int>();
 
         private AppConfig _config;
         private int _hotkeyTranslateModifiers;
@@ -98,6 +103,8 @@ namespace SelectionTranslator
                 {
                     _shellMenuItem.Checked = ShellIntegration.IsEnabled();
                 }
+                // 每次展开都按当前配置重画，保证和设置窗口完全一致。
+                RefreshHotkeyMenuItems();
             };
 
             _translateMenuItem =
@@ -115,7 +122,7 @@ namespace SelectionTranslator
             _trayMenu.Items.Add(_manualMenuItem);
 
             _screenshotMenuItem =
-                new ToolStripMenuItem("截图翻译…");
+                new ToolStripMenuItem("截图…");
             _screenshotMenuItem.ShortcutKeyDisplayString =
                 _config.HotkeyScreenshot;
             _screenshotMenuItem.Click += OnScreenshotClicked;
@@ -185,6 +192,7 @@ namespace SelectionTranslator
             _hotkeyWindow = new HotkeyWindow();
             _hotkeyWindow.HotkeyPressed += OnHotkeyPressed;
             RegisterHotkeys();
+            RefreshHotkeyMenuItems();
 
             Application.Idle += OnFirstIdle;
 
@@ -220,6 +228,7 @@ namespace SelectionTranslator
         /// </summary>
         private void RegisterHotkeys()
         {
+            _hotkeyFailures.Clear();
             int modifiers;
             Keys key;
 
@@ -240,6 +249,7 @@ namespace SelectionTranslator
                     Log.Info("全局快捷键 " +
                         _config.HotkeyTranslateSelection +
                         " 注册失败，可能已被其他程序占用。");
+                    _hotkeyFailures.Add(HotkeyId);
                 }
             }
             else
@@ -265,6 +275,7 @@ namespace SelectionTranslator
                     Log.Info("全局快捷键 " +
                         _config.HotkeyManualInput +
                         " 注册失败，可能已被其他程序占用。");
+                    _hotkeyFailures.Add(HotkeyIdManual);
                 }
             }
             if (HotkeyParser.TryParse(
@@ -284,6 +295,7 @@ namespace SelectionTranslator
                     Log.Info("全局快捷键 " +
                         _config.HotkeyScreenshot +
                         " 注册失败，可能已被其他程序占用。");
+                    _hotkeyFailures.Add(HotkeyIdScreenshot);
                 }
             }
             else
@@ -309,6 +321,7 @@ namespace SelectionTranslator
                     Log.Info("全局快捷键 " +
                         _config.HotkeyVoiceInput +
                         " 注册失败，可能已被其他程序占用。");
+                    _hotkeyFailures.Add(HotkeyIdVoice);
                 }
             }
             else
@@ -336,14 +349,84 @@ namespace SelectionTranslator
         {
             UnregisterHotkeys();
             RegisterHotkeys();
-            _translateMenuItem.ShortcutKeyDisplayString =
-                _config.HotkeyTranslateSelection;
-            _manualMenuItem.ShortcutKeyDisplayString =
-                _config.HotkeyManualInput;
-            _screenshotMenuItem.ShortcutKeyDisplayString =
-                _config.HotkeyScreenshot;
-            _voiceMenuItem.ShortcutKeyDisplayString =
-                _config.HotkeyVoiceInput;
+            RefreshHotkeyMenuItems();
+            NotifyHotkeyFailures();
+        }
+
+        /// <summary>把当前配置里的快捷键写到托盘菜单右侧。</summary>
+        private void RefreshHotkeyMenuItems()
+        {
+            SetHotkeyDisplay(
+                _translateMenuItem,
+                _config.HotkeyTranslateSelection,
+                HotkeyId);
+            SetHotkeyDisplay(
+                _manualMenuItem,
+                _config.HotkeyManualInput,
+                HotkeyIdManual);
+            SetHotkeyDisplay(
+                _screenshotMenuItem,
+                _config.HotkeyScreenshot,
+                HotkeyIdScreenshot);
+            SetHotkeyDisplay(
+                _voiceMenuItem,
+                _config.HotkeyVoiceInput,
+                HotkeyIdVoice);
+        }
+
+        private void SetHotkeyDisplay(
+            ToolStripMenuItem item, string text, int id)
+        {
+            if (item == null || item.IsDisposed)
+            {
+                return;
+            }
+            item.ShortcutKeyDisplayString =
+                (text ?? "") +
+                (_hotkeyFailures.Contains(id) ? "（被占用）" : "");
+        }
+
+        /// <summary>
+        /// 热键被别的程序占用时按了是不会有任何反应的，用气泡明确说出来，
+        /// 免得用户以为「设置没保存」或「功能坏了」。
+        /// </summary>
+        private void NotifyHotkeyFailures()
+        {
+            if (_hotkeyFailures.Count == 0 || _trayIcon == null)
+            {
+                return;
+            }
+
+            List<string> names = new List<string>();
+            if (_hotkeyFailures.Contains(HotkeyId))
+            {
+                names.Add("翻译选中文本");
+            }
+            if (_hotkeyFailures.Contains(HotkeyIdManual))
+            {
+                names.Add("手动翻译");
+            }
+            if (_hotkeyFailures.Contains(HotkeyIdScreenshot))
+            {
+                names.Add("截图");
+            }
+            if (_hotkeyFailures.Contains(HotkeyIdVoice))
+            {
+                names.Add("语音识别");
+            }
+
+            try
+            {
+                _trayIcon.ShowBalloonTip(
+                    5000,
+                    AppInfo.Name,
+                    "这些快捷键已被其他程序占用，请到设置里换一个：\r\n" +
+                        string.Join("、", names.ToArray()),
+                    ToolTipIcon.Warning);
+            }
+            catch
+            {
+            }
         }
 
         private void OnFirstIdle(object sender, EventArgs e)
@@ -386,6 +469,8 @@ namespace SelectionTranslator
                     ? "选中监听已启动"
                     : "选中监听启动失败");
             }
+
+            NotifyHotkeyFailures();
         }
 
         private void OnFirstRunTimerTick(object sender, EventArgs e)

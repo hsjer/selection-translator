@@ -310,6 +310,7 @@ namespace SelectionTranslator
 
             if (File.Exists(ConfigPath))
             {
+                BackupExistingConfig();
                 try
                 {
                     File.Replace(tempPath, ConfigPath, null);
@@ -323,6 +324,50 @@ namespace SelectionTranslator
             else
             {
                 File.Move(tempPath, ConfigPath);
+            }
+        }
+
+        /// <summary>
+        /// 覆盖配置前留一份带时间戳的快照。发布、诊断或误操作把凭证
+        /// 清掉时，可以直接从最近的快照恢复。同一分钟内不重复备份，
+        /// 只保留最近 8 份，避免无限堆积。
+        /// </summary>
+        private static void BackupExistingConfig()
+        {
+            try
+            {
+                string[] existing = Directory.GetFiles(
+                    DataDirectory, "config.auto-backup.*.json");
+                foreach (string file in existing)
+                {
+                    if (DateTime.Now - File.GetLastWriteTime(file) <
+                        TimeSpan.FromSeconds(60))
+                    {
+                        return;
+                    }
+                }
+
+                File.Copy(
+                    ConfigPath,
+                    Path.Combine(
+                        DataDirectory,
+                        "config.auto-backup." +
+                        DateTime.Now.ToString("yyyyMMdd-HHmmss") +
+                        ".json"),
+                    true);
+
+                Array.Sort(existing, delegate(string a, string b)
+                {
+                    return string.CompareOrdinal(b, a);
+                });
+                for (int i = 7; i < existing.Length; i++)
+                {
+                    File.Delete(existing[i]);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("备份配置失败", ex);
             }
         }
 
