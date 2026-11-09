@@ -125,6 +125,9 @@ namespace SelectionTranslator
         private readonly Timer _timer;
         private readonly Timer _hoverTimer;
         private readonly float _scale;
+        // 定位用的固定参考宽度：按「最长速度文本」渲染一次得到。
+        // 位图本身会随内容变窄，但左边缘始终按它计算，不会左右抖。
+        private readonly int _referenceWidth;
         private readonly TrafficDayTracker _trafficDay;
         private readonly GpuSampler _gpuSampler;
         private long _lastReceived;
@@ -165,6 +168,22 @@ namespace SelectionTranslator
                 scale = 1f;
             }
             _scale = Math.Max(1f, Math.Min(2.5f, scale));
+
+            // 用最长的一组数据渲染一帧，拿它当定位参考宽度。
+            // 这里只需要尺寸，不需要真正显示。
+            try
+            {
+                using (Bitmap reference = RenderBitmap(
+                    "999.99 MB/s", "999.99 MB/s",
+                    100, 100, _scale, Color.Transparent))
+                {
+                    _referenceWidth = reference.Width;
+                }
+            }
+            catch
+            {
+                _referenceWidth = (int)Math.Round(180 * _scale);
+            }
 
             _trafficDay = TrafficDayTracker.Load(
                 Path.Combine(
@@ -324,8 +343,9 @@ namespace SelectionTranslator
             _lastGpuLoads = TaskbarStats.AggregateGpuLoad(
                 _gpuSampler.Sample());
 
-            string up = TaskbarStats.FormatSpeed(upload);
-            string down = TaskbarStats.FormatSpeed(download);
+            // 状态条统一用 MB/s，长度稳定；详情卡片里仍显示精确值。
+            string up = TaskbarStats.FormatSpeedCompact(upload);
+            string down = TaskbarStats.FormatSpeedCompact(download);
             using (Bitmap bitmap = RenderBitmap(
                 up, down, cpu, memory, _scale))
             {
@@ -575,40 +595,51 @@ namespace SelectionTranslator
             {
                 StringFormat format = StringFormat.GenericTypographic;
 
-                // 列边界一律按「最长可能出现的文本」测量，与当前数据
-                // 无关。以前按两行实测宽度取最大值，数字位数一变位图
-                // 就变宽变窄，右边缘又固定贴托盘，左边缘便来回抖，
-                // 两行的 CPU / 内存列也跟着上下错开。
+                // 箭头 / 指标名的列宽按固定文本测；速度列宽取两行当前
+                // 速度的较宽者，量化到「一个数字」的粒度。两行共用同一
+                // 个值，所以始终上下对称；位图紧贴内容，不会再出现
+                // 「网速和 CPU 之间空一大截」。
                 float arrowW = Math.Max(
                     measure.MeasureString(
                         "↑", font, 4096, format).Width,
                     measure.MeasureString(
                         "↓", font, 4096, format).Width);
-                float speedW = measure.MeasureString(
-                    "1023.99 MB/s", font, 4096, format).Width;
+                float maxSpeedW = measure.MeasureString(
+                    "999.99 MB/s", font, 4096, format).Width;
+                float upWidth = measure.MeasureString(
+                    firstLine.Speed, font, 4096, format).Width;
+                float downWidth = measure.MeasureString(
+                    secondLine.Speed, font, 4096, format).Width;
                 float labelW = Math.Max(
                     measure.MeasureString(
                         "CPU", font, 4096, format).Width,
                     measure.MeasureString(
                         "内存", font, 4096, format).Width);
-                float pctW = measure.MeasureString(
-                    "100%", font, 4096, format).Width;
+                float pctW = Math.Max(
+                    measure.MeasureString(
+                        firstLine.Percent, font, 4096, format).Width,
+                    measure.MeasureString(
+                        secondLine.Percent, font, 4096, format).Width);
+
+                float speedW = TaskbarStats.QuantizeColumn(
+                    Math.Max(upWidth, downWidth),
+                    8f * scale, maxSpeedW);
 
                 int leftPad = (int)Math.Round(2 * scale);
                 int rightPad = (int)Math.Round(6 * scale);
-                int gapArrow = (int)Math.Round(5 * scale);
-                int gapSpeed = (int)Math.Round(10 * scale);
-                int gapLabel = (int)Math.Round(5 * scale);
+                int gapArrow = (int)Math.Round(4 * scale);
+                int gapSpeed = (int)Math.Round(6 * scale);
+                int gapLabel = (int)Math.Round(4 * scale);
 
                 int arrowX = leftPad;
                 int speedX = leftPad +
                     (int)Math.Ceiling(arrowW) + gapArrow;
-                int labelRight = speedX +
-                    (int)Math.Ceiling(speedW) + gapSpeed +
-                    (int)Math.Ceiling(labelW);
-                int pctRight = labelRight + gapLabel +
-                    (int)Math.Ceiling(pctW);
-                int width = pctRight + rightPad;
+                int labelX = speedX +
+                    (int)Math.Ceiling(speedW) + gapSpeed;
+                int pctX = labelX +
+                    (int)Math.Ceiling(labelW) + gapLabel;
+                int width = pctX +
+                    (int)Math.Ceiling(pctW) + rightPad;
                 // 行高留足，避免两行字被压在一起显得上下不齐。
                 int lineHeight = (int)Math.Ceiling(16 * scale);
                 int height = lineHeight * 2 +
@@ -630,26 +661,25 @@ namespace SelectionTranslator
                     graphics.TextRenderingHint =
                         TextRenderingHint.AntiAliasGridFit;
                     DrawBarLine(
-                        graphics, measure, font, brush, format,
-                        firstLine, 0, arrowX,
-                        speedX, labelRight, pctRight);
+                        graphics, font, brush, format,
+                        firstLine, 0,
+                        arrowX, speedX, labelX, pctX);
                     DrawBarLine(
-                        graphics, measure, font, brush, format,
-                        secondLine, lineHeight, arrowX,
-                        speedX, labelRight, pctRight);
+                        graphics, font, brush, format,
+                        secondLine, lineHeight,
+                        arrowX, speedX, labelX, pctX);
                 }
                 return bitmap;
             }
         }
 
         /// <summary>
-        /// 一行四段：箭头和速度左对齐到固定列起点，标签 / 百分比
-        /// 右对齐到固定列右端。数字位数变化时只有文本自身向右伸展，
-        /// 各列边界和整条状态条的宽度都不动。
+        /// 一行四段全部左对齐到各自列起点。四列的起点两行完全共用，
+        /// 因此网速再怎么跳也不会上下不对称；各列之间只留很小的固定
+        /// 间隙，位图右端紧贴最后一列，不留多余空白。
         /// </summary>
         private static void DrawBarLine(
             Graphics graphics,
-            Graphics measure,
             Font font,
             Brush brush,
             StringFormat format,
@@ -657,25 +687,17 @@ namespace SelectionTranslator
             int y,
             int arrowX,
             int speedX,
-            int labelRight,
-            int pctRight)
+            int labelX,
+            int pctX)
         {
             graphics.DrawString(
                 line.Arrow, font, brush, arrowX, y, format);
             graphics.DrawString(
                 line.Speed, font, brush, speedX, y, format);
-
-            float labelWidth = measure.MeasureString(
-                line.Label, font, 4096, format).Width;
             graphics.DrawString(
-                line.Label, font, brush,
-                labelRight - labelWidth, y, format);
-
-            float percentWidth = measure.MeasureString(
-                line.Percent, font, 4096, format).Width;
+                line.Label, font, brush, labelX, y, format);
             graphics.DrawString(
-                line.Percent, font, brush,
-                pctRight - percentWidth, y, format);
+                line.Percent, font, brush, pctX, y, format);
         }
 
         /// <summary>系统是否使用浅色任务栏（详情卡片配色也跟着走）。</summary>
@@ -765,14 +787,18 @@ namespace SelectionTranslator
         }
 
         /// <summary>每次刷新都重算位置：托盘图标增减、任务栏换边、
-        /// 分辨率/DPI 变化都会自动跟上，不需要重启。</summary>
+        /// 分辨率/DPI 变化都会自动跟上，不需要重启。
+        /// 定位宽度用固定参考值，位图变窄时左边缘也纹丝不动。</summary>
         public Point ComputePosition(Size content)
         {
             Rectangle taskbar = GetTaskbarRect();
             Rectangle notify = GetTrayNotifyRect();
             int margin = (int)Math.Round(8 * _scale);
+            Size reference = new Size(
+                Math.Max(_referenceWidth, content.Width),
+                content.Height);
             return TaskbarStats.ComputePosition(
-                taskbar, notify, content, margin);
+                taskbar, notify, reference, margin);
         }
 
         public static Rectangle GetTaskbarRect()

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
@@ -665,6 +666,31 @@ namespace SelectionTranslator
             return false;
         }
 
+        /// <summary>
+        /// 状态条专用：单位统一按 MB/s 算（≥1000 MB/s 用 GB/s），
+        /// 数字位数稳定，不必为 B/s / KB/s / MB/s 三档各留一段余量，
+        /// 网速与 CPU 之间也就不会空出一大截。详情卡片仍用
+        /// FormatSpeed 显示精确的 B / KB 数值。
+        /// </summary>
+        public static string FormatSpeedCompact(double bytesPerSecond)
+        {
+            if (bytesPerSecond < 0)
+            {
+                bytesPerSecond = 0;
+            }
+            double mb = bytesPerSecond /
+                (1024.0 * 1024.0);
+            if (mb < 1000.0)
+            {
+                return mb.ToString(
+                    "0.00", CultureInfo.InvariantCulture) +
+                    " MB/s";
+            }
+            return (mb / 1024.0).ToString(
+                "0.00", CultureInfo.InvariantCulture) +
+                " GB/s";
+        }
+
         public static string FormatSpeed(double bytesPerSecond)
         {
             if (bytesPerSecond < 0)
@@ -744,6 +770,30 @@ namespace SelectionTranslator
             public string Speed;
             public string Label;
             public string Percent;
+        }
+
+        /// <summary>
+        /// 把列宽向上量化到 quantum 的整数倍并夹在最大宽度内。
+        /// 数字小幅跳变不挪列，只有位数变了才跳一档；纯函数便于自检。
+        /// </summary>
+        public static float QuantizeColumn(
+            float width, float quantum, float maxWidth)
+        {
+            if (quantum <= 0f)
+            {
+                quantum = 1f;
+            }
+            if (width < quantum)
+            {
+                width = quantum;
+            }
+            float result =
+                (float)Math.Ceiling(width / quantum) * quantum;
+            if (maxWidth > 0f && result > maxWidth)
+            {
+                result = maxWidth;
+            }
+            return result;
         }
 
         /// <summary>把两行文本拆成对齐用的四段，纯函数便于自检。</summary>

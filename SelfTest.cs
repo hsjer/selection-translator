@@ -190,59 +190,84 @@ namespace SelectionTranslator
                     barSecond.Label + "|" + barSecond.Percent,
                     "↓|2.00 KB/s|内存|62%");
 
-                // 数字位数从最短跳到最长，位图尺寸和文本右端都必须
-                // 保持不动，否则右边缘贴托盘的状态条会整体左右抖，
-                // 两行的列也会上下错开。
-                Func<Bitmap, int> rightmostInk = delegate(Bitmap image)
+                // 状态条单位统一按 MB/s 算，速度字符串长度稳定。
+                Check(output, ref ok, "compact speed idle",
+                    TaskbarStats.FormatSpeedCompact(0),
+                    "0.00 MB/s");
+                Check(output, ref ok, "compact speed bytes",
+                    TaskbarStats.FormatSpeedCompact(165),
+                    "0.00 MB/s");
+                Check(output, ref ok, "compact speed mb",
+                    TaskbarStats.FormatSpeedCompact(
+                        5.0 * 1024 * 1024),
+                    "5.00 MB/s");
+                Check(output, ref ok, "compact speed gb",
+                    TaskbarStats.FormatSpeedCompact(
+                        2.0 * 1024 * 1024 * 1024),
+                    "2.00 GB/s");
+                Check(output, ref ok, "compact speed negative",
+                    TaskbarStats.FormatSpeedCompact(-1),
+                    "0.00 MB/s");
+                Check(output, ref ok, "column quantized",
+                    TaskbarStats.QuantizeColumn(
+                        37f, 8f, 90f).ToString(), "40");
+                Check(output, ref ok, "column clamped",
+                    TaskbarStats.QuantizeColumn(
+                        200f, 8f, 90f).ToString(), "90");
+
+                Func<Bitmap, int> leftmostInk = delegate(Bitmap image)
                 {
-                    int best = -1;
-                    for (int yy = 0; yy < image.Height; yy++)
+                    for (int xx = 0; xx < image.Width; xx++)
                     {
-                        for (int xx = image.Width - 1;
-                            xx > best; xx--)
+                        for (int yy = 0; yy < image.Height; yy++)
                         {
                             if (image.GetPixel(xx, yy).A > 8)
                             {
-                                best = xx;
-                                break;
+                                return xx;
                             }
                         }
                     }
-                    return best;
+                    return -1;
                 };
                 using (Bitmap smallNumbers =
                     TaskbarStatsForm.RenderBitmap(
-                        "0 B/s", "0 B/s", 8, 9, 1f))
+                        "0.00 MB/s", "0.00 MB/s", 8, 9, 1f))
                 using (Bitmap bigNumbers =
                     TaskbarStatsForm.RenderBitmap(
-                        "999.99 MB/s", "1023.99 KB/s",
+                        "999.99 MB/s", "999.99 MB/s",
                         100, 100, 1f))
                 {
-                    Check(output, ref ok, "bar width stable",
-                        (smallNumbers.Width ==
+                    // 位图紧贴内容，短数字不会在网速与 CPU 之间
+                    // 留一大片空白；长度差只来自速度列本身。
+                    Check(output, ref ok, "bar compact for short speed",
+                        (smallNumbers.Width <
                             bigNumbers.Width).ToString(),
                         "True");
                     Check(output, ref ok, "bar height stable",
                         (smallNumbers.Height ==
                             bigNumbers.Height).ToString(),
                         "True");
-                    Check(output, ref ok, "bar right edge stable",
-                        (Math.Abs(
-                            rightmostInk(smallNumbers) -
-                            rightmostInk(bigNumbers)) <= 1)
-                            .ToString(), "True");
+                    // 箭头起点固定，配合固定参考宽度定位，状态条不抖。
+                    Check(output, ref ok, "bar arrow start stable",
+                        (leftmostInk(smallNumbers) ==
+                            leftmostInk(bigNumbers)).ToString(),
+                        "True");
+                    Check(output, ref ok,
+                        "bar width difference bounded",
+                        (bigNumbers.Width -
+                            smallNumbers.Width < 40).ToString(),
+                        "True");
                 }
                 using (Bitmap scaledSmall =
                     TaskbarStatsForm.RenderBitmap(
-                        "0 B/s", "0 B/s", 8, 9, 1.25f))
+                        "0.00 MB/s", "0.00 MB/s", 8, 9, 1.25f))
                 using (Bitmap scaledBig =
                     TaskbarStatsForm.RenderBitmap(
-                        "999.99 MB/s", "1023.99 KB/s",
+                        "999.99 MB/s", "999.99 MB/s",
                         100, 100, 1.25f))
                 {
-                    Check(output, ref ok,
-                        "bar width stable at 125%",
-                        (scaledSmall.Width ==
+                    Check(output, ref ok, "bar compact at 125%",
+                        (scaledSmall.Width <
                             scaledBig.Width).ToString(),
                         "True");
                 }
@@ -611,40 +636,62 @@ namespace SelectionTranslator
 
                 // 截图浮层冒烟测试：构造过程（抓屏 / 遮罩 / 工具栏图标）
                 // 不抛异常，且给定选区后能真正导出一张位图。
-                using (ScreenshotCaptureForm capture =
-                    new ScreenshotCaptureForm())
+                // 锁屏 / 远程会话 / 虚拟显示器下系统会直接拒绝屏幕
+                // BitBlt，此时跳过这组依赖桌面的断言，其余照常执行，
+                // 不让环境限制把整份自检判成失败。
+                try
                 {
-                    Check(output, ref ok, "capture initially empty",
-                        (capture.Captured == null).ToString(), "True");
-                    Check(output, ref ok, "capture initial result",
-                        capture.Result.ToString(), "None");
-
-                    FieldInfo selectionField =
-                        typeof(ScreenshotCaptureForm).GetField(
-                            "_selection",
-                            BindingFlags.NonPublic |
-                            BindingFlags.Instance);
-                    selectionField.SetValue(
-                        capture, new Rectangle(10, 10, 120, 80));
-
-                    MethodInfo buildMethod =
-                        typeof(ScreenshotCaptureForm).GetMethod(
-                            "BuildResult",
-                            BindingFlags.NonPublic |
-                            BindingFlags.Instance);
-                    using (Bitmap exported =
-                        (Bitmap)buildMethod.Invoke(capture, null))
+                    using (ScreenshotCaptureForm capture =
+                        new ScreenshotCaptureForm())
                     {
-                        Check(output, ref ok, "capture export not null",
-                            (exported != null).ToString(), "True");
-                        if (exported != null)
+                        Check(output, ref ok, "capture initially empty",
+                            (capture.Captured == null).ToString(), "True");
+                        Check(output, ref ok, "capture initial result",
+                            capture.Result.ToString(), "None");
+
+                        FieldInfo selectionField =
+                            typeof(ScreenshotCaptureForm).GetField(
+                                "_selection",
+                                BindingFlags.NonPublic |
+                                BindingFlags.Instance);
+                        selectionField.SetValue(
+                            capture, new Rectangle(10, 10, 120, 80));
+
+                        MethodInfo buildMethod =
+                            typeof(ScreenshotCaptureForm).GetMethod(
+                                "BuildResult",
+                                BindingFlags.NonPublic |
+                                BindingFlags.Instance);
+                        using (Bitmap exported =
+                            (Bitmap)buildMethod.Invoke(capture, null))
                         {
-                            Check(output, ref ok, "capture export width",
-                                exported.Width.ToString(), "120");
-                            Check(output, ref ok, "capture export height",
-                                exported.Height.ToString(), "80");
+                            Check(output, ref ok,
+                                "capture export not null",
+                                (exported != null).ToString(), "True");
+                            if (exported != null)
+                            {
+                                Check(output, ref ok,
+                                    "capture export width",
+                                    exported.Width.ToString(), "120");
+                                Check(output, ref ok,
+                                    "capture export height",
+                                    exported.Height.ToString(), "80");
+                            }
                         }
                     }
+                }
+                catch (System.ComponentModel.Win32Exception captureError)
+                {
+                    output.AppendLine(
+                        "SKIP screenshot smoke test: " +
+                        captureError.Message);
+                }
+                catch (System.Runtime.InteropServices.ExternalException
+                    captureError)
+                {
+                    output.AppendLine(
+                        "SKIP screenshot smoke test: " +
+                        captureError.Message);
                 }
 
                 // 应用图标：exe 的 Win32 图标资源 + 供托盘复用的托管资源。
@@ -2406,10 +2453,10 @@ namespace SelectionTranslator
                 output.AppendLine("trayNotify=" + notify);
 
                 using (Bitmap light = TaskbarStatsForm.RenderBitmap(
-                    "6.60 KB/s", "5.04 KB/s", 28, 62, 1f,
+                    "0.01 MB/s", "0.00 MB/s", 28, 62, 1f,
                     Color.FromArgb(255, 26, 28, 32)))
                 using (Bitmap dark = TaskbarStatsForm.RenderBitmap(
-                    "8.57 KB/s", "2.05 KB/s", 17, 62, 1f,
+                    "6.60 MB/s", "5.04 MB/s", 17, 62, 1f,
                     Color.FromArgb(255, 240, 242, 246)))
                 {
                     Point position = TaskbarStats.ComputePosition(
@@ -2456,15 +2503,15 @@ namespace SelectionTranslator
                     }
                 }
 
-                // 数字从最短跳到最长的放大对比：两张位图应等宽等高，
-                // 每列右端重合，肉眼看得出不会再左右抖 / 上下错开。
+                // 统一 MB 单位后最短 / 最长数字的放大对比：两行始终
+                // 共用同一组列起点，位图紧贴内容，间隙恒定很小。
                 using (Bitmap compact =
                     TaskbarStatsForm.RenderBitmap(
-                        "0 B/s", "0 B/s", 8, 9, 1f,
+                        "0.00 MB/s", "0.00 MB/s", 8, 9, 1f,
                         Color.FromArgb(255, 26, 28, 32)))
                 using (Bitmap wide =
                     TaskbarStatsForm.RenderBitmap(
-                        "999.99 MB/s", "1023.99 KB/s",
+                        "999.99 MB/s", "999.99 MB/s",
                         100, 100, 1f,
                         Color.FromArgb(255, 26, 28, 32)))
                 {
@@ -2518,11 +2565,12 @@ namespace SelectionTranslator
                                 "ui-bar-zoom.png"),
                             ImageFormat.Png);
                     }
-                    output.AppendLine("bar stable sizes=" +
+                    output.AppendLine("bar sizes=" +
                         compact.Width + "x" + compact.Height +
                         " / " + wide.Width + "x" + wide.Height);
-                    if (compact.Width != wide.Width ||
-                        compact.Height != wide.Height)
+                    if (compact.Height != wide.Height ||
+                        compact.Width >= wide.Width ||
+                        wide.Width - compact.Width >= 40)
                     {
                         pass = false;
                     }
