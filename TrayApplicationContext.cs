@@ -46,6 +46,8 @@ namespace SelectionTranslator
         private ImageTranslationForm _translationWindow;
         private ToolStripMenuItem _closePinsItem;
         private ToolStripMenuItem _shellMenuItem;
+        private ToolStripMenuItem _statsMenuItem;
+        private TaskbarStatsForm _statsForm;
         // 防止热键在浮层显示期间重复触发、嵌套打开第二个截图会话。
         private bool _captureInProgress;
 
@@ -105,6 +107,10 @@ namespace SelectionTranslator
                 }
                 // 每次展开都按当前配置重画，保证和设置窗口完全一致。
                 RefreshHotkeyMenuItems();
+                if (_statsMenuItem != null && !_statsMenuItem.IsDisposed)
+                {
+                    _statsMenuItem.Checked = _config.ShowTaskbarStats;
+                }
             };
 
             _translateMenuItem =
@@ -164,6 +170,12 @@ namespace SelectionTranslator
             _startupItem.Checked = _config.StartWithWindows;
             _startupItem.Click += OnStartupClicked;
             _trayMenu.Items.Add(_startupItem);
+
+            _statsMenuItem = new ToolStripMenuItem("任务栏状态显示");
+            _statsMenuItem.CheckOnClick = true;
+            _statsMenuItem.Checked = _config.ShowTaskbarStats;
+            _statsMenuItem.Click += OnStatsClicked;
+            _trayMenu.Items.Add(_statsMenuItem);
 
             _closePinsItem = new ToolStripMenuItem("关闭所有桌面贴图");
             _closePinsItem.Enabled = false;
@@ -471,6 +483,7 @@ namespace SelectionTranslator
             }
 
             NotifyHotkeyFailures();
+            ApplyTaskbarStats();
         }
 
         private void OnFirstRunTimerTick(object sender, EventArgs e)
@@ -1769,9 +1782,49 @@ namespace SelectionTranslator
 
             ReRegisterHotkeys();
 
+            if (_statsMenuItem != null && !_statsMenuItem.IsDisposed)
+            {
+                _statsMenuItem.Checked = _config.ShowTaskbarStats;
+            }
+            ApplyTaskbarStats();
+
             if (_translationForm != null && !_translationForm.IsDisposed)
             {
                 _translationForm.Close();
+            }
+        }
+
+        private void OnStatsClicked(object sender, EventArgs e)
+        {
+            _config.ShowTaskbarStats = _statsMenuItem.Checked;
+            try
+            {
+                ConfigStore.Save(_config);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("保存任务栏状态显示设置失败", ex);
+            }
+            ApplyTaskbarStats();
+        }
+
+        /// <summary>按配置显示 / 隐藏任务栏状态条。</summary>
+        private void ApplyTaskbarStats()
+        {
+            if (_config.ShowTaskbarStats)
+            {
+                if (_statsForm == null || _statsForm.IsDisposed)
+                {
+                    _statsForm = new TaskbarStatsForm();
+                }
+                if (!_statsForm.Visible)
+                {
+                    _statsForm.Show();
+                }
+            }
+            else if (_statsForm != null && !_statsForm.IsDisposed)
+            {
+                _statsForm.Hide();
             }
         }
 
@@ -1914,6 +1967,15 @@ namespace SelectionTranslator
                 {
                     _selectionMonitor.Dispose();
                     _selectionMonitor = null;
+                }
+
+                if (_statsForm != null)
+                {
+                    if (!_statsForm.IsDisposed)
+                    {
+                        _statsForm.Dispose();
+                    }
+                    _statsForm = null;
                 }
 
                 _hotkeyWindow.UnregisterAll();

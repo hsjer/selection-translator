@@ -136,6 +136,66 @@ namespace SelectionTranslator
                         0, Keys.ControlKey, out composed).ToString(),
                     "False");
 
+                // 任务栏状态条：格式化、CPU 差值、贴托盘区定位。
+                Check(output, ref ok, "stats speed bytes",
+                    TaskbarStats.FormatSpeed(512), "512 B/s");
+                Check(output, ref ok, "stats speed KB",
+                    TaskbarStats.FormatSpeed(6.6 * 1024), "6.60 KB/s");
+                Check(output, ref ok, "stats speed MB",
+                    TaskbarStats.FormatSpeed(2.5 * 1024 * 1024),
+                    "2.50 MB/s");
+                Check(output, ref ok, "stats speed clamped",
+                    TaskbarStats.FormatSpeed(-10), "0 B/s");
+                Check(output, ref ok, "stats cpu 25",
+                    TaskbarStats.ComputeCpuPercent(75, 100).ToString(),
+                    "25");
+                Check(output, ref ok, "stats cpu zero total",
+                    TaskbarStats.ComputeCpuPercent(0, 0).ToString(),
+                    "0");
+                Check(output, ref ok, "stats cpu bad delta",
+                    TaskbarStats.ComputeCpuPercent(200, 100).ToString(),
+                    "0");
+                string statsLine1;
+                string statsLine2;
+                TaskbarStats.FormatLines(
+                    "1.00 KB/s", "2.00 KB/s", 17, 62,
+                    out statsLine1, out statsLine2);
+                Check(output, ref ok, "stats line 1",
+                    statsLine1, "↑ 1.00 KB/s   CPU: 17%");
+                Check(output, ref ok, "stats line 2",
+                    statsLine2, "↓ 2.00 KB/s   内存: 62%");
+                Point statsPosition = TaskbarStats.ComputePosition(
+                    new Rectangle(0, 1040, 1920, 40),
+                    new Rectangle(1600, 1040, 320, 40),
+                    new Size(150, 32), 8);
+                Check(output, ref ok, "stats position x",
+                    statsPosition.X.ToString(), "1442");
+                Check(output, ref ok, "stats position y",
+                    statsPosition.Y.ToString(), "1044");
+                Point statsFallback = TaskbarStats.ComputePosition(
+                    new Rectangle(0, 1040, 1920, 40),
+                    Rectangle.Empty, new Size(150, 32), 8);
+                Check(output, ref ok, "stats fallback position",
+                    (statsFallback.X > 0).ToString(), "True");
+                Check(output, ref ok, "stats text opaque",
+                    TaskbarStatsForm.TextColor().A.ToString(), "255");
+                using (Bitmap statsBitmap =
+                    TaskbarStatsForm.RenderBitmap(
+                        "6.60 KB/s", "5.04 KB/s", 28, 62, 1f))
+                {
+                    Check(output, ref ok, "stats bitmap width",
+                        (statsBitmap.Width > 80).ToString(), "True");
+                    Check(output, ref ok, "stats bitmap height",
+                        (statsBitmap.Height >= 28).ToString(), "True");
+                    Check(output, ref ok,
+                        "stats bitmap transparent corner",
+                        statsBitmap.GetPixel(
+                            0, statsBitmap.Height - 1).A.ToString(),
+                        "0");
+                }
+                Check(output, ref ok, "config stats on by default",
+                    FreshConfig().ShowTaskbarStats.ToString(), "True");
+
                 // 分段翻译：长文本应被拆成多段，每段 UTF-8 字节数都不超过上限，
                 // 且拼接后能还原原文。
                 StringBuilder longText = new StringBuilder();
@@ -962,8 +1022,27 @@ namespace SelectionTranslator
                         methodBox.SelectedIndex.ToString(), "0");
                     Check(output, ref ok, "settings voice method items",
                         methodBox.Items.Count.ToString(), "2");
-                    Check(output, ref ok, "settings autoscroll",
-                        settings.AutoScroll.ToString(), "True");
+                    BindingFlags fieldFlags =
+                        BindingFlags.NonPublic |
+                        BindingFlags.Instance;
+                    Panel contentHost = (Panel)typeof(SettingsForm)
+                        .GetField("_contentHost", fieldFlags)
+                        .GetValue(settings);
+                    Panel footer = (Panel)typeof(SettingsForm)
+                        .GetField("_footer", fieldFlags)
+                        .GetValue(settings);
+                    Check(output, ref ok,
+                        "settings content autoscroll",
+                        contentHost.AutoScroll.ToString(), "True");
+                    Check(output, ref ok,
+                        "settings footer docked bottom",
+                        footer.Dock.ToString(), "Bottom");
+                    Control saveButton = settings.AcceptButton as Control;
+                    Check(output, ref ok,
+                        "settings save button pinned",
+                        (saveButton != null &&
+                            saveButton.Parent == footer).ToString(),
+                        "True");
                     using (Bitmap surface = new Bitmap(
                         settings.Width, settings.Height))
                     {
@@ -1442,6 +1521,168 @@ namespace SelectionTranslator
                 "selftest.txt");
             File.WriteAllText(path, output.ToString(), Encoding.UTF8);
             Environment.ExitCode = ok ? 0 : 1;
+        }
+
+        /// <summary>
+        /// 把状态条真的贴到任务栏上，截一张任务栏右侧局部屏，
+        /// 用来肉眼确认位置、透明度和文字清晰度。
+        /// </summary>
+        public static void RunStatsLiveProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool pass = true;
+            try
+            {
+                Application.EnableVisualStyles();
+                using (TaskbarStatsForm form = new TaskbarStatsForm())
+                {
+                    form.Show();
+                    for (int i = 0; i < 30; i++)
+                    {
+                        Application.DoEvents();
+                        System.Threading.Thread.Sleep(50);
+                    }
+                    form.RefreshNow();
+                    Application.DoEvents();
+
+                    Rectangle taskbar =
+                        TaskbarStatsForm.GetTaskbarRect();
+                    int width = Math.Min(560, taskbar.Width);
+                    int height = Math.Max(1, taskbar.Height);
+                    int x = Math.Max(0, taskbar.Right - width);
+                    int y = Math.Max(0, taskbar.Top);
+                    using (Bitmap shot = new Bitmap(width, height))
+                    {
+                        using (Graphics graphics =
+                            Graphics.FromImage(shot))
+                        {
+                            graphics.CopyFromScreen(
+                                x, y, 0, 0,
+                                new Size(width, height));
+                        }
+                        shot.Save(
+                            Path.Combine(
+                                ConfigStore.DataDirectory,
+                                "ui-stats-live.png"),
+                            ImageFormat.Png);
+                    }
+                    output.AppendLine("taskbar=" + taskbar);
+                    output.AppendLine("capture=" +
+                        new Rectangle(x, y, width, height));
+                    output.AppendLine("visible=" + form.Visible);
+                    form.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                pass = false;
+                output.AppendLine("EXCEPTION: " + ex);
+            }
+
+            output.AppendLine(pass ? "RESULT: OK" : "RESULT: FAILED");
+            Directory.CreateDirectory(ConfigStore.DataDirectory);
+            File.WriteAllText(
+                Path.Combine(
+                    ConfigStore.DataDirectory,
+                    "statsformprobe.txt"),
+                output.ToString(),
+                Encoding.UTF8);
+            Environment.ExitCode = pass ? 0 : 1;
+        }
+
+        /// <summary>
+        /// 采集一次真实系统数据，输出任务栏定位结果，并生成浅色 / 深色
+        /// 两种任务栏背景下的状态条预览图 ui-stats.png。
+        /// </summary>
+        public static void RunStatsProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool pass = true;
+            try
+            {
+                long received;
+                long sent;
+                TaskbarStats.SampleTraffic(out received, out sent);
+                ulong idle;
+                ulong total;
+                bool cpuOk = TaskbarStats.SampleCpu(out idle, out total);
+                int memory = TaskbarStats.MemoryLoad();
+                output.AppendLine("traffic received=" + received +
+                    " sent=" + sent);
+                output.AppendLine("cpu sample=" + cpuOk +
+                    " idle=" + idle + " total=" + total);
+                output.AppendLine("memory=" + memory + "%");
+
+                Rectangle taskbar = TaskbarStatsForm.GetTaskbarRect();
+                Rectangle notify = TaskbarStatsForm.GetTrayNotifyRect();
+                output.AppendLine("taskbar=" + taskbar);
+                output.AppendLine("trayNotify=" + notify);
+
+                using (Bitmap light = TaskbarStatsForm.RenderBitmap(
+                    "6.60 KB/s", "5.04 KB/s", 28, 62, 1f,
+                    Color.FromArgb(255, 26, 28, 32)))
+                using (Bitmap dark = TaskbarStatsForm.RenderBitmap(
+                    "8.57 KB/s", "2.05 KB/s", 17, 62, 1f,
+                    Color.FromArgb(255, 240, 242, 246)))
+                {
+                    Point position = TaskbarStats.ComputePosition(
+                        taskbar, notify, light.Size, 8);
+                    output.AppendLine("content=" + light.Size);
+                    output.AppendLine("position=" + position);
+                    if (position.IsEmpty)
+                    {
+                        pass = false;
+                    }
+
+                    int width = Math.Max(light.Width, dark.Width) + 24;
+                    int height = light.Height * 2 + 36;
+                    using (Bitmap preview = new Bitmap(width, height))
+                    {
+                        using (Graphics graphics =
+                            Graphics.FromImage(preview))
+                        {
+                            graphics.Clear(Color.White);
+                            using (SolidBrush lightBar =
+                                new SolidBrush(
+                                    Color.FromArgb(243, 243, 243)))
+                            using (SolidBrush darkBar =
+                                new SolidBrush(
+                                    Color.FromArgb(32, 32, 32)))
+                            {
+                                graphics.FillRectangle(
+                                    lightBar, 0, 0,
+                                    width, light.Height + 16);
+                                graphics.FillRectangle(
+                                    darkBar, 0, light.Height + 16,
+                                    width,
+                                    height - light.Height - 16);
+                            }
+                            graphics.DrawImageUnscaled(light, 12, 8);
+                            graphics.DrawImageUnscaled(
+                                dark, 12, light.Height + 24);
+                        }
+                        preview.Save(
+                            Path.Combine(
+                                ConfigStore.DataDirectory,
+                                "ui-stats.png"),
+                            ImageFormat.Png);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                pass = false;
+                output.AppendLine("EXCEPTION: " + ex);
+            }
+
+            output.AppendLine(pass ? "RESULT: OK" : "RESULT: FAILED");
+            Directory.CreateDirectory(ConfigStore.DataDirectory);
+            File.WriteAllText(
+                Path.Combine(
+                    ConfigStore.DataDirectory, "statsprobe.txt"),
+                output.ToString(),
+                Encoding.UTF8);
+            Environment.ExitCode = pass ? 0 : 1;
         }
 
         /// <summary>

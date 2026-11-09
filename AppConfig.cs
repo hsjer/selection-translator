@@ -49,6 +49,9 @@ namespace SelectionTranslator
         /// <summary>在图片的右键菜单里加「使用工具侠打开图片」。</summary>
         public bool EnableImageShellMenu { get; set; }
 
+        /// <summary>在任务栏托盘区左侧显示网速 / CPU / 内存小字。</summary>
+        public bool ShowTaskbarStats { get; set; }
+
         /// <summary>
         /// 首次运行初始化（开机启动 / 右键菜单 / 打开方式）是否已经跑过。
         /// 全新安装时为 false，跑完写 true；老配置里没这个字段按 true 处理。
@@ -80,6 +83,7 @@ namespace SelectionTranslator
             VoiceInputMethod = InputFocusProbe.MethodType;
             VoiceAutoCopy = false;
             EnableImageShellMenu = true;
+            ShowTaskbarStats = true;
             FirstRunDone = false;
         }
 
@@ -227,6 +231,13 @@ namespace SelectionTranslator
                     config.EnableImageShellMenu = true;
                 }
 
+                // 任务栏状态条是后加的功能：老配置里没有这个字段时
+                // 默认显示（用户明确要求「运行后直接就显示在任务栏」）。
+                if (!HasShowTaskbarStatsSetting(json))
+                {
+                    config.ShowTaskbarStats = true;
+                }
+
                 // 老用户已经有自己的开关状态，别把人家的设置改掉。
                 // 只有「完全没有 FirstRunDone 字段」才当成老配置跳过；
                 // 全新安装（config.json 不存在）在上面已经返回了 false。
@@ -288,6 +299,14 @@ namespace SelectionTranslator
             return json != null &&
                 json.IndexOf(
                     "\"EnableImageShellMenu\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool HasShowTaskbarStatsSetting(string json)
+        {
+            return json != null &&
+                json.IndexOf(
+                    "\"ShowTaskbarStats\"",
                     StringComparison.OrdinalIgnoreCase) >= 0;
         }
 

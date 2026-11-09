@@ -47,6 +47,8 @@ namespace SelectionTranslator
         private TextBox _capturingField;
         private string _capturingFieldOriginal;
         private int _captureModifiers;
+        private readonly Panel _contentHost;
+        private readonly Panel _footer;
         private readonly Button _testButton;
 
         public AppConfig Config { get; private set; }
@@ -58,24 +60,40 @@ namespace SelectionTranslator
             Text = "设置 - " + AppInfo.Name;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterScreen;
-            // 内容总高约 900；屏幕不够高时允许滚动，避免按钮被裁掉。
-            int availableHeight =
-                Screen.PrimaryScreen.WorkingArea.Height - 60;
-            ClientSize = new Size(
-                480, Math.Min(938, Math.Max(560, availableHeight)));
-            AutoScroll = true;
             MaximizeBox = false;
             MinimizeBox = false;
             ShowInTaskbar = false;
             KeyPreview = true;
+            // 所有坐标都是 96 DPI 下的设计值，缩放由 ApplyDpiScale 统一做，
+            // 避免 WinForms 的 Font 自动缩放和手动缩放叠加导致控件被裁切。
+            AutoScaleMode = AutoScaleMode.None;
             Font = new Font("Microsoft YaHei UI", 9F);
             BackColor = Color.FromArgb(248, 249, 251);
+
+            // 内容区和底部按钮分开：屏幕矮 / DPI 高时内容区独立滚动，
+            // 「保存 / 取消」永远固定在窗口底部，不会被裁掉。
+            _contentHost = new Panel();
+            _contentHost.Dock = DockStyle.Fill;
+            _contentHost.AutoScroll = true;
+            _contentHost.BackColor = BackColor;
+            this.Controls.Add(_contentHost);
+
+            _footer = new Panel();
+            _footer.Dock = DockStyle.Bottom;
+            _footer.Height = 44;
+            _footer.BackColor = Color.FromArgb(240, 242, 246);
+            this.Controls.Add(_footer);
+
+            int availableHeight =
+                Screen.PrimaryScreen.WorkingArea.Height - 60;
+            ClientSize = new Size(
+                480, Math.Min(938, Math.Max(560, availableHeight)));
 
             Label appIdLabel = new Label();
             appIdLabel.Text = "百度翻译 AppID";
             appIdLabel.AutoSize = true;
             appIdLabel.Location = new Point(16, 16);
-            Controls.Add(appIdLabel);
+            _contentHost.Controls.Add(appIdLabel);
 
             _appIdBox = new TextBox();
             _appIdBox.Location = new Point(16, 38);
@@ -83,20 +101,20 @@ namespace SelectionTranslator
             _appIdBox.Anchor = AnchorStyles.Top | AnchorStyles.Left |
                 AnchorStyles.Right;
             _appIdBox.Text = config.AppId ?? "";
-            Controls.Add(_appIdBox);
+            _contentHost.Controls.Add(_appIdBox);
 
             LinkLabel platformLink = new LinkLabel();
             platformLink.Text = "打开百度翻译开放平台，查看 AppID 和密钥";
             platformLink.AutoSize = true;
             platformLink.Location = new Point(16, 68);
             platformLink.LinkClicked += OnPlatformLinkClicked;
-            Controls.Add(platformLink);
+            _contentHost.Controls.Add(platformLink);
 
             Label secretLabel = new Label();
             secretLabel.Text = "密钥";
             secretLabel.AutoSize = true;
             secretLabel.Location = new Point(16, 96);
-            Controls.Add(secretLabel);
+            _contentHost.Controls.Add(secretLabel);
 
             _secretBox = new TextBox();
             _secretBox.Location = new Point(16, 118);
@@ -105,20 +123,20 @@ namespace SelectionTranslator
                 AnchorStyles.Right;
             _secretBox.UseSystemPasswordChar = true;
             _secretBox.Text = config.GetSecret();
-            Controls.Add(_secretBox);
+            _contentHost.Controls.Add(_secretBox);
 
             _showSecretBox = new CheckBox();
             _showSecretBox.Text = "显示密钥";
             _showSecretBox.AutoSize = true;
             _showSecretBox.Location = new Point(16, 148);
             _showSecretBox.CheckedChanged += OnShowSecretChanged;
-            Controls.Add(_showSecretBox);
+            _contentHost.Controls.Add(_showSecretBox);
 
             Label languageLabel = new Label();
             languageLabel.Text = "目标语言";
             languageLabel.AutoSize = true;
             languageLabel.Location = new Point(16, 180);
-            Controls.Add(languageLabel);
+            _contentHost.Controls.Add(languageLabel);
 
             _languageBox = new ComboBox();
             _languageBox.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -139,13 +157,13 @@ namespace SelectionTranslator
             AddLanguage("th", "泰语");
             AddLanguage("vi", "越南语");
             SelectLanguage(config.TargetLanguage);
-            Controls.Add(_languageBox);
+            _contentHost.Controls.Add(_languageBox);
 
             Label imageLangLabel = new Label();
             imageLangLabel.Text = "图片文字 → 译文目标语言";
             imageLangLabel.AutoSize = true;
             imageLangLabel.Location = new Point(248, 180);
-            Controls.Add(imageLangLabel);
+            _contentHost.Controls.Add(imageLangLabel);
 
             _imageLangBox = new ComboBox();
             _imageLangBox.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -175,41 +193,41 @@ namespace SelectionTranslator
             AddImageLang("da", "丹麦语");
             AddImageLang("id", "印尼语");
             SelectImageLang(config.ImageTargetLanguage);
-            Controls.Add(_imageLangBox);
+            _contentHost.Controls.Add(_imageLangBox);
 
             _rightClickBox = new CheckBox();
             _rightClickBox.Text = "选中文本后右键显示「译」悬浮按钮";
             _rightClickBox.AutoSize = true;
             _rightClickBox.Location = new Point(16, 240);
             _rightClickBox.Checked = config.EnableRightClick;
-            Controls.Add(_rightClickBox);
+            _contentHost.Controls.Add(_rightClickBox);
 
             _fallbackBox = new CheckBox();
             _fallbackBox.Text = "读不到选区时自动用 Ctrl+C 兜底（兼容 IDEA 等应用）";
             _fallbackBox.AutoSize = true;
             _fallbackBox.Location = new Point(16, 266);
             _fallbackBox.Checked = config.EnableClipboardFallback;
-            Controls.Add(_fallbackBox);
+            _contentHost.Controls.Add(_fallbackBox);
 
             _showBubbleBox = new CheckBox();
             _showBubbleBox.Text = "选中文本后自动显示「译」悬浮按钮";
             _showBubbleBox.AutoSize = true;
             _showBubbleBox.Location = new Point(16, 292);
             _showBubbleBox.Checked = config.ShowBubbleOnSelection;
-            Controls.Add(_showBubbleBox);
+            _contentHost.Controls.Add(_showBubbleBox);
 
             _startupBox = new CheckBox();
             _startupBox.Text = "开机自动启动";
             _startupBox.AutoSize = true;
             _startupBox.Location = new Point(16, 318);
             _startupBox.Checked = config.StartWithWindows;
-            Controls.Add(_startupBox);
+            _contentHost.Controls.Add(_startupBox);
 
             Label maxTextLabel = new Label();
             maxTextLabel.Text = "最大文本长度（字符）";
             maxTextLabel.AutoSize = true;
             maxTextLabel.Location = new Point(16, 344);
-            Controls.Add(maxTextLabel);
+            _contentHost.Controls.Add(maxTextLabel);
 
             _maxTextBox = new NumericUpDown();
             _maxTextBox.Location = new Point(16, 366);
@@ -224,13 +242,13 @@ namespace SelectionTranslator
             }
             _maxTextBox.Value =
                 (int)Math.Max(100, Math.Min(20000, initialMax));
-            Controls.Add(_maxTextBox);
+            _contentHost.Controls.Add(_maxTextBox);
 
             Label hotkeyTranslateLabel = new Label();
             hotkeyTranslateLabel.Text = "翻译选中文本快捷键";
             hotkeyTranslateLabel.AutoSize = true;
             hotkeyTranslateLabel.Location = new Point(16, 402);
-            Controls.Add(hotkeyTranslateLabel);
+            _contentHost.Controls.Add(hotkeyTranslateLabel);
 
             _hotkeyTranslateField = new TextBox();
             _hotkeyTranslateField.ReadOnly = true;
@@ -239,13 +257,13 @@ namespace SelectionTranslator
             _hotkeyTranslateField.Size = new Size(120, 24);
             _hotkeyTranslateField.Text = config.HotkeyTranslateSelection;
             BindHotkeyField(_hotkeyTranslateField);
-            Controls.Add(_hotkeyTranslateField);
+            _contentHost.Controls.Add(_hotkeyTranslateField);
 
             Label hotkeyManualLabel = new Label();
             hotkeyManualLabel.Text = "手动翻译快捷键";
             hotkeyManualLabel.AutoSize = true;
             hotkeyManualLabel.Location = new Point(16, 436);
-            Controls.Add(hotkeyManualLabel);
+            _contentHost.Controls.Add(hotkeyManualLabel);
 
             _hotkeyManualField = new TextBox();
             _hotkeyManualField.ReadOnly = true;
@@ -254,13 +272,13 @@ namespace SelectionTranslator
             _hotkeyManualField.Size = new Size(120, 24);
             _hotkeyManualField.Text = config.HotkeyManualInput;
             BindHotkeyField(_hotkeyManualField);
-            Controls.Add(_hotkeyManualField);
+            _contentHost.Controls.Add(_hotkeyManualField);
 
             Label hotkeyScreenshotLabel = new Label();
             hotkeyScreenshotLabel.Text = "截图快捷键";
             hotkeyScreenshotLabel.AutoSize = true;
             hotkeyScreenshotLabel.Location = new Point(16, 470);
-            Controls.Add(hotkeyScreenshotLabel);
+            _contentHost.Controls.Add(hotkeyScreenshotLabel);
 
             _hotkeyScreenshotField = new TextBox();
             _hotkeyScreenshotField.ReadOnly = true;
@@ -269,18 +287,18 @@ namespace SelectionTranslator
             _hotkeyScreenshotField.Size = new Size(120, 24);
             _hotkeyScreenshotField.Text = config.HotkeyScreenshot;
             BindHotkeyField(_hotkeyScreenshotField);
-            Controls.Add(_hotkeyScreenshotField);
+            _contentHost.Controls.Add(_hotkeyScreenshotField);
 
             KeyDown += OnSettingsKeyDown;
 
             Label hintLabel = new Label();
             hintLabel.Text =
-                "点击输入框后直接按键：按住 Ctrl / Alt / Shift / Win 不松，再按一个键。\r\n" +
-                "也可只按 F1–F12 等功能键；四个快捷键的组合不能完全相同。";
+                "点一下输入框，按住 Ctrl / Alt / Shift / Win 再按一个键。\r\n" +
+                "也可只按 F1–F12 等功能键；四个快捷键不能相同。";
             hintLabel.Location = new Point(16, 504);
             hintLabel.Size = new Size(440, 46);
             hintLabel.ForeColor = Color.FromArgb(90, 98, 112);
-            Controls.Add(hintLabel);
+            _contentHost.Controls.Add(hintLabel);
 
             // --------------------------------------------------------------
             // 文字识别（腾讯云 OCR）
@@ -290,7 +308,7 @@ namespace SelectionTranslator
             tencentGroup.Location = new Point(12, 552);
             tencentGroup.Size = new Size(448, 178);
             tencentGroup.Font = Font;
-            Controls.Add(tencentGroup);
+            _contentHost.Controls.Add(tencentGroup);
 
             _useTencentBox = new CheckBox();
             _useTencentBox.Text = "用腾讯云识别图中文字（推荐，取字更快）";
@@ -398,7 +416,7 @@ namespace SelectionTranslator
             voiceGroup.Location = new Point(12, 738);
             voiceGroup.Size = new Size(448, 156);
             voiceGroup.Font = Font;
-            Controls.Add(voiceGroup);
+            _contentHost.Controls.Add(voiceGroup);
 
             _voiceEnableBox = new CheckBox();
             _voiceEnableBox.Text = "启用语音识别（按住快捷键说话，松开即识别）";
@@ -479,41 +497,111 @@ namespace SelectionTranslator
             // --------------------------------------------------------------
             _ocrTestButton = new Button();
             _ocrTestButton.Text = "测试 OCR";
-            _ocrTestButton.Location = new Point(16, 900);
+            _ocrTestButton.Location = new Point(16, 8);
             _ocrTestButton.Size = new Size(88, 28);
             _ocrTestButton.Click += OnOcrTestClicked;
-            Controls.Add(_ocrTestButton);
+            _footer.Controls.Add(_ocrTestButton);
 
             _testButton = new Button();
             _testButton.Text = "测试翻译";
-            _testButton.Location = new Point(112, 900);
+            _testButton.Location = new Point(112, 8);
             _testButton.Size = new Size(88, 28);
             _testButton.Click += OnTestClicked;
-            Controls.Add(_testButton);
+            _footer.Controls.Add(_testButton);
 
             Button micTestButton = new Button();
             micTestButton.Text = "测试麦克风";
-            micTestButton.Location = new Point(208, 900);
+            micTestButton.Location = new Point(208, 8);
             micTestButton.Size = new Size(94, 28);
             micTestButton.Click += OnMicTestClicked;
-            Controls.Add(micTestButton);
+            _footer.Controls.Add(micTestButton);
 
             Button saveButton = new Button();
             saveButton.Text = "保存";
-            saveButton.Location = new Point(310, 900);
+            saveButton.Location = new Point(310, 8);
             saveButton.Size = new Size(68, 28);
             saveButton.Click += OnSaveClicked;
-            Controls.Add(saveButton);
+            _footer.Controls.Add(saveButton);
 
             Button cancelButton = new Button();
             cancelButton.Text = "取消";
-            cancelButton.Location = new Point(384, 900);
+            cancelButton.Location = new Point(384, 8);
             cancelButton.Size = new Size(64, 28);
             cancelButton.DialogResult = DialogResult.Cancel;
-            Controls.Add(cancelButton);
+            _footer.Controls.Add(cancelButton);
 
             AcceptButton = saveButton;
             CancelButton = cancelButton;
+
+            ApplyDpiScale();
+        }
+
+        /// <summary>
+        /// 按系统 DPI 把所有控件、字体和窗口尺寸统一放大。
+        /// 设置窗口的坐标是写死的 96 DPI 设计值，不做这一步的话，
+        /// 125% / 150% 缩放下右边的输入框和下拉框会被裁掉一截。
+        /// </summary>
+        private void ApplyDpiScale()
+        {
+            float scale = 1f;
+            try
+            {
+                using (Graphics graphics = CreateGraphics())
+                {
+                    scale = graphics.DpiX / 96f;
+                }
+            }
+            catch
+            {
+                scale = 1f;
+            }
+            if (scale < 1f)
+            {
+                scale = 1f;
+            }
+            if (scale > 2.5f)
+            {
+                scale = 2.5f;
+            }
+            if (scale <= 1.01f)
+            {
+                return;
+            }
+
+            ScaleControls(_contentHost, scale);
+            ScaleControls(_footer, scale);
+            _footer.Height = (int)Math.Round(44 * scale);
+
+            int availableHeight =
+                Screen.PrimaryScreen.WorkingArea.Height - 60;
+            ClientSize = new Size(
+                (int)Math.Round(480 * scale),
+                Math.Min(
+                    (int)Math.Round(938 * scale),
+                    Math.Max(560, availableHeight)));
+        }
+
+        private static void ScaleControls(Control parent, float scale)
+        {
+            foreach (Control child in parent.Controls)
+            {
+                // 先缩放子控件，再缩放容器本身；顺序反过来会重复放大。
+                ScaleControls(child, scale);
+                child.Location = new Point(
+                    (int)Math.Round(child.Location.X * scale),
+                    (int)Math.Round(child.Location.Y * scale));
+                child.Size = new Size(
+                    (int)Math.Round(child.Size.Width * scale),
+                    (int)Math.Round(child.Size.Height * scale));
+                if (child.Font != null)
+                {
+                    child.Font = new Font(
+                        child.Font.FontFamily,
+                        child.Font.Size * scale,
+                        child.Font.Style,
+                        child.Font.Unit);
+                }
+            }
         }
 
         private void AddLanguage(string code, string name)
@@ -625,6 +713,7 @@ namespace SelectionTranslator
             // 就把首次运行标记和右键菜单开关重置掉。
             edited.FirstRunDone = Config.FirstRunDone;
             edited.EnableImageShellMenu = Config.EnableImageShellMenu;
+            edited.ShowTaskbarStats = Config.ShowTaskbarStats;
             return edited;
         }
 
