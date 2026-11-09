@@ -1277,8 +1277,13 @@ namespace SelectionTranslator
             }
             try
             {
-                Clipboard.SetImage(new Bitmap(display));
-                SetStatus("图片已复制到剪贴板", false);
+                // 与截图一致：位图 + 可落盘 PNG，桌面 / 文件夹也能粘。
+                using (Bitmap copy = new Bitmap(display))
+                {
+                    ClipboardPasteFiles.WriteBitmap(
+                        copy, ClipboardWriteMode.Auto);
+                }
+                SetStatus("图片已复制，可直接粘贴到桌面", false);
             }
             catch (Exception ex)
             {
