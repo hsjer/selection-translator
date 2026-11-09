@@ -45,6 +45,7 @@ namespace SelectionTranslator
         private readonly ComboBox _voiceMethodBox;
         private readonly CheckBox _voiceAutoCopyBox;
         private readonly CheckBox _clipboardEnableBox;
+        private readonly CheckBox _doubleCtrlBox;
         private readonly ComboBox _clipboardTtlBox;
         private readonly NumericUpDown _clipboardMaxBox;
         private readonly TextBox _hotkeyClipboardField;
@@ -543,13 +544,13 @@ namespace SelectionTranslator
             // --------------------------------------------------------------
             foreach (Control child in _contentHost.Controls)
             {
-                child.Top += 158;
+                child.Top += 190;
             }
 
             GroupBox clipGroup = new GroupBox();
             clipGroup.Text = "剪贴板历史";
             clipGroup.Location = new Point(16, 12);
-            clipGroup.Size = new Size(448, 140);
+            clipGroup.Size = new Size(448, 172);
             _contentHost.Controls.Add(clipGroup);
 
             _clipboardEnableBox = new CheckBox();
@@ -614,12 +615,20 @@ namespace SelectionTranslator
             BindHotkeyField(_hotkeyClipboardField);
             clipGroup.Controls.Add(_hotkeyClipboardField);
 
+            _doubleCtrlBox = new CheckBox();
+            _doubleCtrlBox.Text =
+                "快速连按两下 Ctrl 打开剪贴板历史（左 / 右 Ctrl 均可）";
+            _doubleCtrlBox.AutoSize = true;
+            _doubleCtrlBox.Location = new Point(12, 114);
+            _doubleCtrlBox.Checked = config.EnableDoubleCtrlHotkey;
+            clipGroup.Controls.Add(_doubleCtrlBox);
+
             Label clipHint = new Label();
             clipHint.Text =
                 "历史只存在本机；收藏的条目不受保留时长与条数限制。";
             clipHint.AutoSize = true;
             clipHint.ForeColor = Color.FromArgb(90, 98, 112);
-            clipHint.Location = new Point(12, 116);
+            clipHint.Location = new Point(12, 142);
             clipGroup.Controls.Add(clipHint);
 
             ApplyDpiScale();
@@ -804,6 +813,7 @@ namespace SelectionTranslator
                 (int)_clipboardMaxBox.Value;
             edited.HotkeyClipboardHistory =
                 _hotkeyClipboardField.Text.Trim();
+            edited.EnableDoubleCtrlHotkey = _doubleCtrlBox.Checked;
 
             // 这两项在设置窗口里没有对应控件，别因为点了一次「保存」
             // 就把首次运行标记和右键菜单开关重置掉。

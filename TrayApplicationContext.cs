@@ -77,6 +77,9 @@ namespace SelectionTranslator
         private Task<string> _rightClickClipboardTask;
         private Point _rightClickCapturePoint;
         private SynchronizationContext _uiContext;
+        // RegisterHotKey 不支持只用修饰键，双击 Ctrl 走低级键盘钩子。
+        private DoubleCtrlWatcher _doubleCtrlWatcher;
+        private ToolStripMenuItem _doubleCtrlMenuItem;
 
         public TrayApplicationContext()
         {
@@ -112,6 +115,12 @@ namespace SelectionTranslator
                 if (_statsMenuItem != null && !_statsMenuItem.IsDisposed)
                 {
                     _statsMenuItem.Checked = _config.ShowTaskbarStats;
+                }
+                if (_doubleCtrlMenuItem != null &&
+                    !_doubleCtrlMenuItem.IsDisposed)
+                {
+                    _doubleCtrlMenuItem.Checked =
+                        _config.EnableDoubleCtrlHotkey;
                 }
             };
 
@@ -188,6 +197,14 @@ namespace SelectionTranslator
             _statsMenuItem.Checked = _config.ShowTaskbarStats;
             _statsMenuItem.Click += OnStatsClicked;
             _trayMenu.Items.Add(_statsMenuItem);
+
+            _doubleCtrlMenuItem = new ToolStripMenuItem(
+                "双击 Ctrl 打开剪贴板历史");
+            _doubleCtrlMenuItem.CheckOnClick = true;
+            _doubleCtrlMenuItem.Checked =
+                _config.EnableDoubleCtrlHotkey;
+            _doubleCtrlMenuItem.Click += OnDoubleCtrlMenuClicked;
+            _trayMenu.Items.Add(_doubleCtrlMenuItem);
 
             _closePinsItem = new ToolStripMenuItem("关闭所有桌面贴图");
             _closePinsItem.Enabled = false;
@@ -531,6 +548,11 @@ namespace SelectionTranslator
                     ? "选中监听已启动"
                     : "选中监听启动失败");
             }
+
+            _doubleCtrlWatcher = new DoubleCtrlWatcher(context);
+            _doubleCtrlWatcher.DoubleCtrlPressed +=
+                OnDoubleCtrlPressed;
+            ApplyDoubleCtrlWatcher();
 
             NotifyHotkeyFailures();
             ApplyTaskbarStats();
@@ -1841,7 +1863,14 @@ namespace SelectionTranslator
             {
                 _statsMenuItem.Checked = _config.ShowTaskbarStats;
             }
+            if (_doubleCtrlMenuItem != null &&
+                !_doubleCtrlMenuItem.IsDisposed)
+            {
+                _doubleCtrlMenuItem.Checked =
+                    _config.EnableDoubleCtrlHotkey;
+            }
             ApplyTaskbarStats();
+            ApplyDoubleCtrlWatcher();
 
             if (_translationForm != null && !_translationForm.IsDisposed)
             {
@@ -1866,6 +1895,50 @@ namespace SelectionTranslator
                 Log.Error("保存任务栏状态显示设置失败", ex);
             }
             ApplyTaskbarStats();
+        }
+
+        /// <summary>按配置安装 / 卸载「双击 Ctrl」全局键盘钩子。</summary>
+        private void ApplyDoubleCtrlWatcher()
+        {
+            if (_doubleCtrlWatcher == null)
+            {
+                return;
+            }
+            if (_config.EnableDoubleCtrlHotkey)
+            {
+                _doubleCtrlWatcher.Start();
+                Log.Info(_doubleCtrlWatcher.IsRunning
+                    ? "双击 Ctrl 监听已启动"
+                    : "双击 Ctrl 监听启动失败");
+            }
+            else
+            {
+                _doubleCtrlWatcher.Stop();
+            }
+        }
+
+        private void OnDoubleCtrlPressed(object sender, EventArgs e)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+            ClipboardHistoryForm.ShowHistory();
+        }
+
+        private void OnDoubleCtrlMenuClicked(object sender, EventArgs e)
+        {
+            bool enabled = _doubleCtrlMenuItem.Checked;
+            _config.EnableDoubleCtrlHotkey = enabled;
+            try
+            {
+                ConfigStore.Save(_config);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("保存双击 Ctrl 设置失败", ex);
+            }
+            ApplyDoubleCtrlWatcher();
         }
 
         /// <summary>按配置显示 / 隐藏任务栏状态条。</summary>
@@ -1944,6 +2017,10 @@ namespace SelectionTranslator
             _voicePollTimer.Stop();
             _voiceMenuDelayTimer.Stop();
             Application.Idle -= OnFirstIdle;
+            if (_doubleCtrlWatcher != null)
+            {
+                _doubleCtrlWatcher.Stop();
+            }
 
             if (_recorder != null)
             {
@@ -2029,6 +2106,12 @@ namespace SelectionTranslator
                 {
                     _selectionMonitor.Dispose();
                     _selectionMonitor = null;
+                }
+
+                if (_doubleCtrlWatcher != null)
+                {
+                    _doubleCtrlWatcher.Dispose();
+                    _doubleCtrlWatcher = null;
                 }
 
                 if (_statsForm != null)

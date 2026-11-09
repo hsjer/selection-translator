@@ -52,6 +52,12 @@ namespace SelectionTranslator
                 return;
             }
 
+            if (Array.IndexOf(args, "--ctrlapprobe") >= 0)
+            {
+                SelfTest.RunDoubleCtrlProbe();
+                return;
+            }
+
             if (Array.IndexOf(args, "--hoverprobe") >= 0)
             {
                 SelfTest.RunHoverProbe();

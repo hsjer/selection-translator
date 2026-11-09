@@ -6,6 +6,7 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.Reflection;
 using System.Text;
+using System.Threading;
 using System.Windows.Forms;
 
 namespace SelectionTranslator
@@ -147,6 +148,76 @@ namespace SelectionTranslator
                     HotkeyParser.TryCompose(
                         0, Keys.ControlKey, out composed).ToString(),
                     "False");
+
+                // 双击 Ctrl：状态机不碰 Win32，直接喂按键序列。
+                DoubleCtrlDetector dctrl = new DoubleCtrlDetector();
+                dctrl.OnCtrlDown(1000);
+                bool dcFirst = dctrl.OnCtrlUp(1050);
+                dctrl.OnCtrlDown(1200);
+                bool dcSecond = dctrl.OnCtrlUp(1250);
+                Check(output, ref ok, "double ctrl fires",
+                    dcFirst + "/" + dcSecond, "False/True");
+
+                dctrl.Reset();
+                dctrl.OnCtrlDown(1000);
+                dctrl.OnCtrlUp(1050);
+                dctrl.OnCtrlDown(1600);
+                Check(output, ref ok, "double ctrl too slow",
+                    dctrl.OnCtrlUp(1650).ToString(), "False");
+
+                dctrl.Reset();
+                dctrl.OnCtrlDown(1000);
+                dctrl.OnCtrlUp(1050);
+                dctrl.OnOtherKeyDown();
+                dctrl.OnCtrlDown(1200);
+                Check(output, ref ok, "double ctrl other key cancels",
+                    dctrl.OnCtrlUp(1250).ToString(), "False");
+
+                dctrl.Reset();
+                dctrl.OnCtrlDown(1000);
+                dctrl.OnCtrlUp(1400);
+                dctrl.OnCtrlDown(1450);
+                Check(output, ref ok, "double ctrl long hold cancels",
+                    dctrl.OnCtrlUp(1500).ToString(), "False");
+
+                dctrl.Reset();
+                dctrl.OnCtrlDown(1000);
+                dctrl.OnCtrlDown(1010); // 自动重复不该算第二次
+                dctrl.OnCtrlUp(1050);
+                dctrl.OnCtrlDown(1200);
+                Check(output, ref ok, "double ctrl ignores auto repeat",
+                    dctrl.OnCtrlUp(1250).ToString(), "True");
+
+                dctrl.Reset();
+                dctrl.OnCtrlDown(1000);
+                dctrl.OnCtrlUp(1050);
+                dctrl.OnCtrlDown(1200);
+                bool dc3 = dctrl.OnCtrlUp(1250);
+                dctrl.OnCtrlDown(1400);
+                bool dc4 = dctrl.OnCtrlUp(1450);
+                Check(output, ref ok, "double ctrl triple tap once",
+                    dc3 + "/" + dc4, "True/False");
+
+                Check(output, ref ok, "double ctrl left right keycodes",
+                    (DoubleCtrlDetector.IsCtrlKey(0x11) &&
+                        DoubleCtrlDetector.IsCtrlKey(0xA2) &&
+                        DoubleCtrlDetector.IsCtrlKey(0xA3) &&
+                        !DoubleCtrlDetector.IsCtrlKey(0x41)).ToString(),
+                    "True");
+                Check(output, ref ok, "double ctrl injected flags",
+                    DoubleCtrlDetector.IsInjected(0x10) + "/" +
+                    DoubleCtrlDetector.IsInjected(0x02) + "/" +
+                    DoubleCtrlDetector.IsInjected(0),
+                    "True/True/False");
+                Check(output, ref ok, "double ctrl default enabled",
+                    new AppConfig().EnableDoubleCtrlHotkey.ToString(),
+                    "True");
+                Check(output, ref ok, "double ctrl config migration",
+                    ConfigStore.HasDoubleCtrlSetting(
+                        "{\"EnableDoubleCtrlHotkey\":false}") + "/" +
+                    ConfigStore.HasDoubleCtrlSetting(
+                        "{\"ShowTaskbarStats\":true}"),
+                    "True/False");
 
                 // 任务栏状态条：格式化、CPU 差值、贴托盘区定位。
                 Check(output, ref ok, "stats speed bytes",
@@ -725,6 +796,91 @@ namespace SelectionTranslator
                     cbReloaded.Items.Count + "/" +
                     cbReloaded.Items[0].Text,
                     "1/Hello 工具侠 剪贴板");
+
+                // 图片能粘贴到桌面：额外挂一份 CF_HDROP 文件列表。
+                DateTime pasteTime =
+                    new DateTime(2026, 11, 9, 15, 3, 12, 123);
+                Check(output, ref ok, "paste file name image",
+                    ClipboardPasteFiles.FileNameFor(
+                        (int)ClipboardItemKind.Image, pasteTime),
+                    "图片-20261109-150312-123.png");
+                Check(output, ref ok, "paste file name text",
+                    ClipboardPasteFiles.FileNameFor(
+                        (int)ClipboardItemKind.Text, pasteTime),
+                    "文本-20261109-150312-123.txt");
+                Check(output, ref ok, "paste mode auto",
+                    ClipboardPasteFiles.IncludeImage(
+                        ClipboardWriteMode.Auto) + "/" +
+                    ClipboardPasteFiles.IncludeFile(
+                        ClipboardWriteMode.Auto),
+                    "True/True");
+                Check(output, ref ok, "paste mode image only",
+                    ClipboardPasteFiles.IncludeImage(
+                        ClipboardWriteMode.ImageOnly) + "/" +
+                    ClipboardPasteFiles.IncludeFile(
+                        ClipboardWriteMode.ImageOnly),
+                    "True/False");
+                Check(output, ref ok, "paste mode file only",
+                    ClipboardPasteFiles.IncludeImage(
+                        ClipboardWriteMode.FileOnly) + "/" +
+                    ClipboardPasteFiles.IncludeFile(
+                        ClipboardWriteMode.FileOnly),
+                    "False/True");
+                Check(output, ref ok, "paste cleanup boundary",
+                    ClipboardPasteFiles.IsExpired(
+                        pasteTime, pasteTime.AddHours(1)) + "/" +
+                    ClipboardPasteFiles.IsExpired(
+                        pasteTime, pasteTime.AddHours(3)),
+                    "False/True");
+
+                string pasteSource = Path.Combine(
+                    ConfigStore.DataDirectory,
+                    "paste-selftest-" +
+                    Guid.NewGuid().ToString("N").Substring(0, 8) +
+                    ".png");
+                using (Bitmap pasteBitmap = new Bitmap(9, 7))
+                {
+                    using (Graphics pasteGraphics =
+                        Graphics.FromImage(pasteBitmap))
+                    {
+                        pasteGraphics.Clear(Color.Blue);
+                    }
+                    pasteBitmap.Save(pasteSource, ImageFormat.Png);
+                }
+                string imagePastePath = ClipboardPasteFiles.PrepareImage(
+                    pasteSource, DateTime.Now);
+                Check(output, ref ok, "paste image file prepared",
+                    (imagePastePath.Length > 0 &&
+                        File.Exists(imagePastePath) &&
+                        Path.GetExtension(imagePastePath) == ".png")
+                        .ToString(), "True");
+                string textPastePath = ClipboardPasteFiles.PrepareText(
+                    "桌面粘贴测试", DateTime.Now);
+                Check(output, ref ok, "paste text file prepared",
+                    (textPastePath.Length > 0 &&
+                        File.Exists(textPastePath) &&
+                        File.ReadAllText(textPastePath) == "桌面粘贴测试")
+                        .ToString(), "True");
+                try
+                {
+                    if (imagePastePath.Length > 0 &&
+                        File.Exists(imagePastePath))
+                    {
+                        File.Delete(imagePastePath);
+                    }
+                    if (textPastePath.Length > 0 &&
+                        File.Exists(textPastePath))
+                    {
+                        File.Delete(textPastePath);
+                    }
+                    if (File.Exists(pasteSource))
+                    {
+                        File.Delete(pasteSource);
+                    }
+                }
+                catch
+                {
+                }
                 try
                 {
                     System.IO.File.Delete(cbPath);
@@ -3167,6 +3323,8 @@ namespace SelectionTranslator
             string tempDir = Path.Combine(
                 ConfigStore.DataDirectory, "clipboard-probe-images");
             string tempImage = Path.Combine(tempDir, "probe.png");
+            string pastePath = "";
+            string textFilePath = "";
             ClipboardListener listener = null;
             try
             {
@@ -3292,6 +3450,89 @@ namespace SelectionTranslator
                         (wroteImage && Clipboard.ContainsImage())
                             .ToString(), "True");
 
+                    // 桌面 / 资源管理器只认 CF_HDROP，Auto 模式必须同时
+                    // 挂一份真实存在的 PNG 文件路径。
+                    bool hasDrop = Clipboard.ContainsFileDropList();
+                    Check(output, ref ok,
+                        "probe image back has file drop",
+                        (wroteImage && hasDrop).ToString(), "True");
+                    pastePath = "";
+                    if (hasDrop)
+                    {
+                        System.Collections.Specialized.StringCollection
+                            dropped = Clipboard.GetFileDropList();
+                        if (dropped.Count > 0)
+                        {
+                            pastePath = dropped[0];
+                        }
+                    }
+                    Check(output, ref ok,
+                        "probe paste image file exists",
+                        (pastePath.Length > 0 &&
+                            File.Exists(pastePath) &&
+                            Path.GetExtension(pastePath) == ".png")
+                            .ToString(), "True");
+                    bool pngHeader = false;
+                    try
+                    {
+                        if (pastePath.Length > 0 &&
+                            File.Exists(pastePath))
+                        {
+                            byte[] head = File.ReadAllBytes(pastePath);
+                            pngHeader = head.Length > 8 &&
+                                head[0] == 0x89 && head[1] == 0x50 &&
+                                head[2] == 0x4E && head[3] == 0x47;
+                        }
+                    }
+                    catch
+                    {
+                    }
+                    Check(output, ref ok, "probe paste image is png",
+                        pngHeader.ToString(), "True");
+
+                    // 「复制为文件」：只有文件列表，没有位图。
+                    ClipboardManager.WriteToClipboard(
+                        store, imageItem, ClipboardWriteMode.FileOnly);
+                    Check(output, ref ok, "probe file only mode",
+                        (Clipboard.ContainsFileDropList() &&
+                            !Clipboard.ContainsImage()).ToString(),
+                        "True");
+
+                    // 「复制为纯图片」：只有位图，没有文件列表。
+                    ClipboardManager.WriteToClipboard(
+                        store, imageItem, ClipboardWriteMode.ImageOnly);
+                    Check(output, ref ok, "probe image only mode",
+                        (Clipboard.ContainsImage() &&
+                            !Clipboard.ContainsFileDropList()).ToString(),
+                        "True");
+
+                    // 文本也能「复制为文件」，在桌面粘贴成 .txt。
+                    ClipboardManager.WriteToClipboard(
+                        store, textItem, ClipboardWriteMode.FileOnly);
+                    textFilePath = "";
+                    if (Clipboard.ContainsFileDropList())
+                    {
+                        System.Collections.Specialized.StringCollection
+                            droppedText = Clipboard.GetFileDropList();
+                        if (droppedText.Count > 0)
+                        {
+                            textFilePath = droppedText[0];
+                        }
+                    }
+                    bool textFileOk = false;
+                    try
+                    {
+                        textFileOk = textFilePath.Length > 0 &&
+                            File.Exists(textFilePath) &&
+                            File.ReadAllText(textFilePath) ==
+                                "工具侠写回测试";
+                    }
+                    catch
+                    {
+                    }
+                    Check(output, ref ok, "probe text as file",
+                        textFileOk.ToString(), "True");
+
                     // TTL 清理
                     ClipboardItem oldItem = new ClipboardItem();
                     oldItem.Kind = (int)ClipboardItemKind.Text;
@@ -3342,6 +3583,16 @@ namespace SelectionTranslator
                     {
                         File.Delete(tempImage);
                     }
+                    if (pastePath.Length > 0 &&
+                        File.Exists(pastePath))
+                    {
+                        File.Delete(pastePath);
+                    }
+                    if (textFilePath.Length > 0 &&
+                        File.Exists(textFilePath))
+                    {
+                        File.Delete(textFilePath);
+                    }
                     if (Directory.Exists(tempDir) &&
                         Directory.GetFileSystemEntries(
                             tempDir).Length == 0)
@@ -3360,6 +3611,151 @@ namespace SelectionTranslator
                     output.ToString(), Encoding.UTF8);
                 Environment.ExitCode = ok ? 0 : 1;
             }
+        }
+
+        /// <summary>
+        /// 双击 Ctrl 端到端探针：真的安装 WH_KEYBOARD_LL，再用 SendInput
+        /// 造两下 Ctrl，验证钩子 → 状态机 → UI 线程事件整条链路。
+        /// 输出 ctrlapprobe.txt。
+        /// </summary>
+        public static void RunDoubleCtrlProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            DoubleCtrlWatcher watcher = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                // 创建控件句柄后 WinForms 才会安装同步上下文，
+                // 钩子里 Post 回来的事件才有人处理。
+                using (Form host = new Form())
+                {
+                    IntPtr handle = host.Handle;
+                    output.AppendLine("hostHandle=" + handle);
+                    SynchronizationContext context =
+                        SynchronizationContext.Current;
+                    if (context == null)
+                    {
+                        context = new WindowsFormsSynchronizationContext();
+                    }
+                    int fired = 0;
+                    watcher = new DoubleCtrlWatcher(context);
+                    watcher.DoubleCtrlPressed += delegate { fired++; };
+                    // 探针自己是「程序」，注入的按键默认会被忽略，
+                    // 这里临时放行以便模拟物理按键。
+                    watcher.IgnoreInjectedKeys = false;
+                    watcher.Start();
+                    output.AppendLine("hookInstalled=" +
+                        watcher.IsRunning);
+                    if (!watcher.IsRunning)
+                    {
+                        output.AppendLine(
+                            "SKIP: 当前会话无法安装全局键盘钩子");
+                    }
+                    else
+                    {
+                        PumpMessages(120);
+                        TapCtrl();
+                        TapCtrl();
+                        PumpMessages(500);
+                        output.AppendLine("firedAfterDouble=" + fired);
+                        Check(output, ref ok,
+                            "probe double ctrl fires",
+                            fired.ToString(), "1");
+
+                        // 中间夹了别的键（Ctrl+X 这类）不该触发：
+                        // 第一次 Ctrl 被其它键打断，第二次 Ctrl 只是新一轮
+                        // 的第一次轻点，合起来不能算双击。
+                        int baseline = fired;
+                        ProbeKey(NativeMethods.VK_CONTROL, false);
+                        ProbeKey(0x87, false); // VK_F24，无副作用的占位键
+                        ProbeKey(0x87, true);
+                        ProbeKey(NativeMethods.VK_CONTROL, true);
+                        TapCtrl();
+                        PumpMessages(500);
+                        output.AppendLine("firedAfterOtherKey=" + fired);
+                        Check(output, ref ok,
+                            "probe double ctrl ignores other key",
+                            fired.ToString(), baseline.ToString());
+
+                        // 恢复默认的「忽略注入按键」，防止本工具模拟
+                        // 粘贴 / 上屏时自己触发自己。
+                        baseline = fired;
+                        watcher.IgnoreInjectedKeys = true;
+                        TapCtrl();
+                        TapCtrl();
+                        PumpMessages(500);
+                        output.AppendLine("firedAfterInjected=" + fired);
+                        Check(output, ref ok,
+                            "probe double ctrl ignores injected",
+                            fired.ToString(), baseline.ToString());
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                // 万一探针中途异常，别把 Ctrl 留在「按下」状态。
+                ProbeKey(NativeMethods.VK_CONTROL, true);
+                if (watcher != null)
+                {
+                    watcher.Dispose();
+                }
+                output.AppendLine(ok ? "RESULT: OK" : "RESULT: FAILED");
+                try
+                {
+                    Directory.CreateDirectory(
+                        ConfigStore.DataDirectory);
+                    File.WriteAllText(
+                        Path.Combine(
+                            ConfigStore.DataDirectory,
+                            "ctrlapprobe.txt"),
+                        output.ToString(), Encoding.UTF8);
+                }
+                catch
+                {
+                }
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        private static void PumpMessages(int milliseconds)
+        {
+            DateTime deadline =
+                DateTime.UtcNow.AddMilliseconds(milliseconds);
+            while (DateTime.UtcNow < deadline)
+            {
+                Application.DoEvents();
+                System.Threading.Thread.Sleep(15);
+            }
+        }
+
+        private static void TapCtrl()
+        {
+            ProbeKey(NativeMethods.VK_CONTROL, false);
+            System.Threading.Thread.Sleep(25);
+            ProbeKey(NativeMethods.VK_CONTROL, true);
+            System.Threading.Thread.Sleep(45);
+        }
+
+        private static void ProbeKey(int virtualKey, bool up)
+        {
+            NativeMethods.INPUT input = new NativeMethods.INPUT();
+            input.type = NativeMethods.INPUT_KEYBOARD;
+            input.U.ki.wVk = (ushort)virtualKey;
+            input.U.ki.dwFlags = up
+                ? NativeMethods.KEYEVENTF_KEYUP : 0;
+            NativeMethods.INPUT[] inputs =
+                new NativeMethods.INPUT[] { input };
+            NativeMethods.SendInput(
+                1,
+                inputs,
+                System.Runtime.InteropServices.Marshal.SizeOf(
+                    typeof(NativeMethods.INPUT)));
         }
     }
 }

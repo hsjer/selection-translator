@@ -61,6 +61,8 @@ namespace SelectionTranslator
         public int ClipboardMaxItems { get; set; }
         /// <summary>打开剪贴板历史窗口的全局快捷键。</summary>
         public string HotkeyClipboardHistory { get; set; }
+        /// <summary>快速连按两下 Ctrl 打开剪贴板历史（低级键盘钩子）。</summary>
+        public bool EnableDoubleCtrlHotkey { get; set; }
 
         /// <summary>
         /// 首次运行初始化（开机启动 / 右键菜单 / 打开方式）是否已经跑过。
@@ -98,6 +100,7 @@ namespace SelectionTranslator
             ClipboardTtlHours = ClipboardLogic.DefaultTtlHours;
             ClipboardMaxItems = ClipboardLogic.DefaultMaxItems;
             HotkeyClipboardHistory = "Ctrl+Alt+C";
+            EnableDoubleCtrlHotkey = true;
             FirstRunDone = false;
         }
 
@@ -272,6 +275,13 @@ namespace SelectionTranslator
                     config.HotkeyClipboardHistory = "Ctrl+Alt+C";
                 }
 
+                // 双击 Ctrl 也是后加的：老配置里没这个字段时默认开启，
+                // 用户关过就原样保留（哪怕值为 false）。
+                if (!HasDoubleCtrlSetting(json))
+                {
+                    config.EnableDoubleCtrlHotkey = true;
+                }
+
                 // 老用户已经有自己的开关状态，别把人家的设置改掉。
                 // 只有「完全没有 FirstRunDone 字段」才当成老配置跳过；
                 // 全新安装（config.json 不存在）在上面已经返回了 false。
@@ -349,6 +359,15 @@ namespace SelectionTranslator
             return json != null &&
                 json.IndexOf(
                     "\"EnableClipboardHistory\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        /// <summary>供自检验证老配置迁移逻辑。</summary>
+        public static bool HasDoubleCtrlSetting(string json)
+        {
+            return json != null &&
+                json.IndexOf(
+                    "\"EnableDoubleCtrlHotkey\"",
                     StringComparison.OrdinalIgnoreCase) >= 0;
         }
 

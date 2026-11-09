@@ -434,74 +434,40 @@ namespace SelectionTranslator
         /// <summary>双击历史条目时把内容原样写回系统剪贴板。</summary>
         public bool CopyToClipboard(ClipboardItem item)
         {
+            return CopyToClipboard(item, ClipboardWriteMode.Auto);
+        }
+
+        public bool CopyToClipboard(
+            ClipboardItem item, ClipboardWriteMode mode)
+        {
             if (item == null)
             {
                 return false;
             }
             // 自己写进去的这条不应再被记录成一条新历史。
-            int kind = item.Kind;
-            _suppressKind = kind;
+            _suppressKind = item.Kind;
             _suppressUntilUtc = DateTime.UtcNow.AddSeconds(1.5);
-            return WriteToClipboard(_store, item);
+            return WriteToClipboard(_store, item, mode);
         }
 
         /// <summary>纯写回逻辑，抽出来供自检 / 探针直接调用。</summary>
         public static bool WriteToClipboard(
             ClipboardStore store, ClipboardItem item)
         {
-            if (store == null || item == null)
-            {
-                return false;
-            }
-            try
-            {
-                Clipboard.Clear();
-                if (item.Kind == (int)ClipboardItemKind.Image)
-                {
-                    string path = store.ImageFullPath(item.ImageFile);
-                    if (!File.Exists(path))
-                    {
-                        return false;
-                    }
-                    using (Image image = Image.FromFile(path))
-                    using (Bitmap copy = new Bitmap(image))
-                    {
-                        Clipboard.SetImage(copy);
-                    }
-                }
-                else if (item.Kind == (int)ClipboardItemKind.File)
-                {
-                    StringCollection collection =
-                        new StringCollection();
-                    if (item.Files != null)
-                    {
-                        for (int i = 0; i < item.Files.Length; i++)
-                        {
-                            if (File.Exists(item.Files[i]) ||
-                                Directory.Exists(item.Files[i]))
-                            {
-                                collection.Add(item.Files[i]);
-                            }
-                        }
-                    }
-                    if (collection.Count == 0)
-                    {
-                        return false;
-                    }
-                    Clipboard.SetFileDropList(collection);
-                }
-                else
-                {
-                    Clipboard.SetText(
-                        item.Text ?? "", TextDataFormat.UnicodeText);
-                }
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Log.Error("写回剪贴板失败", ex);
-                return false;
-            }
+            return WriteToClipboard(
+                store, item, ClipboardWriteMode.Auto);
+        }
+
+        /// <summary>
+        /// mode=Auto 时图片会同时带上「位图」和「文件列表」两种格式，
+        /// 因此桌面 / 资源管理器也能直接粘贴成 PNG 文件。
+        /// </summary>
+        public static bool WriteToClipboard(
+            ClipboardStore store,
+            ClipboardItem item,
+            ClipboardWriteMode mode)
+        {
+            return ClipboardPasteFiles.Write(store, item, mode);
         }
 
         public void SetFavorite(ClipboardItem item, bool favorite)

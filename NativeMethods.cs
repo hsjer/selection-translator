@@ -7,6 +7,7 @@ namespace SelectionTranslator
     internal static class NativeMethods
     {
         public const int WH_MOUSE_LL = 14;
+        public const int WH_KEYBOARD_LL = 13;
         public const int WM_RBUTTONDOWN = 0x0204;
         public const int WM_RBUTTONUP = 0x0205;
         public const int WM_LBUTTONDOWN = 0x0201;
@@ -15,7 +16,12 @@ namespace SelectionTranslator
         public const uint WM_CANCELMODE = 0x001F;
         public const uint WM_KEYDOWN = 0x0100;
         public const uint WM_KEYUP = 0x0101;
+        public const uint WM_SYSKEYDOWN = 0x0104;
+        public const uint WM_SYSKEYUP = 0x0105;
         public const int VK_ESCAPE = 0x1B;
+        /// <summary>KBDLLHOOKSTRUCT.flags：程序注入的按键。</summary>
+        public const uint LLKHF_INJECTED = 0x10;
+        public const uint LLKHF_LOWER_IL_INJECTED = 0x02;
 
         public const int MOD_ALT = 0x0001;
         public const int MOD_CONTROL = 0x0002;
@@ -32,6 +38,8 @@ namespace SelectionTranslator
         public const int VK_MENU = 0x12;
         public const int VK_C = 0x43;
         public const int VK_V = 0x56;
+        public const int VK_LCONTROL = 0xA2;
+        public const int VK_RCONTROL = 0xA3;
 
         public const int INPUT_KEYBOARD = 1;
         public const uint KEYEVENTF_KEYUP = 0x0002;
@@ -61,6 +69,17 @@ namespace SelectionTranslator
         {
             public POINT pt;
             public uint mouseData;
+            public uint flags;
+            public uint time;
+            public IntPtr dwExtraInfo;
+        }
+
+        /// <summary>WH_KEYBOARD_LL 回调的 lParam。</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        public struct KBDLLHOOKSTRUCT
+        {
+            public uint vkCode;
+            public uint scanCode;
             public uint flags;
             public uint time;
             public IntPtr dwExtraInfo;
@@ -147,10 +166,28 @@ namespace SelectionTranslator
             IntPtr wParam,
             IntPtr lParam);
 
+        public delegate IntPtr LowLevelKeyboardProc(
+            int nCode,
+            IntPtr wParam,
+            IntPtr lParam);
+
         [DllImport("user32.dll", SetLastError = true)]
         public static extern IntPtr SetWindowsHookEx(
             int idHook,
             LowLevelMouseProc lpfn,
+            IntPtr hMod,
+            uint dwThreadId);
+
+        // 同一个 API 再导出一份键盘回调签名；WH_KEYBOARD_LL 的回调
+        // 在线程级钩子里执行，必须和鼠标钩子分开声明委托类型。
+        [DllImport(
+            "user32.dll",
+            EntryPoint = "SetWindowsHookExW",
+            CharSet = CharSet.Unicode,
+            SetLastError = true)]
+        public static extern IntPtr SetWindowsHookExKeyboard(
+            int idHook,
+            LowLevelKeyboardProc lpfn,
             IntPtr hMod,
             uint dwThreadId);
 

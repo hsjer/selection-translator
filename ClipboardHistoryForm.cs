@@ -385,15 +385,28 @@ namespace SelectionTranslator
 
         private void CopySelected()
         {
+            CopySelected(ClipboardWriteMode.Auto);
+        }
+
+        private void CopySelected(ClipboardWriteMode mode)
+        {
             ClipboardItem item = _list.SelectedItem;
             if (item == null)
             {
                 return;
             }
-            if (_manager.CopyToClipboard(item))
+            if (_manager.CopyToClipboard(item, mode))
             {
+                string suffix =
+                    mode == ClipboardWriteMode.FileOnly
+                        ? "（已复制为文件，可在桌面 / 文件夹里粘贴）"
+                        : (mode == ClipboardWriteMode.ImageOnly
+                            ? "（仅图片）"
+                            : (item.Kind == (int)ClipboardItemKind.Image
+                                ? "（图片 + 文件，可粘贴到桌面）"
+                                : ""));
                 SetStatus("已复制到剪贴板：" +
-                    ClipboardLogic.Preview(item, 32));
+                    ClipboardLogic.Preview(item, 32) + suffix);
             }
             else
             {
@@ -454,6 +467,27 @@ namespace SelectionTranslator
                 CopySelected();
             };
             _itemMenu.Items.Add(copy);
+
+            ToolStripMenuItem copyFile = new ToolStripMenuItem(
+                "复制为文件（可粘贴到桌面）");
+            copyFile.Click += delegate
+            {
+                _list.SelectItem(item);
+                CopySelected(ClipboardWriteMode.FileOnly);
+            };
+            _itemMenu.Items.Add(copyFile);
+
+            if (item.Kind == (int)ClipboardItemKind.Image)
+            {
+                ToolStripMenuItem copyImage =
+                    new ToolStripMenuItem("复制为纯图片");
+                copyImage.Click += delegate
+                {
+                    _list.SelectItem(item);
+                    CopySelected(ClipboardWriteMode.ImageOnly);
+                };
+                _itemMenu.Items.Add(copyImage);
+            }
 
             ToolStripMenuItem favorite =
                 new ToolStripMenuItem(
@@ -671,7 +705,7 @@ namespace SelectionTranslator
 
             string footer = _status.Length > 0
                 ? _status
-                : "双击复制 · Enter 复制 · Delete 删除 · 保留 " +
+                : "双击复制 · 右键复制为文件 · Delete 删除 · 保留 " +
                     ClipboardLogic.TtlLabel(_manager.TtlHours) +
                     (_manager.Enabled ? "" : " · 已暂停记录");
             DarkUi.Text2(g, footer, DarkUi.FontSmall,
@@ -1216,7 +1250,7 @@ namespace SelectionTranslator
                     new Rectangle(infoLeft, body.Top + 8,
                         Math.Max(60, right - infoLeft), 24),
                     DarkUi.LeftMiddleClip);
-                DarkUi.Text2(g, "双击复制图片",
+                DarkUi.Text2(g, "双击复制 · 可粘贴到桌面",
                     DarkUi.FontTiny, DarkUi.TextFaint,
                     new Rectangle(infoLeft, body.Top + 38,
                         Math.Max(60, right - infoLeft), 22),
