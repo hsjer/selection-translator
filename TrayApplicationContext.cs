@@ -1441,8 +1441,8 @@ namespace SelectionTranslator
                 return;
             }
 
-            // 「对号」：浮层在 Finish() 里已经 Clipboard.SetImage，
-            // 这里只回收位图并给一次轻提示，绝不再弹任何窗口。
+            // 「对号」：浮层在 Finish() 里已经写好剪贴板（位图 + 可落盘
+            // 文件），这里只回收位图并给一次轻提示，绝不再弹任何窗口。
             if (action == ScreenshotCaptureForm.CaptureResult.Copy)
             {
                 image.Dispose();
@@ -1458,7 +1458,7 @@ namespace SelectionTranslator
                     _trayIcon.ShowBalloonTip(
                         1200,
                         "截图",
-                        "截图已复制到剪贴板",
+                        "截图已复制，可直接粘贴到桌面或聊天框",
                         ToolTipIcon.Info);
                 }
                 return;

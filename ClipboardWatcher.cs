@@ -293,10 +293,19 @@ namespace SelectionTranslator
             }
             if (files != null && files.Length > 0)
             {
-                item = BuildFileItem(files);
-                if (item != null)
+                // 我们自己写回的「位图 + 临时 png」会同时出现文件列表，
+                // 那种情况是「复制了一张图」，不能记成两小时后失效的文件条目。
+                if (ClipboardPasteFiles.IsOnlyPasteTemp(files))
                 {
-                    return item;
+                    files = null;
+                }
+                else
+                {
+                    item = BuildFileItem(files);
+                    if (item != null)
+                    {
+                        return item;
+                    }
                 }
             }
 

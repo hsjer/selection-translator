@@ -542,8 +542,9 @@ namespace SelectionTranslator
             }
             try
             {
-                Clipboard.SetImage(_canvas.Image);
-                _canvas.ShowToast("图片已复制到剪贴板");
+                ClipboardPasteFiles.WriteBitmap(
+                    _canvas.Image, ClipboardWriteMode.Auto);
+                _canvas.ShowToast("图片已复制，可直接粘贴到桌面");
             }
             catch (Exception ex)
             {

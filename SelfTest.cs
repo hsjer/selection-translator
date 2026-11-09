@@ -854,6 +854,20 @@ namespace SelectionTranslator
                         File.Exists(imagePastePath) &&
                         Path.GetExtension(imagePastePath) == ".png")
                         .ToString(), "True");
+                // 截图复制后剪贴板同时有位图和文件，采样时要能认出
+                // 「这是临时落盘的那份」，从而记成图片而不是文件。
+                Check(output, ref ok, "paste temp path detected",
+                    ClipboardPasteFiles.IsPasteTemp(imagePastePath) + "/" +
+                    ClipboardPasteFiles.IsPasteTemp(pasteSource) + "/" +
+                    ClipboardPasteFiles.IsPasteTemp(""),
+                    "True/False/False");
+                Check(output, ref ok, "paste temp list only",
+                    ClipboardPasteFiles.IsOnlyPasteTemp(
+                        new string[] { imagePastePath }) + "/" +
+                    ClipboardPasteFiles.IsOnlyPasteTemp(
+                        new string[] { imagePastePath, pasteSource }) + "/" +
+                    ClipboardPasteFiles.IsOnlyPasteTemp(null),
+                    "True/False/False");
                 string textPastePath = ClipboardPasteFiles.PrepareText(
                     "桌面粘贴测试", DateTime.Now);
                 Check(output, ref ok, "paste text file prepared",
@@ -3505,6 +3519,55 @@ namespace SelectionTranslator
                         (Clipboard.ContainsImage() &&
                             !Clipboard.ContainsFileDropList()).ToString(),
                         "True");
+
+                    // 截图 / 贴图路径：直接写内存位图，必须同样是
+                    // 「位图 + 可落盘文件」，否则桌面上仍粘不出来。
+                    using (Bitmap shotBitmap = new Bitmap(10, 6))
+                    {
+                        using (Graphics shotGraphics =
+                            Graphics.FromImage(shotBitmap))
+                        {
+                            shotGraphics.Clear(Color.DarkGreen);
+                        }
+                        bool wroteShot = ClipboardPasteFiles.WriteBitmap(
+                            shotBitmap, ClipboardWriteMode.Auto);
+                        string shotPath = "";
+                        if (Clipboard.ContainsFileDropList())
+                        {
+                            System.Collections.Specialized.StringCollection
+                                droppedShot = Clipboard.GetFileDropList();
+                            if (droppedShot.Count > 0)
+                            {
+                                shotPath = droppedShot[0];
+                            }
+                        }
+                        Check(output, ref ok,
+                            "probe bitmap paste has image and file",
+                            (wroteShot && Clipboard.ContainsImage() &&
+                                shotPath.Length > 0).ToString(), "True");
+                        Check(output, ref ok,
+                            "probe bitmap paste file in temp dir",
+                            (ClipboardPasteFiles.IsPasteTemp(shotPath) &&
+                                File.Exists(shotPath)).ToString(), "True");
+                        // 采样历史不能把这条记成两小时后失效的文件条目。
+                        Check(output, ref ok,
+                            "probe bitmap paste file is temp only",
+                            ClipboardPasteFiles.IsOnlyPasteTemp(
+                                new string[] { shotPath }) + "/" +
+                            ClipboardPasteFiles.IsOnlyPasteTemp(
+                                new string[] { shotPath, tempImage }),
+                            "True/False");
+                        try
+                        {
+                            if (File.Exists(shotPath))
+                            {
+                                File.Delete(shotPath);
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
 
                     // 文本也能「复制为文件」，在桌面粘贴成 .txt。
                     ClipboardManager.WriteToClipboard(

@@ -90,6 +90,49 @@ namespace SelectionTranslator
             return path;
         }
 
+        /// <summary>
+        /// 判断某个路径是不是我们为「粘贴成文件」临时落盘的那一份。
+        /// 截图复制时剪贴板同时有位图和文件列表，采样历史要靠它区分
+        /// 「复制了一张图」和「复制了一个 png 文件」。
+        /// </summary>
+        public static bool IsPasteTemp(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+            {
+                return false;
+            }
+            try
+            {
+                string directory = Path.GetFullPath(PasteDirectory)
+                    .TrimEnd(Path.DirectorySeparatorChar);
+                string full = Path.GetFullPath(path);
+                return full.StartsWith(
+                    directory + Path.DirectorySeparatorChar,
+                    StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>纯函数：文件列表是否全部来自粘贴临时目录。</summary>
+        public static bool IsOnlyPasteTemp(string[] files)
+        {
+            if (files == null || files.Length == 0)
+            {
+                return false;
+            }
+            for (int i = 0; i < files.Length; i++)
+            {
+                if (!IsPasteTemp(files[i]))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         /// <summary>纯函数，供自检验证清理边界。</summary>
         public static bool IsExpired(DateTime lastWrite, DateTime now)
         {
@@ -136,6 +179,63 @@ namespace SelectionTranslator
                 Log.Error("清理剪贴板粘贴临时文件失败", ex);
             }
             return removed;
+        }
+
+        /// <summary>
+        /// 直接写一张内存位图（截图 / 贴图 / 查看器里的「复制」走这里）。
+        /// 除了 CF_DIB 位图，还额外落一份 PNG 并挂上文件列表，
+        /// 这样在桌面或文件夹里 Ctrl+V 会得到一个真实文件。
+        /// </summary>
+        public static bool WriteBitmap(Image image, ClipboardWriteMode mode)
+        {
+            if (image == null)
+            {
+                return false;
+            }
+            try
+            {
+                DataObject data = new DataObject();
+                if (IncludeImage(mode))
+                {
+                    data.SetImage(image);
+                }
+                if (IncludeFile(mode))
+                {
+                    string directory = PasteDirectory;
+                    Directory.CreateDirectory(directory);
+                    DateTime now = DateTime.Now;
+                    string path = Path.Combine(
+                        directory,
+                        FileNameFor((int)ClipboardItemKind.Image, now));
+                    image.Save(path, ImageFormat.Png);
+                    StringCollection collection = new StringCollection();
+                    collection.Add(path);
+                    data.SetFileDropList(collection);
+                    Cleanup(now);
+                }
+                if (data.GetFormats().Length == 0)
+                {
+                    return false;
+                }
+                Clipboard.Clear();
+                Clipboard.SetDataObject(data, true);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Error("写图片到剪贴板失败", ex);
+                // 落盘失败也别让用户复制不到图：退回只有位图的老行为。
+                try
+                {
+                    Clipboard.Clear();
+                    Clipboard.SetImage(image);
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
         }
 
         /// <summary>

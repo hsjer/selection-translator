@@ -396,7 +396,9 @@ namespace SelectionTranslator
         {
             try
             {
-                Clipboard.SetImage(_image);
+                // 同样带上文件列表，粘到桌面就是一个 png 文件。
+                ClipboardPasteFiles.WriteBitmap(
+                    _image, ClipboardWriteMode.Auto);
             }
             catch (Exception ex)
             {

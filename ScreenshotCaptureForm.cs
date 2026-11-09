@@ -2149,7 +2149,10 @@ namespace SelectionTranslator
         {
             try
             {
-                Clipboard.SetImage(image);
+                // 同时放位图和一份 PNG 文件：聊天框里粘成图，
+                // 桌面 / 文件夹里 Ctrl+V 粘成「图片-时间戳.png」。
+                ClipboardPasteFiles.WriteBitmap(
+                    image, ClipboardWriteMode.Auto);
             }
             catch
             {
