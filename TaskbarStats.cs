@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 
 namespace SelectionTranslator
 {
@@ -206,11 +207,92 @@ namespace SelectionTranslator
             IntPtr outputBuffer,
             int outputBufferSize);
 
+        // ===== 实时 CPU 频率 =====
+        // Windows 8 之后 CallNtPowerInformation(ProcessorInformation) 的
+        // CurrentMhz 在绝大多数机器上恒等于标称/基准频率，睿频、降频都不更新
+        // （实测 i7-1065G7 空载满载都固定 1298MHz）。任务管理器用的是 PDH
+        // 计数器 % Processor Performance × 标称频率，这里走同一套算法。
+        // PDH 计数器路径用英文 API，避免中文系统计数器名本地化导致读取失败。
+        private const uint PdhFmtDouble = 0x00000200;
+        private const string CpuPerfCounterPath =
+            "\\Processor Information(_Total)\\% Processor Performance";
+
+        [StructLayout(LayoutKind.Explicit)]
+        private struct PdhValue
+        {
+            [FieldOffset(0)] public int LongValue;
+            [FieldOffset(0)] public double DoubleValue;
+            [FieldOffset(0)] public long LargeValue;
+            [FieldOffset(0)] public IntPtr StringValue;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct PdhFormattedValue
+        {
+            public uint CStatus;
+            public PdhValue Value;
+        }
+
+        [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
+        private static extern uint PdhOpenQueryW(
+            string dataSource, IntPtr userData, out IntPtr query);
+
+        [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
+        private static extern uint PdhAddEnglishCounterW(
+            IntPtr query, string counterPath,
+            IntPtr userData, out IntPtr counter);
+
+        [DllImport("pdh.dll")]
+        private static extern uint PdhCollectQueryData(IntPtr query);
+
+        [DllImport("pdh.dll")]
+        private static extern uint PdhGetFormattedCounterValue(
+            IntPtr counter, uint format, out uint counterType,
+            out PdhFormattedValue value);
+
+        [DllImport("pdh.dll")]
+        private static extern uint PdhCloseQuery(IntPtr query);
+
+        private static readonly object CpuFreqLock = new object();
+        private static IntPtr s_pdhQuery = IntPtr.Zero;
+        private static IntPtr s_pdhCounter = IntPtr.Zero;
+        private static bool s_pdhUnavailable;
+        private static double s_smoothedMhz = -1;
+
         /// <summary>
-        /// 当前 CPU 频率（MHz，取所有核心的最大值）。0 表示取不到。
-        /// 比读注册表 ~MHz（标称值）更接近任务管理器显示的实时频率。
+        /// 当前 CPU 频率（MHz）。优先用实时性能百分比换算；
+        /// 计数器不可用时回退到电源 API 的旧读数。0 表示完全取不到。
         /// </summary>
         public static int CpuFrequencyMhz()
+        {
+            double percent = ProcessorPerformancePercent();
+            if (percent > 0)
+            {
+                int nominal = CpuNominalMhz();
+                if (nominal > 0)
+                {
+                    int mhz = (int)Math.Round(
+                        nominal * percent / 100.0);
+                    if (mhz >= 100 && mhz <= 10000)
+                    {
+                        // 轻度平滑，避免每帧跳几十 MHz 看着刺眼，
+                        // 负载变化仍能在一两秒内体现出来。
+                        lock (CpuFreqLock)
+                        {
+                            s_smoothedMhz = s_smoothedMhz <= 0
+                                ? mhz
+                                : s_smoothedMhz + 0.5 * (mhz - s_smoothedMhz);
+                            mhz = (int)Math.Round(s_smoothedMhz);
+                        }
+                        return mhz;
+                    }
+                }
+            }
+            return LegacyCpuFrequencyMhz();
+        }
+
+        /// <summary>旧读数：电源 API 的 CurrentMhz，取所有核心最大值。</summary>
+        private static int LegacyCpuFrequencyMhz()
         {
             try
             {
@@ -260,6 +342,146 @@ namespace SelectionTranslator
             {
                 return 0;
             }
+        }
+
+        /// <summary>
+        /// 读取 _Total 的 % Processor Performance（100 = 标称频率，
+        /// 200 = 两倍标称频率即睿频）。失败返回 0。
+        /// </summary>
+        public static double ProcessorPerformancePercent()
+        {
+            lock (CpuFreqLock)
+            {
+                if (s_pdhUnavailable)
+                {
+                    return 0;
+                }
+                if (s_pdhQuery == IntPtr.Zero)
+                {
+                    IntPtr query;
+                    IntPtr counter;
+                    if (PdhOpenQueryW(
+                            null, IntPtr.Zero, out query) != 0)
+                    {
+                        s_pdhUnavailable = true;
+                        return 0;
+                    }
+                    if (PdhAddEnglishCounterW(
+                            query, CpuPerfCounterPath,
+                            IntPtr.Zero, out counter) != 0)
+                    {
+                        PdhCloseQuery(query);
+                        s_pdhUnavailable = true;
+                        return 0;
+                    }
+                    s_pdhQuery = query;
+                    s_pdhCounter = counter;
+                    // 预热一次，让计数器有初值。
+                    PdhCollectQueryData(query);
+                }
+                if (PdhCollectQueryData(s_pdhQuery) != 0)
+                {
+                    return 0;
+                }
+                uint counterType;
+                PdhFormattedValue value;
+                if (PdhGetFormattedCounterValue(
+                        s_pdhCounter, PdhFmtDouble,
+                        out counterType, out value) != 0 ||
+                    value.CStatus != 0)
+                {
+                    return 0;
+                }
+                double percent = value.Value.DoubleValue;
+                if (percent <= 0 || percent > 1000)
+                {
+                    return 0;
+                }
+                return percent;
+            }
+        }
+
+        /// <summary>
+        /// CPU 标称/基准频率（MHz）。优先解析 CPU 名称里的 @ x.xxGHz
+        /// （与任务管理器的「基准速度」一致），再退回注册表 ~MHz。
+        /// </summary>
+        public static int CpuNominalMhz()
+        {
+            int mhz = 0;
+            try
+            {
+                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(
+                    @"HARDWARE\DESCRIPTION\System\CentralProcessor\0"))
+                {
+                    if (key != null)
+                    {
+                        string name = key.GetValue(
+                            "ProcessorNameString") as string;
+                        mhz = ParseCpuNameMhz(name);
+                        if (mhz <= 0)
+                        {
+                            object raw = key.GetValue("~MHz");
+                            if (raw != null)
+                            {
+                                mhz = Convert.ToInt32(
+                                    raw, CultureInfo.InvariantCulture);
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+            if (mhz < 100 || mhz > 10000)
+            {
+                mhz = 0;
+            }
+            return mhz;
+        }
+
+        /// <summary>"... CPU @ 1.30GHz" → 1300；解析不出来返回 0。</summary>
+        public static int ParseCpuNameMhz(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+            {
+                return 0;
+            }
+            int index = name.IndexOf(
+                "GHz", StringComparison.OrdinalIgnoreCase);
+            if (index <= 0)
+            {
+                return 0;
+            }
+            int end = index;
+            while (end > 0 && name[end - 1] == ' ')
+            {
+                end--;
+            }
+            int start = end;
+            while (start > 0 &&
+                (char.IsDigit(name[start - 1]) ||
+                    name[start - 1] == '.'))
+            {
+                start--;
+            }
+            if (start == end)
+            {
+                return 0;
+            }
+            double ghz;
+            if (!double.TryParse(
+                    name.Substring(start, end - start),
+                    NumberStyles.Float,
+                    CultureInfo.InvariantCulture, out ghz))
+            {
+                return 0;
+            }
+            if (ghz < 0.1 || ghz > 10.0)
+            {
+                return 0;
+            }
+            return (int)Math.Round(ghz * 1000.0);
         }
 
         /// <summary>系统盘剩余 / 总容量（字节）。失败时两者为 0。</summary>

@@ -530,6 +530,28 @@ namespace SelectionTranslator
                     (liveCpuMhz == 0 ||
                         (liveCpuMhz >= 100 && liveCpuMhz <= 10000))
                         .ToString(), "True");
+                Check(output, ref ok, "stats parse cpu name ghz",
+                    TaskbarStats.ParseCpuNameMhz(
+                        "Intel(R) Core(TM) i7-1065G7 CPU @ 1.30GHz")
+                        .ToString(), "1300");
+                Check(output, ref ok, "stats parse cpu name spaced ghz",
+                    TaskbarStats.ParseCpuNameMhz(
+                        "AMD Ryzen 7 5800H with Radeon Graphics 3.20 GHz")
+                        .ToString(), "3200");
+                Check(output, ref ok, "stats parse cpu name no ghz",
+                    TaskbarStats.ParseCpuNameMhz("Virtual CPU")
+                        .ToString(), "0");
+                int liveNominal = TaskbarStats.CpuNominalMhz();
+                Check(output, ref ok, "stats live cpu nominal sane",
+                    (liveNominal == 0 ||
+                        (liveNominal >= 100 && liveNominal <= 10000))
+                        .ToString(), "True");
+                double livePerf =
+                    TaskbarStats.ProcessorPerformancePercent();
+                Check(output, ref ok, "stats live cpu perf sane",
+                    (livePerf == 0 ||
+                        (livePerf > 0 && livePerf <= 1000))
+                        .ToString(), "True");
 
                 // 分段翻译：长文本应被拆成多段，每段 UTF-8 字节数都不超过上限，
                 // 且拼接后能还原原文。
@@ -2241,6 +2263,10 @@ namespace SelectionTranslator
                 TaskbarStats.Battery(
                     out hasBattery, out batteryPercent,
                     out onAc, out remainSeconds);
+                output.AppendLine("cpuNominalMhz=" +
+                    TaskbarStats.CpuNominalMhz());
+                output.AppendLine("cpuPerfPercent=" +
+                    TaskbarStats.ProcessorPerformancePercent());
                 output.AppendLine("cpuFreqMhz=" +
                     TaskbarStats.CpuFrequencyMhz());
                 output.AppendLine("memoryBytes=" + usedBytes +
