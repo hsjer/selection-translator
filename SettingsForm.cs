@@ -44,6 +44,10 @@ namespace SelectionTranslator
         private readonly ComboBox _voiceEngineBox;
         private readonly ComboBox _voiceMethodBox;
         private readonly CheckBox _voiceAutoCopyBox;
+        private readonly CheckBox _clipboardEnableBox;
+        private readonly ComboBox _clipboardTtlBox;
+        private readonly NumericUpDown _clipboardMaxBox;
+        private readonly TextBox _hotkeyClipboardField;
         private TextBox _capturingField;
         private string _capturingFieldOriginal;
         private int _captureModifiers;
@@ -533,6 +537,91 @@ namespace SelectionTranslator
             AcceptButton = saveButton;
             CancelButton = cancelButton;
 
+            // --------------------------------------------------------------
+            // 剪贴板历史：放在内容区最上面，其余控件整体下移，
+            // 免得用户要滚到底才找得到新设置。
+            // --------------------------------------------------------------
+            foreach (Control child in _contentHost.Controls)
+            {
+                child.Top += 158;
+            }
+
+            GroupBox clipGroup = new GroupBox();
+            clipGroup.Text = "剪贴板历史";
+            clipGroup.Location = new Point(16, 12);
+            clipGroup.Size = new Size(448, 140);
+            _contentHost.Controls.Add(clipGroup);
+
+            _clipboardEnableBox = new CheckBox();
+            _clipboardEnableBox.Text =
+                "记录剪贴板历史（文本 / 图片 / 文件）";
+            _clipboardEnableBox.AutoSize = true;
+            _clipboardEnableBox.Location = new Point(12, 24);
+            _clipboardEnableBox.Checked =
+                config.EnableClipboardHistory;
+            clipGroup.Controls.Add(_clipboardEnableBox);
+
+            Label ttlLabel = new Label();
+            ttlLabel.Text = "保留时长";
+            ttlLabel.AutoSize = true;
+            ttlLabel.Location = new Point(12, 56);
+            clipGroup.Controls.Add(ttlLabel);
+
+            _clipboardTtlBox = new ComboBox();
+            _clipboardTtlBox.DropDownStyle =
+                ComboBoxStyle.DropDownList;
+            _clipboardTtlBox.Location = new Point(84, 52);
+            _clipboardTtlBox.Size = new Size(110, 24);
+            for (int i = 0; i < ClipboardLogic.TtlLabels.Length; i++)
+            {
+                _clipboardTtlBox.Items.Add(
+                    ClipboardLogic.TtlLabels[i]);
+            }
+            _clipboardTtlBox.SelectedIndex =
+                ClipboardLogic.TtlIndex(config.ClipboardTtlHours);
+            clipGroup.Controls.Add(_clipboardTtlBox);
+
+            Label maxLabel = new Label();
+            maxLabel.Text = "最多条数";
+            maxLabel.AutoSize = true;
+            maxLabel.Location = new Point(218, 56);
+            clipGroup.Controls.Add(maxLabel);
+
+            _clipboardMaxBox = new NumericUpDown();
+            _clipboardMaxBox.Location = new Point(292, 52);
+            _clipboardMaxBox.Size = new Size(100, 24);
+            _clipboardMaxBox.Minimum = 20;
+            _clipboardMaxBox.Maximum = 2000;
+            _clipboardMaxBox.Value =
+                ClipboardLogic.ClampMaxItems(
+                    config.ClipboardMaxItems);
+            clipGroup.Controls.Add(_clipboardMaxBox);
+
+            Label hotkeyLabel = new Label();
+            hotkeyLabel.Text = "打开快捷键";
+            hotkeyLabel.AutoSize = true;
+            hotkeyLabel.Location = new Point(12, 90);
+            clipGroup.Controls.Add(hotkeyLabel);
+
+            _hotkeyClipboardField = new TextBox();
+            _hotkeyClipboardField.ReadOnly = true;
+            _hotkeyClipboardField.TextAlign =
+                HorizontalAlignment.Center;
+            _hotkeyClipboardField.Location = new Point(84, 86);
+            _hotkeyClipboardField.Size = new Size(110, 23);
+            _hotkeyClipboardField.Text =
+                config.HotkeyClipboardHistory;
+            BindHotkeyField(_hotkeyClipboardField);
+            clipGroup.Controls.Add(_hotkeyClipboardField);
+
+            Label clipHint = new Label();
+            clipHint.Text =
+                "历史只存在本机；收藏的条目不受保留时长与条数限制。";
+            clipHint.AutoSize = true;
+            clipHint.ForeColor = Color.FromArgb(90, 98, 112);
+            clipHint.Location = new Point(12, 116);
+            clipGroup.Controls.Add(clipHint);
+
             ApplyDpiScale();
         }
 
@@ -708,6 +797,13 @@ namespace SelectionTranslator
             edited.VoiceEngineType = GetSelectedVoiceEngine();
             edited.VoiceInputMethod = GetSelectedVoiceMethod();
             edited.VoiceAutoCopy = _voiceAutoCopyBox.Checked;
+            edited.EnableClipboardHistory =
+                _clipboardEnableBox.Checked;
+            edited.ClipboardTtlHours = GetSelectedClipboardTtl();
+            edited.ClipboardMaxItems =
+                (int)_clipboardMaxBox.Value;
+            edited.HotkeyClipboardHistory =
+                _hotkeyClipboardField.Text.Trim();
 
             // 这两项在设置窗口里没有对应控件，别因为点了一次「保存」
             // 就把首次运行标记和右键菜单开关重置掉。
@@ -715,6 +811,17 @@ namespace SelectionTranslator
             edited.EnableImageShellMenu = Config.EnableImageShellMenu;
             edited.ShowTaskbarStats = Config.ShowTaskbarStats;
             return edited;
+        }
+
+        private int GetSelectedClipboardTtl()
+        {
+            int index = _clipboardTtlBox.SelectedIndex;
+            if (index < 0 ||
+                index >= ClipboardLogic.TtlChoices.Length)
+            {
+                return ClipboardLogic.DefaultTtlHours;
+            }
+            return ClipboardLogic.TtlChoices[index];
         }
 
         private static void SelectCombo(ComboBox combo, string value)
@@ -1305,20 +1412,37 @@ namespace SelectionTranslator
                 return;
             }
 
-            // 四个快捷键不能相同。
+            if (!HotkeyParser.TryParse(
+                edited.HotkeyClipboardHistory,
+                out modifiers,
+                out key))
+            {
+                MessageBox.Show(
+                    this,
+                    "「剪贴板历史快捷键」格式无效。\r\n" +
+                    "请点击输入框后重新按下组合键。",
+                    "保存设置",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            // 五个快捷键不能相同。
             string[] hotkeys = new string[]
             {
                 edited.HotkeyTranslateSelection,
                 edited.HotkeyManualInput,
                 edited.HotkeyScreenshot,
-                edited.HotkeyVoiceInput
+                edited.HotkeyVoiceInput,
+                edited.HotkeyClipboardHistory
             };
             string[] hotkeyNames = new string[]
             {
                 "翻译选中文本",
                 "手动翻译",
                 "截图",
-                "语音识别"
+                "语音识别",
+                "剪贴板历史"
             };
             for (int i = 0; i < hotkeys.Length; i++)
             {

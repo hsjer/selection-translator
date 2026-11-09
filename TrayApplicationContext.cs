@@ -14,6 +14,7 @@ namespace SelectionTranslator
         private const int HotkeyIdManual = 2;
         private const int HotkeyIdScreenshot = 3;
         private const int HotkeyIdVoice = 4;
+        private const int HotkeyIdClipboard = 5;
 
         private readonly NotifyIcon _trayIcon;
         private readonly ContextMenuStrip _trayMenu;
@@ -22,6 +23,7 @@ namespace SelectionTranslator
         private readonly ToolStripMenuItem _manualMenuItem;
         private readonly ToolStripMenuItem _screenshotMenuItem;
         private readonly ToolStripMenuItem _voiceMenuItem;
+        private readonly ToolStripMenuItem _clipboardMenuItem;
         private readonly Icon _trayIconImage;
         private readonly HotkeyWindow _hotkeyWindow;
         private readonly System.Windows.Forms.Timer _firstRunTimer;
@@ -151,6 +153,16 @@ namespace SelectionTranslator
             imageItem.Click += OnOpenImageClicked;
             _trayMenu.Items.Add(imageItem);
 
+            _clipboardMenuItem = new ToolStripMenuItem(
+                "剪贴板历史…");
+            _clipboardMenuItem.ShortcutKeyDisplayString =
+                _config.HotkeyClipboardHistory;
+            _clipboardMenuItem.Click += delegate
+            {
+                ClipboardHistoryForm.ShowHistory();
+            };
+            _trayMenu.Items.Add(_clipboardMenuItem);
+
             // 资源管理器右键菜单的开关。默认开启，首次启动就会写进 HKCU。
             _shellMenuItem = new ToolStripMenuItem(
                 "图片右键菜单 / 打开方式：" + AppInfo.Name);
@@ -205,6 +217,16 @@ namespace SelectionTranslator
             _hotkeyWindow.HotkeyPressed += OnHotkeyPressed;
             RegisterHotkeys();
             RefreshHotkeyMenuItems();
+
+            // 剪贴板历史监听与热键共用一个消息循环，必须在 UI 线程启动。
+            try
+            {
+                ClipboardManager.Start(_config);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("启动剪贴板历史失败", ex);
+            }
 
             Application.Idle += OnFirstIdle;
 
@@ -341,6 +363,29 @@ namespace SelectionTranslator
                 Log.Info("快捷键格式无效：" +
                     _config.HotkeyVoiceInput);
             }
+
+            if (HotkeyParser.TryParse(
+                _config.HotkeyClipboardHistory,
+                out modifiers,
+                out key))
+            {
+                bool ok = _hotkeyWindow.Register(
+                    HotkeyIdClipboard,
+                    modifiers | NativeMethods.MOD_NOREPEAT,
+                    key);
+                if (!ok)
+                {
+                    Log.Info("全局快捷键 " +
+                        _config.HotkeyClipboardHistory +
+                        " 注册失败，可能已被其他程序占用。");
+                    _hotkeyFailures.Add(HotkeyIdClipboard);
+                }
+            }
+            else
+            {
+                Log.Info("快捷键格式无效：" +
+                    _config.HotkeyClipboardHistory);
+            }
         }
 
         /// <summary>
@@ -352,6 +397,7 @@ namespace SelectionTranslator
             _hotkeyWindow.Unregister(HotkeyIdManual);
             _hotkeyWindow.Unregister(HotkeyIdScreenshot);
             _hotkeyWindow.Unregister(HotkeyIdVoice);
+            _hotkeyWindow.Unregister(HotkeyIdClipboard);
         }
 
         /// <summary>
@@ -384,6 +430,10 @@ namespace SelectionTranslator
                 _voiceMenuItem,
                 _config.HotkeyVoiceInput,
                 HotkeyIdVoice);
+            SetHotkeyDisplay(
+                _clipboardMenuItem,
+                _config.HotkeyClipboardHistory,
+                HotkeyIdClipboard);
         }
 
         private void SetHotkeyDisplay(
@@ -825,6 +875,11 @@ namespace SelectionTranslator
             if (id == HotkeyIdVoice)
             {
                 StartVoiceInput();
+                return;
+            }
+            if (id == HotkeyIdClipboard)
+            {
+                ClipboardHistoryForm.ShowHistory();
                 return;
             }
             await TranslateSelectionAsync();
@@ -1792,6 +1847,11 @@ namespace SelectionTranslator
             {
                 _translationForm.Close();
             }
+
+            if (ClipboardManager.Instance != null)
+            {
+                ClipboardManager.Instance.ApplyConfig(_config);
+            }
         }
 
         private void OnStatsClicked(object sender, EventArgs e)
@@ -1916,6 +1976,8 @@ namespace SelectionTranslator
 
             _hotkeyWindow.UnregisterAll();
             _hotkeyWindow.HotkeyPressed -= OnHotkeyPressed;
+            ClipboardHistoryForm.CloseHistory();
+            ClipboardManager.Stop();
 
             _trayIcon.Visible = false;
 
@@ -1980,6 +2042,8 @@ namespace SelectionTranslator
 
                 _hotkeyWindow.UnregisterAll();
                 _hotkeyWindow.Dispose();
+                ClipboardHistoryForm.CloseHistory();
+                ClipboardManager.Stop();
 
                 _trayIcon.Visible = false;
                 _trayIcon.Dispose();

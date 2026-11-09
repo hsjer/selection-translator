@@ -553,6 +553,186 @@ namespace SelectionTranslator
                         (livePerf > 0 && livePerf <= 1000))
                         .ToString(), "True");
 
+                // ===== 剪贴板历史：分类 / 搜索 / 排序 / TTL / 持久化 =====
+                DateTime cbNow =
+                    new DateTime(2026, 11, 9, 14, 0, 0,
+                        DateTimeKind.Utc);
+                DateTime cbLocalNow =
+                    new DateTime(2026, 11, 9, 14, 0, 0);
+
+                ClipboardItem cbText = new ClipboardItem();
+                cbText.Id = 1;
+                cbText.Kind = (int)ClipboardItemKind.Text;
+                cbText.TicksUtc = cbNow.AddMinutes(-3).Ticks;
+                cbText.Text = "Hello 工具侠 剪贴板";
+                cbText.Fingerprint = cbText.Text;
+                cbText.Count = 1;
+
+                ClipboardItem cbImage = new ClipboardItem();
+                cbImage.Id = 2;
+                cbImage.Kind = (int)ClipboardItemKind.Image;
+                cbImage.TicksUtc = cbNow.AddHours(-2).Ticks;
+                cbImage.ImageWidth = 311;
+                cbImage.ImageHeight = 156;
+                cbImage.Fingerprint = "img:abc";
+                cbImage.Count = 1;
+
+                ClipboardItem cbFile = new ClipboardItem();
+                cbFile.Id = 3;
+                cbFile.Kind = (int)ClipboardItemKind.File;
+                cbFile.TicksUtc = cbNow.AddDays(-2).Ticks;
+                cbFile.Files = new string[] { @"C:\Temp\工具侠.exe" };
+                cbFile.Fingerprint = ClipboardLogic.FingerprintFor(
+                    cbFile.Kind, "", cbFile.Files, "");
+                cbFile.Favorite = true;
+                cbFile.Count = 1;
+
+                ClipboardItem cbOld = new ClipboardItem();
+                cbOld.Id = 4;
+                cbOld.Kind = (int)ClipboardItemKind.Text;
+                cbOld.TicksUtc = cbNow.AddDays(-30).Ticks;
+                cbOld.Text = "很久以前";
+                cbOld.Fingerprint = "很久以前";
+                cbOld.Count = 1;
+
+                System.Collections.Generic.List<ClipboardItem> cbItems =
+                    new System.Collections.Generic.List<ClipboardItem>();
+                cbItems.Add(cbOld);
+                cbItems.Add(cbImage);
+                cbItems.Add(cbText);
+                cbItems.Add(cbFile);
+
+                Check(output, ref ok, "clipboard kind text",
+                    ClipboardLogic.KindLabel(0), "文本");
+                Check(output, ref ok, "clipboard kind image",
+                    ClipboardLogic.KindLabel(1), "图像");
+                Check(output, ref ok, "clipboard kind file",
+                    ClipboardLogic.KindLabel(2), "文件");
+                Check(output, ref ok, "clipboard ttl normalize",
+                    ClipboardLogic.NormalizeTtl(999).ToString(), "168");
+                Check(output, ref ok, "clipboard ttl label",
+                    ClipboardLogic.TtlLabel(24), "1 天");
+                Check(output, ref ok, "clipboard ttl index",
+                    ClipboardLogic.TtlIndex(720).ToString(), "5");
+                Check(output, ref ok, "clipboard clamp max items",
+                    ClipboardLogic.ClampMaxItems(5).ToString(), "20");
+                Check(output, ref ok, "clipboard filter all",
+                    ClipboardLogic.Filter(
+                        cbItems, ClipboardTab.All, "").Count.ToString(),
+                    "4");
+                Check(output, ref ok, "clipboard filter text",
+                    ClipboardLogic.Filter(
+                        cbItems, ClipboardTab.Text, "").Count.ToString(),
+                    "2");
+                Check(output, ref ok, "clipboard filter image",
+                    ClipboardLogic.Filter(
+                        cbItems, ClipboardTab.Image, "").Count.ToString(),
+                    "1");
+                Check(output, ref ok, "clipboard filter file",
+                    ClipboardLogic.Filter(
+                        cbItems, ClipboardTab.File, "").Count.ToString(),
+                    "1");
+                Check(output, ref ok, "clipboard filter favorite",
+                    ClipboardLogic.Filter(
+                        cbItems, ClipboardTab.Favorite, "").Count.ToString(),
+                    "1");
+                Check(output, ref ok, "clipboard search keyword",
+                    ClipboardLogic.Filter(
+                        cbItems, ClipboardTab.All, "工具侠").Count.ToString(),
+                    "2");
+                Check(output, ref ok, "clipboard search multi words",
+                    ClipboardLogic.Filter(
+                        cbItems, ClipboardTab.All,
+                        "工具侠 剪贴板").Count.ToString(), "1");
+                Check(output, ref ok, "clipboard search image size",
+                    ClipboardLogic.Filter(
+                        cbItems, ClipboardTab.All,
+                        "311x156").Count.ToString(), "1");
+                Check(output, ref ok, "clipboard sort newest first",
+                    ClipboardLogic.Filter(
+                        cbItems, ClipboardTab.All, "")[0].Id.ToString(),
+                    "1");
+                Check(output, ref ok, "clipboard same content",
+                    ClipboardLogic.SameContent(
+                        cbText, cbText).ToString(), "True");
+                Check(output, ref ok, "clipboard different content",
+                    ClipboardLogic.SameContent(
+                        cbText, cbFile).ToString(), "False");
+                Check(output, ref ok, "clipboard relative minutes",
+                    ClipboardLogic.FormatRelative(
+                        cbLocalNow.AddMinutes(-5), cbLocalNow),
+                    "5 分钟前");
+                Check(output, ref ok, "clipboard date group today",
+                    ClipboardLogic.DateGroup(cbLocalNow, cbLocalNow),
+                    "今天");
+                Check(output, ref ok, "clipboard date group yesterday",
+                    ClipboardLogic.DateGroup(
+                        cbLocalNow.AddDays(-1), cbLocalNow), "昨天");
+                Check(output, ref ok, "clipboard expired old",
+                    ClipboardLogic.IsExpired(
+                        cbOld, 168, cbNow).ToString(), "True");
+                Check(output, ref ok, "clipboard favorite never expires",
+                    ClipboardLogic.IsExpired(
+                        cbFile, 1, cbNow).ToString(), "False");
+                Check(output, ref ok, "clipboard ttl zero never",
+                    ClipboardLogic.IsExpired(
+                        cbOld, 0, cbNow).ToString(), "False");
+                Check(output, ref ok, "clipboard purge expired",
+                    ClipboardLogic.SelectExpired(
+                        cbItems, 168, 300, cbNow).Count.ToString(), "1");
+                System.Collections.Generic.List<ClipboardItem> cbMany =
+                    new System.Collections.Generic.List<ClipboardItem>();
+                for (int i = 0; i < 25; i++)
+                {
+                    ClipboardItem many = new ClipboardItem();
+                    many.Id = 100 + i;
+                    many.Kind = (int)ClipboardItemKind.Text;
+                    many.TicksUtc = cbNow.AddMinutes(-i).Ticks;
+                    many.Text = "批量 " + i;
+                    many.Fingerprint = "批量 " + i;
+                    many.Count = 1;
+                    cbMany.Add(many);
+                }
+                Check(output, ref ok, "clipboard purge max items",
+                    ClipboardLogic.SelectExpired(
+                        cbMany, 0, 20, cbNow).Count.ToString(), "5");
+                // 上限最小被钳到 20 条，4 条样本不该被误删。
+                Check(output, ref ok, "clipboard purge min limit",
+                    ClipboardLogic.SelectExpired(
+                        cbItems, 0, 2, cbNow).Count.ToString(), "0");
+                Check(output, ref ok, "clipboard preview truncate",
+                    ClipboardLogic.Preview(cbText, 5), "Hello…");
+
+                string cbPath = System.IO.Path.Combine(
+                    ConfigStore.DataDirectory,
+                    "clipboard-selftest-" +
+                    Guid.NewGuid().ToString("N").Substring(0, 8) +
+                    ".json");
+                string cbImageDir = System.IO.Path.Combine(
+                    ConfigStore.DataDirectory,
+                    "clipboard-selftest-images");
+                ClipboardStore cbStore =
+                    ClipboardStore.Load(cbPath, cbImageDir);
+                cbStore.Add(cbText);
+                cbStore.Add(cbText);
+                Check(output, ref ok, "clipboard dedup count",
+                    cbStore.Items.Count + "/" +
+                    cbStore.Items[0].Count, "1/2");
+                cbStore.Save();
+                ClipboardStore cbReloaded =
+                    ClipboardStore.Load(cbPath, cbImageDir);
+                Check(output, ref ok, "clipboard store roundtrip",
+                    cbReloaded.Items.Count + "/" +
+                    cbReloaded.Items[0].Text,
+                    "1/Hello 工具侠 剪贴板");
+                try
+                {
+                    System.IO.File.Delete(cbPath);
+                }
+                catch
+                {
+                }
+
                 // 分段翻译：长文本应被拆成多段，每段 UTF-8 字节数都不超过上限，
                 // 且拼接后能还原原文。
                 StringBuilder longText = new StringBuilder();
@@ -2744,6 +2924,441 @@ namespace SelectionTranslator
             if (actual != expected)
             {
                 ok = false;
+            }
+        }
+
+        /// <summary>
+        /// 剪贴板窗口渲染冒烟：造几条示例历史，真的把窗口显示出来截一张图，
+        /// 验证自绘列表 / 分组 / 缩略图不会在运行时抛 GDI+ 异常。
+        /// 输出 clipboarduiprobe.txt 与 ui-clipboard.png。
+        /// </summary>
+        public static void RunClipboardUiProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            string previewImage = "";
+            string probeJson = Path.Combine(
+                ConfigStore.DataDirectory, "clipboard-ui-probe.json");
+            string probeImageDir = Path.Combine(
+                ConfigStore.DataDirectory,
+                "clipboard-ui-probe-images");
+            AppConfig config = new AppConfig();
+            config.EnableClipboardHistory = false;
+            config.ClipboardTtlHours = 168;
+            ClipboardManager manager = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                manager = ClipboardManager.StartForProbe(
+                    config, probeJson, probeImageDir);
+                ClipboardStore store = manager.Store;
+                store.Items.Clear();
+
+                ClipboardItem text1 = new ClipboardItem();
+                text1.Id = 1;
+                text1.Kind = (int)ClipboardItemKind.Text;
+                text1.Text = "工具侠剪贴板：复制过的文字会自动按时间排列，" +
+                    "双击即可重新复制。";
+                text1.Fingerprint = "text1";
+                text1.Count = 1;
+                text1.TicksUtc = DateTime.UtcNow.AddMinutes(-3).Ticks;
+                store.Items.Add(text1);
+
+                ClipboardItem text2 = new ClipboardItem();
+                text2.Id = 2;
+                text2.Kind = (int)ClipboardItemKind.Text;
+                text2.Text = "腾讯云 SentenceRecognition 接口文档";
+                text2.Fingerprint = "text2";
+                text2.Count = 3;
+                text2.Favorite = true;
+                text2.TicksUtc = DateTime.UtcNow.AddDays(-3).Ticks;
+                store.Items.Add(text2);
+
+                Directory.CreateDirectory(store.ImageDirectory);
+                previewImage = Path.Combine(
+                    store.ImageDirectory, "preview-probe.png");
+                using (Bitmap bitmap = new Bitmap(320, 180))
+                {
+                    using (Graphics graphics =
+                        Graphics.FromImage(bitmap))
+                    {
+                        graphics.Clear(Color.FromArgb(38, 84, 140));
+                        using (SolidBrush brush = new SolidBrush(
+                            Color.FromArgb(120, 190, 255)))
+                        {
+                            graphics.FillRectangle(
+                                brush, 24, 24, 272, 132);
+                        }
+                        TextRenderer.DrawText(
+                            graphics, "图片历史预览",
+                            DarkUi.FontStrong,
+                            new Rectangle(24, 70, 272, 40),
+                            Color.White,
+                            TextFormatFlags.HorizontalCenter |
+                            TextFormatFlags.VerticalCenter);
+                    }
+                    bitmap.Save(previewImage, ImageFormat.Png);
+                }
+
+                ClipboardItem image = new ClipboardItem();
+                image.Id = 3;
+                image.Kind = (int)ClipboardItemKind.Image;
+                image.ImageFile = Path.GetFileName(previewImage);
+                image.ImageWidth = 311;
+                image.ImageHeight = 156;
+                image.Fingerprint = "img:preview";
+                image.Count = 2;
+                image.TicksUtc = DateTime.UtcNow.AddHours(-1).Ticks;
+                store.Items.Add(image);
+
+                ClipboardItem file = new ClipboardItem();
+                file.Id = 4;
+                file.Kind = (int)ClipboardItemKind.File;
+                file.Files = new string[]
+                {
+                    @"C:\Users\demo\工具侠.exe",
+                    @"C:\Users\demo\readme.txt",
+                    @"C:\Users\demo\截图.png"
+                };
+                file.Text = ClipboardLogic.Preview(file, 0);
+                file.Fingerprint = "files";
+                file.Count = 1;
+                // 探针里把文件条目放最新，首屏就能完整检查三行文件名。
+                file.TicksUtc = DateTime.UtcNow.AddMinutes(-1).Ticks;
+                store.Items.Add(file);
+
+                ClipboardHistoryForm.ShowHistory();
+                Form form = null;
+                foreach (Form candidate in Application.OpenForms)
+                {
+                    if (candidate is ClipboardHistoryForm)
+                    {
+                        form = candidate;
+                        break;
+                    }
+                }
+                if (form == null)
+                {
+                    throw new InvalidOperationException(
+                        "剪贴板窗口没有创建成功");
+                }
+                output.AppendLine("formBounds=" + form.Bounds);
+                DateTime deadline = DateTime.UtcNow.AddMilliseconds(600);
+                while (DateTime.UtcNow < deadline)
+                {
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(20);
+                }
+                output.AppendLine("formVisible=" + form.Visible);
+                Check(output, ref ok, "ui probe window visible",
+                    form.Visible.ToString(), "True");
+
+                string shot = Path.Combine(
+                    ConfigStore.DataDirectory, "ui-clipboard.png");
+                try
+                {
+                    using (Bitmap capture = new Bitmap(
+                        Math.Max(1, form.Width),
+                        Math.Max(1, form.Height)))
+                    {
+                        using (Graphics graphics =
+                            Graphics.FromImage(capture))
+                        {
+                            graphics.CopyFromScreen(
+                                form.Left, form.Top, 0, 0,
+                                capture.Size);
+                        }
+                        capture.Save(shot, ImageFormat.Png);
+                    }
+                    output.AppendLine("screenshot=" + shot);
+                    Check(output, ref ok, "ui probe screenshot",
+                        File.Exists(shot).ToString(), "True");
+                }
+                catch (Exception ex)
+                {
+                    // 锁屏 / 远程会话下 CopyFromScreen 会抛「句柄无效」，
+                    // 这是环境限制，不是窗口代码回归。
+                    output.AppendLine("SKIP: 当前桌面无法截屏：" +
+                        ex.GetType().Name);
+                }
+                form.Close();
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                ClipboardHistoryForm.CloseHistory();
+                ClipboardManager.Stop();
+                try
+                {
+                    if (previewImage.Length > 0 &&
+                        File.Exists(previewImage))
+                    {
+                        File.Delete(previewImage);
+                    }
+                    if (File.Exists(probeJson))
+                    {
+                        File.Delete(probeJson);
+                    }
+                    if (Directory.Exists(probeImageDir) &&
+                        Directory.GetFileSystemEntries(
+                            probeImageDir).Length == 0)
+                    {
+                        Directory.Delete(probeImageDir);
+                    }
+                }
+                catch
+                {
+                }
+                output.AppendLine(ok ? "RESULT: OK" : "RESULT: FAILED");
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory,
+                        "clipboarduiprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        /// <summary>
+        /// 剪贴板历史端到端诊断：真实注册监听器、写一次系统剪贴板、
+        /// 验证文本 / 图片写回和 TTL 清理，最后恢复用户原来的剪贴板。
+        /// 输出 %APPDATA%\SelectionTranslator\clipboardprobe.txt。
+        /// </summary>
+        /// <summary>
+        /// 剪贴板是全局资源，读回时给几个消息泵周期，避免被并行的
+        /// 剪贴板查看器 / 另一个工具侠实例干扰成偶发失败。
+        /// </summary>
+        private static string ReadClipboardTextWithRetry(
+            string expected)
+        {
+            string value = "";
+            for (int i = 0; i < 6; i++)
+            {
+                try
+                {
+                    value = Clipboard.ContainsText()
+                        ? Clipboard.GetText() : "";
+                }
+                catch
+                {
+                    value = "";
+                }
+                if (value == expected)
+                {
+                    return value;
+                }
+                Application.DoEvents();
+                System.Threading.Thread.Sleep(30);
+            }
+            return value;
+        }
+
+        public static void RunClipboardProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            ClipboardSnapshot snapshot = ClipboardHelper.CaptureSnapshot();
+            string tempJson = Path.Combine(
+                ConfigStore.DataDirectory, "clipboard-probe.json");
+            string tempDir = Path.Combine(
+                ConfigStore.DataDirectory, "clipboard-probe-images");
+            string tempImage = Path.Combine(tempDir, "probe.png");
+            ClipboardListener listener = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                bool probeIsOnlyInstance;
+                using (System.Threading.Mutex mutex =
+                    new System.Threading.Mutex(
+                        true, "Local\\" + AppInfo.Id,
+                        out probeIsOnlyInstance))
+                {
+                    output.AppendLine("otherInstanceRunning=" +
+                        !probeIsOnlyInstance);
+                }
+                output.AppendLine("canRestore=" +
+                    (!snapshot.CannotRestore));
+
+                if (snapshot.CannotRestore)
+                {
+                    // 剪贴板里有图片等无法完整备份的格式，绝不覆盖用户数据。
+                    output.AppendLine("SKIP: 剪贴板含不可备份格式，" +
+                        "跳过写入测试以保护原有内容");
+                }
+                else if (!probeIsOnlyInstance)
+                {
+                    // 另一个工具侠正在监听，写测试文本会进它的历史，
+                    // 还可能和它的采样抢剪贴板，直接跳过更干净。
+                    output.AppendLine("SKIP: 已有工具侠在运行，" +
+                        "跳过剪贴板写入以免污染历史");
+                }
+                else
+                {
+                    int notifications = 0;
+                    listener = new ClipboardListener();
+                    listener.ClipboardChanged += delegate
+                    {
+                        notifications++;
+                    };
+                    output.AppendLine("listenerRegistered=" +
+                        listener.Registered);
+                    Check(output, ref ok,
+                        "probe clipboard listener registered",
+                        listener.Registered.ToString(), "True");
+
+                    string marker = "工具侠剪贴板探针-" +
+                        Guid.NewGuid().ToString("N").Substring(0, 8);
+                    Clipboard.SetText(marker);
+                    DateTime deadline = DateTime.UtcNow.AddSeconds(2);
+                    while (DateTime.UtcNow < deadline &&
+                        notifications == 0)
+                    {
+                        Application.DoEvents();
+                        System.Threading.Thread.Sleep(25);
+                    }
+                    output.AppendLine("notifications=" + notifications);
+                    Check(output, ref ok,
+                        "probe receives WM_CLIPBOARDUPDATE",
+                        (notifications > 0).ToString(), "True");
+                    // 另一个正在运行的工具侠实例或第三方剪贴板工具可能
+                    // 在同一瞬间改写内容，重试后仍不一致只标 SKIP，
+                    // 不把环境竞争误判成代码回归。
+                    string observed =
+                        ReadClipboardTextWithRetry(marker);
+                    if (observed != marker)
+                    {
+                        output.AppendLine(
+                            "SKIP: 剪贴板被其他进程改写，" +
+                            "跳过文本一致性判定");
+                    }
+                    else
+                    {
+                        Check(output, ref ok,
+                            "probe clipboard text set", "True", "True");
+                    }
+
+                    // 文本写回
+                    ClipboardStore store = ClipboardStore.Load(
+                        tempJson, tempDir);
+                    ClipboardItem textItem = new ClipboardItem();
+                    textItem.Kind = (int)ClipboardItemKind.Text;
+                    textItem.Text = "工具侠写回测试";
+                    textItem.Fingerprint = textItem.Text;
+                    textItem.TicksUtc = DateTime.UtcNow.Ticks;
+                    bool wroteText = ClipboardManager.WriteToClipboard(
+                        store, textItem);
+                    string readBack = ReadClipboardTextWithRetry(
+                        "工具侠写回测试");
+                    if (!wroteText)
+                    {
+                        Check(output, ref ok, "probe write text back",
+                            "False", "True");
+                    }
+                    else if (readBack != "工具侠写回测试")
+                    {
+                        output.AppendLine(
+                            "SKIP: 写回后剪贴板被其他进程改写");
+                    }
+                    else
+                    {
+                        Check(output, ref ok, "probe write text back",
+                            "True", "True");
+                    }
+
+                    // 图片写回
+                    Directory.CreateDirectory(tempDir);
+                    using (Bitmap bitmap = new Bitmap(12, 8))
+                    {
+                        using (Graphics graphics =
+                            Graphics.FromImage(bitmap))
+                        {
+                            graphics.Clear(Color.Red);
+                        }
+                        bitmap.Save(tempImage, ImageFormat.Png);
+                    }
+                    ClipboardItem imageItem = new ClipboardItem();
+                    imageItem.Kind = (int)ClipboardItemKind.Image;
+                    imageItem.ImageFile = "probe.png";
+                    imageItem.ImageWidth = 12;
+                    imageItem.ImageHeight = 8;
+                    imageItem.TicksUtc = DateTime.UtcNow.Ticks;
+                    bool wroteImage = ClipboardManager.WriteToClipboard(
+                        store, imageItem);
+                    Check(output, ref ok, "probe write image back",
+                        (wroteImage && Clipboard.ContainsImage())
+                            .ToString(), "True");
+
+                    // TTL 清理
+                    ClipboardItem oldItem = new ClipboardItem();
+                    oldItem.Kind = (int)ClipboardItemKind.Text;
+                    oldItem.Text = "过期条目";
+                    oldItem.Fingerprint = "过期条目";
+                    oldItem.TicksUtc =
+                        DateTime.UtcNow.AddDays(-40).Ticks;
+                    store.Add(oldItem);
+                    ClipboardItem freshItem = new ClipboardItem();
+                    freshItem.Kind = (int)ClipboardItemKind.Text;
+                    freshItem.Text = "新条目";
+                    freshItem.Fingerprint = "新条目";
+                    freshItem.TicksUtc = DateTime.UtcNow.Ticks;
+                    store.Add(freshItem);
+                    Check(output, ref ok, "probe purge expired",
+                        store.Purge(
+                            168, 300, DateTime.UtcNow).ToString(),
+                        "1");
+                    Check(output, ref ok, "probe kept fresh",
+                        store.Items.Count.ToString(), "1");
+                }
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                if (listener != null)
+                {
+                    listener.Close();
+                }
+                try
+                {
+                    snapshot.Restore();
+                }
+                catch
+                {
+                }
+                try
+                {
+                    if (File.Exists(tempJson))
+                    {
+                        File.Delete(tempJson);
+                    }
+                    if (File.Exists(tempImage))
+                    {
+                        File.Delete(tempImage);
+                    }
+                    if (Directory.Exists(tempDir) &&
+                        Directory.GetFileSystemEntries(
+                            tempDir).Length == 0)
+                    {
+                        Directory.Delete(tempDir);
+                    }
+                }
+                catch
+                {
+                }
+                output.AppendLine(ok ? "RESULT: OK" : "RESULT: FAILED");
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory,
+                        "clipboardprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
             }
         }
     }

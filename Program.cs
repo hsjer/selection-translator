@@ -40,6 +40,18 @@ namespace SelectionTranslator
                 return;
             }
 
+            if (Array.IndexOf(args, "--clipboardprobe") >= 0)
+            {
+                SelfTest.RunClipboardProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--clipboarduipreview") >= 0)
+            {
+                SelfTest.RunClipboardUiProbe();
+                return;
+            }
+
             if (Array.IndexOf(args, "--hoverprobe") >= 0)
             {
                 SelfTest.RunHoverProbe();

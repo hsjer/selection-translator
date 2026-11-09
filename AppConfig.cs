@@ -52,6 +52,16 @@ namespace SelectionTranslator
         /// <summary>在任务栏托盘区左侧显示网速 / CPU / 内存小字。</summary>
         public bool ShowTaskbarStats { get; set; }
 
+        // ---- 剪贴板历史 ----
+        /// <summary>监听系统剪贴板，记录文本 / 图片 / 文件。</summary>
+        public bool EnableClipboardHistory { get; set; }
+        /// <summary>历史保留时长（小时），0 = 永久；收藏不受限制。</summary>
+        public int ClipboardTtlHours { get; set; }
+        /// <summary>最多保留的非收藏条目数。</summary>
+        public int ClipboardMaxItems { get; set; }
+        /// <summary>打开剪贴板历史窗口的全局快捷键。</summary>
+        public string HotkeyClipboardHistory { get; set; }
+
         /// <summary>
         /// 首次运行初始化（开机启动 / 右键菜单 / 打开方式）是否已经跑过。
         /// 全新安装时为 false，跑完写 true；老配置里没这个字段按 true 处理。
@@ -84,6 +94,10 @@ namespace SelectionTranslator
             VoiceAutoCopy = false;
             EnableImageShellMenu = true;
             ShowTaskbarStats = true;
+            EnableClipboardHistory = true;
+            ClipboardTtlHours = ClipboardLogic.DefaultTtlHours;
+            ClipboardMaxItems = ClipboardLogic.DefaultMaxItems;
+            HotkeyClipboardHistory = "Ctrl+Alt+C";
             FirstRunDone = false;
         }
 
@@ -238,6 +252,26 @@ namespace SelectionTranslator
                     config.ShowTaskbarStats = true;
                 }
 
+                // 剪贴板历史是后加的：老配置里没有这几个字段时按默认开启，
+                // 但用户一旦改过（哪怕关掉）就原样保留。
+                if (!HasClipboardHistorySettings(json))
+                {
+                    config.EnableClipboardHistory = true;
+                    config.ClipboardTtlHours =
+                        ClipboardLogic.DefaultTtlHours;
+                    config.ClipboardMaxItems =
+                        ClipboardLogic.DefaultMaxItems;
+                    config.HotkeyClipboardHistory = "Ctrl+Alt+C";
+                }
+                config.ClipboardTtlHours = ClipboardLogic.NormalizeTtl(
+                    config.ClipboardTtlHours);
+                config.ClipboardMaxItems = ClipboardLogic.ClampMaxItems(
+                    config.ClipboardMaxItems);
+                if (string.IsNullOrEmpty(config.HotkeyClipboardHistory))
+                {
+                    config.HotkeyClipboardHistory = "Ctrl+Alt+C";
+                }
+
                 // 老用户已经有自己的开关状态，别把人家的设置改掉。
                 // 只有「完全没有 FirstRunDone 字段」才当成老配置跳过；
                 // 全新安装（config.json 不存在）在上面已经返回了 false。
@@ -307,6 +341,14 @@ namespace SelectionTranslator
             return json != null &&
                 json.IndexOf(
                     "\"ShowTaskbarStats\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool HasClipboardHistorySettings(string json)
+        {
+            return json != null &&
+                json.IndexOf(
+                    "\"EnableClipboardHistory\"",
                     StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
