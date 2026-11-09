@@ -34,6 +34,18 @@ namespace SelectionTranslator
                 return;
             }
 
+            if (Array.IndexOf(args, "--statsdetail") >= 0)
+            {
+                SelfTest.RunStatsDetailProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--hoverprobe") >= 0)
+            {
+                SelfTest.RunHoverProbe();
+                return;
+            }
+
             int imageTestIndex = Array.IndexOf(args, "--imagetest");
             if (imageTestIndex >= 0)
             {

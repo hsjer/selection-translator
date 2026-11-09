@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
@@ -11,6 +12,9 @@ namespace SelectionTranslator
 {
     internal static class SelfTest
     {
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool SetCursorPos(int x, int y);
+
         public static void Run()
         {
             StringBuilder output = new StringBuilder();
@@ -195,6 +199,229 @@ namespace SelectionTranslator
                 }
                 Check(output, ref ok, "config stats on by default",
                     FreshConfig().ShowTaskbarStats.ToString(), "True");
+
+                // ===== 悬浮详情：今日流量累计（按网卡记底数、跨天重置、持久化）=====
+                string trafficFile = Path.Combine(
+                    Path.GetTempPath(), "st-traffic-selftest.json");
+                try
+                {
+                    if (File.Exists(trafficFile))
+                    {
+                        File.Delete(trafficFile);
+                    }
+                }
+                catch
+                {
+                }
+                TrafficDayTracker traffic =
+                    TrafficDayTracker.Load(trafficFile);
+                Dictionary<string, long> nicRecv =
+                    new Dictionary<string, long>();
+                Dictionary<string, long> nicSent =
+                    new Dictionary<string, long>();
+                DateTime dayOne = new DateTime(2026, 11, 9, 10, 0, 0);
+                nicRecv["a"] = 1000;
+                nicSent["a"] = 100;
+                traffic.Update(dayOne, nicRecv, nicSent);
+                Check(output, ref ok, "traffic first sample is baseline",
+                    traffic.DayReceived.ToString(), "0");
+                Check(output, ref ok, "traffic baseline date",
+                    traffic.Date, "2026-11-09");
+                nicRecv["a"] = 1500;
+                nicSent["a"] = 180;
+                traffic.Update(
+                    dayOne.AddSeconds(1), nicRecv, nicSent);
+                Check(output, ref ok, "traffic delta received",
+                    traffic.DayReceived.ToString(), "500");
+                Check(output, ref ok, "traffic delta sent",
+                    traffic.DaySent.ToString(), "80");
+                nicRecv["a"] = 10;
+                nicSent["a"] = 5;
+                traffic.Update(
+                    dayOne.AddSeconds(2), nicRecv, nicSent);
+                Check(output, ref ok, "traffic counter wrap ignored",
+                    traffic.DayReceived.ToString(), "500");
+                nicRecv["b"] = 9000;
+                nicSent["b"] = 7000;
+                traffic.Update(
+                    dayOne.AddSeconds(3), nicRecv, nicSent);
+                Check(output, ref ok, "traffic new nic is baseline",
+                    traffic.DayReceived.ToString(), "500");
+                traffic.Update(
+                    new DateTime(2026, 11, 10, 0, 0, 1),
+                    nicRecv, nicSent);
+                Check(output, ref ok, "traffic day rollover date",
+                    traffic.Date, "2026-11-10");
+                Check(output, ref ok, "traffic day rollover reset",
+                    traffic.DayReceived.ToString(), "0");
+                nicRecv["a"] = 2000;
+                nicSent["a"] = 200;
+                traffic.Update(
+                    new DateTime(2026, 11, 10, 0, 1, 0),
+                    nicRecv, nicSent);
+                traffic.Save();
+                TrafficDayTracker reloaded =
+                    TrafficDayTracker.Load(trafficFile);
+                Check(output, ref ok, "traffic persisted date",
+                    reloaded.Date, "2026-11-10");
+                Check(output, ref ok, "traffic persisted received",
+                    reloaded.DayReceived.ToString(), "1990");
+                Check(output, ref ok, "traffic persisted sent",
+                    reloaded.DaySent.ToString(), "195");
+                try
+                {
+                    File.Delete(trafficFile);
+                }
+                catch
+                {
+                }
+
+                // ===== 悬浮详情：数值格式化 =====
+                Check(output, ref ok, "detail format KB",
+                    TaskbarStats.FormatBytes(1536), "1.50 KB");
+                Check(output, ref ok, "detail format MB",
+                    TaskbarStats.FormatBytes(2.5 * 1024 * 1024),
+                    "2.50 MB");
+                Check(output, ref ok, "detail format ghz",
+                    TaskbarStats.FormatGhz(3370), "3.37 GHz");
+                Check(output, ref ok, "detail format ghz unavailable",
+                    TaskbarStats.FormatGhz(0), "");
+                Check(output, ref ok, "detail format duration",
+                    TaskbarStats.FormatDuration(8100), "2 小时 15 分");
+                Check(output, ref ok, "detail format duration short",
+                    TaskbarStats.FormatDuration(30), "不到 1 分钟");
+                Check(output, ref ok, "detail format duration unknown",
+                    TaskbarStats.FormatDuration(-1), "");
+
+                // ===== GPU 计数器实例解析与聚合 =====
+                int gpuPhys;
+                string gpuEngine;
+                bool gpuParsed = TaskbarStats.TryParseGpuInstance(
+                    "pid_10256_luid_0x0_0x1_phys_0_eng_0_engtype_3D",
+                    out gpuPhys, out gpuEngine);
+                Check(output, ref ok, "gpu instance parsed",
+                    gpuParsed.ToString(), "True");
+                Check(output, ref ok, "gpu instance phys",
+                    gpuPhys.ToString(), "0");
+                Check(output, ref ok, "gpu instance engine",
+                    gpuEngine, "3D");
+                Check(output, ref ok, "gpu instance bad name",
+                    TaskbarStats.TryParseGpuInstance(
+                        "not-a-gpu", out gpuPhys,
+                        out gpuEngine).ToString(), "False");
+                List<KeyValuePair<string, float>> gpuValues =
+                    new List<KeyValuePair<string, float>>();
+                gpuValues.Add(new KeyValuePair<string, float>(
+                    "pid_1_phys_0_eng_0_engtype_3D", 12.4f));
+                gpuValues.Add(new KeyValuePair<string, float>(
+                    "pid_2_phys_0_eng_1_engtype_3D", 30.2f));
+                gpuValues.Add(new KeyValuePair<string, float>(
+                    "pid_3_phys_1_eng_0_engtype_VideoDecode", 7f));
+                gpuValues.Add(new KeyValuePair<string, float>(
+                    "pid_4_phys_1_eng_1_engtype_VideoDecode", 140f));
+                int[] gpuLoads =
+                    TaskbarStats.AggregateGpuLoad(gpuValues);
+                Check(output, ref ok, "gpu aggregate count",
+                    gpuLoads.Length.ToString(), "2");
+                Check(output, ref ok, "gpu aggregate phys0 max",
+                    gpuLoads[0].ToString(), "43");
+                Check(output, ref ok, "gpu aggregate clamped",
+                    gpuLoads[1].ToString(), "100");
+                Check(output, ref ok, "gpu aggregate empty",
+                    TaskbarStats.AggregateGpuLoad(null)
+                        .Length.ToString(), "0");
+
+                // ===== 详情行：能取到的才显示 =====
+                List<TaskbarStats.DetailRow> minimumRows =
+                    TaskbarStats.FormatDetailRows(
+                        new TaskbarStats.DetailSample());
+                Check(output, ref ok, "detail minimum rows",
+                    minimumRows.Count.ToString(), "3");
+                List<TaskbarStats.DetailRow> previewRows =
+                    TaskbarStatsForm.BuildPreviewRows();
+                Check(output, ref ok, "detail preview rows",
+                    previewRows.Count.ToString(), "7");
+                Check(output, ref ok, "detail preview traffic value",
+                    previewRows[0].Value.IndexOf("2.03 GB") >= 0
+                        ? "yes" : "no", "yes");
+                Check(output, ref ok, "detail preview battery",
+                    previewRows[6].Value, "82%   剩余 2 小时 15 分");
+                TaskbarStats.DetailSample charging =
+                    new TaskbarStats.DetailSample();
+                charging.HasBattery = true;
+                charging.BatteryPercent = 100;
+                charging.BatteryOnAc = true;
+                charging.GpuLoads = new int[] { 10, 20 };
+                List<TaskbarStats.DetailRow> chargingRows =
+                    TaskbarStats.FormatDetailRows(charging);
+                Check(output, ref ok, "detail charging label",
+                    chargingRows[chargingRows.Count - 1].Value,
+                    "100%   充电中");
+                Check(output, ref ok, "detail multi gpu rows",
+                    chargingRows.Count.ToString(), "6");
+
+                // ===== 详情卡片位图：圆角透明、深浅两套配色 =====
+                using (Bitmap lightCard =
+                    TaskbarStatsDetailForm.RenderBitmap(
+                        previewRows, 1f, true))
+                using (Bitmap darkCard =
+                    TaskbarStatsDetailForm.RenderBitmap(
+                        previewRows, 1f, false))
+                {
+                    Check(output, ref ok, "detail card width",
+                        (lightCard.Width > 150).ToString(), "True");
+                    Check(output, ref ok, "detail card height",
+                        (lightCard.Height > 100).ToString(), "True");
+                    Check(output, ref ok, "detail card rounded corner",
+                        lightCard.GetPixel(0, 0).A < 128
+                            ? "transparent" : "opaque",
+                        "transparent");
+                    Check(output, ref ok, "detail card center opaque",
+                        lightCard.GetPixel(
+                            lightCard.Width / 2,
+                            lightCard.Height / 2).A.ToString(),
+                        "255");
+                    Check(output, ref ok, "detail card theme differs",
+                        (lightCard.GetPixel(12, 12).ToArgb() !=
+                            darkCard.GetPixel(12, 12).ToArgb())
+                            .ToString(), "True");
+                }
+
+                // ===== 悬停判定：状态条内展开、移开收起、卡片内保持 =====
+                Rectangle hoverBar =
+                    new Rectangle(100, 100, 120, 40);
+                Rectangle hoverCard =
+                    new Rectangle(60, 20, 300, 70);
+                Check(output, ref ok, "hover over bar",
+                    TaskbarStats.ShouldShowDetail(
+                        new Point(150, 120), hoverBar,
+                        Rectangle.Empty, false).ToString(), "True");
+                Check(output, ref ok, "hover far away",
+                    TaskbarStats.ShouldShowDetail(
+                        new Point(500, 500), hoverBar,
+                        hoverCard, true).ToString(), "False");
+                Check(output, ref ok, "hover edge tolerance",
+                    TaskbarStats.ShouldShowDetail(
+                        new Point(150, 94), hoverBar,
+                        Rectangle.Empty, false).ToString(), "True");
+                Check(output, ref ok, "hover inside open card",
+                    TaskbarStats.ShouldShowDetail(
+                        new Point(200, 50), hoverBar,
+                        hoverCard, true).ToString(), "True");
+                Check(output, ref ok, "hover inside closed card",
+                    TaskbarStats.ShouldShowDetail(
+                        new Point(200, 50), hoverBar,
+                        hoverCard, false).ToString(), "False");
+                Check(output, ref ok, "hover empty bounds",
+                    TaskbarStats.ShouldShowDetail(
+                        new Point(0, 0), Rectangle.Empty,
+                        Rectangle.Empty, true).ToString(), "False");
+
+                int liveCpuMhz = TaskbarStats.CpuFrequencyMhz();
+                Check(output, ref ok, "stats live cpu freq sane",
+                    (liveCpuMhz == 0 ||
+                        (liveCpuMhz >= 100 && liveCpuMhz <= 10000))
+                        .ToString(), "True");
 
                 // 分段翻译：长文本应被拆成多段，每段 UTF-8 字节数都不超过上限，
                 // 且拼接后能还原原文。
@@ -1521,6 +1748,260 @@ namespace SelectionTranslator
                 "selftest.txt");
             File.WriteAllText(path, output.ToString(), Encoding.UTF8);
             Environment.ExitCode = ok ? 0 : 1;
+        }
+
+        /// <summary>
+        /// 真实把鼠标移进状态条再移开，验证详情卡片自动展开 / 自动收起。
+        /// 会短暂移动光标，结束前恢复到原来的位置。
+        /// </summary>
+        public static void RunHoverProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool pass = true;
+            Point original = Cursor.Position;
+            try
+            {
+                Application.EnableVisualStyles();
+                using (TaskbarStatsForm form =
+                    new TaskbarStatsForm())
+                {
+                    form.Show();
+                    for (int i = 0; i < 6; i++)
+                    {
+                        Application.DoEvents();
+                        System.Threading.Thread.Sleep(50);
+                    }
+                    form.RefreshNow();
+                    Rectangle bar = form.BarBounds;
+                    output.AppendLine("barBounds=" + bar);
+                    if (bar.IsEmpty)
+                    {
+                        pass = false;
+                        output.AppendLine("bar is empty");
+                    }
+                    else
+                    {
+                        SetCursorPos(
+                            bar.Left + bar.Width / 2,
+                            bar.Top + bar.Height / 2);
+                        for (int i = 0; i < 10; i++)
+                        {
+                            Application.DoEvents();
+                            System.Threading.Thread.Sleep(50);
+                        }
+                        bool opened = form.IsDetailVisible;
+                        output.AppendLine("detailBounds=" +
+                            form.DetailBounds);
+                        output.AppendLine("after hover in, visible=" +
+                            opened);
+                        if (!opened)
+                        {
+                            pass = false;
+                        }
+
+                        SetCursorPos(20, 20);
+                        for (int i = 0; i < 10; i++)
+                        {
+                            Application.DoEvents();
+                            System.Threading.Thread.Sleep(50);
+                        }
+                        bool closed = !form.IsDetailVisible;
+                        output.AppendLine("after hover out, hidden=" +
+                            closed);
+                        if (!closed)
+                        {
+                            pass = false;
+                        }
+                    }
+                    form.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                pass = false;
+                output.AppendLine("EXCEPTION: " + ex);
+            }
+            finally
+            {
+                SetCursorPos(original.X, original.Y);
+            }
+
+            output.AppendLine(
+                pass ? "RESULT: OK" : "RESULT: FAILED");
+            Directory.CreateDirectory(
+                ConfigStore.DataDirectory);
+            File.WriteAllText(
+                Path.Combine(
+                    ConfigStore.DataDirectory,
+                    "hoverprobe.txt"),
+                output.ToString(),
+                Encoding.UTF8);
+            Environment.ExitCode = pass ? 0 : 1;
+        }
+
+        /// <summary>
+        /// 悬浮详情诊断：生成浅色 / 深色两张卡片预览图，把状态条和
+        /// 详情卡片真的贴到任务栏上实拍，并输出本机各指标能否取到。
+        /// </summary>
+        public static void RunStatsDetailProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool pass = true;
+            try
+            {
+                Application.EnableVisualStyles();
+                List<TaskbarStats.DetailRow> rows =
+                    TaskbarStatsForm.BuildPreviewRows();
+                output.AppendLine("preview rows=" + rows.Count);
+                for (int i = 0; i < rows.Count; i++)
+                {
+                    output.AppendLine(
+                        "  " + rows[i].Label + " | " + rows[i].Value);
+                }
+
+                using (Bitmap light =
+                    TaskbarStatsDetailForm.RenderBitmap(
+                        rows, 1f, true))
+                using (Bitmap dark =
+                    TaskbarStatsDetailForm.RenderBitmap(
+                        rows, 1f, false))
+                using (Bitmap preview = new Bitmap(
+                    light.Width * 2 + 36, light.Height + 24))
+                {
+                    using (Graphics graphics =
+                        Graphics.FromImage(preview))
+                    {
+                        graphics.Clear(
+                            Color.FromArgb(226, 230, 236));
+                        graphics.DrawImageUnscaled(light, 12, 12);
+                        graphics.DrawImageUnscaled(
+                            dark, light.Width + 24, 12);
+                    }
+                    preview.Save(
+                        Path.Combine(
+                            ConfigStore.DataDirectory,
+                            "ui-stats-detail.png"),
+                        ImageFormat.Png);
+                    output.AppendLine("preview card=" +
+                        light.Width + "x" + light.Height);
+                }
+
+                ulong usedBytes;
+                ulong totalBytes;
+                TaskbarStats.MemoryBytes(
+                    out usedBytes, out totalBytes);
+                long freeBytes;
+                long diskBytes;
+                TaskbarStats.DiskSpace(
+                    out freeBytes, out diskBytes);
+                bool hasBattery;
+                int batteryPercent;
+                bool onAc;
+                int remainSeconds;
+                TaskbarStats.Battery(
+                    out hasBattery, out batteryPercent,
+                    out onAc, out remainSeconds);
+                output.AppendLine("cpuFreqMhz=" +
+                    TaskbarStats.CpuFrequencyMhz());
+                output.AppendLine("memoryBytes=" + usedBytes +
+                    "/" + totalBytes);
+                output.AppendLine("diskBytes=" + freeBytes +
+                    "/" + diskBytes);
+                output.AppendLine("battery=" + hasBattery +
+                    " percent=" + batteryPercent +
+                    " onAc=" + onAc +
+                    " remain=" + remainSeconds);
+                output.AppendLine("lightTheme=" +
+                    TaskbarStatsForm.IsLightTheme());
+
+                using (TaskbarStatsForm form =
+                    new TaskbarStatsForm())
+                {
+                    form.SuspendHover = true;
+                    form.Show();
+                    for (int i = 0; i < 20; i++)
+                    {
+                        Application.DoEvents();
+                        System.Threading.Thread.Sleep(50);
+                    }
+                    form.ShowDetailForProbe();
+                    for (int i = 0; i < 6; i++)
+                    {
+                        Application.DoEvents();
+                        System.Threading.Thread.Sleep(50);
+                    }
+                    Rectangle detail = form.DetailBounds;
+                    Rectangle bar = form.BarBounds;
+                    Rectangle taskbar =
+                        TaskbarStatsForm.GetTaskbarRect();
+                    output.AppendLine("barBounds=" + bar);
+                    output.AppendLine("detailBounds=" + detail);
+                    output.AppendLine("taskbar=" + taskbar);
+                    if (detail.Width <= 0 || detail.Height <= 0)
+                    {
+                        pass = false;
+                    }
+
+                    Rectangle screen = Screen.FromRectangle(
+                        bar.IsEmpty ? taskbar : bar).Bounds;
+                    int x = Math.Max(
+                        screen.Left,
+                        Math.Min(detail.Left, bar.Left) - 30);
+                    int y = Math.Max(
+                        screen.Top, detail.Top - 28);
+                    int width = Math.Min(
+                        screen.Right - x,
+                        Math.Max(560, detail.Width + 60));
+                    int height = Math.Min(
+                        screen.Bottom - y,
+                        Math.Max(120,
+                            taskbar.Bottom - y + 8));
+                    if (width > 0 && height > 0)
+                    {
+                        using (Bitmap shot =
+                            new Bitmap(width, height))
+                        {
+                            using (Graphics graphics =
+                                Graphics.FromImage(shot))
+                            {
+                                graphics.CopyFromScreen(
+                                    x, y, 0, 0,
+                                    new Size(width, height));
+                            }
+                            shot.Save(
+                                Path.Combine(
+                                    ConfigStore.DataDirectory,
+                                    "ui-stats-detail-live.png"),
+                                ImageFormat.Png);
+                        }
+                        output.AppendLine("capture=" +
+                            new Rectangle(x, y, width, height));
+                    }
+                    else
+                    {
+                        pass = false;
+                        output.AppendLine("capture=invalid");
+                    }
+                    form.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                pass = false;
+                output.AppendLine("EXCEPTION: " + ex);
+            }
+
+            output.AppendLine(
+                pass ? "RESULT: OK" : "RESULT: FAILED");
+            Directory.CreateDirectory(
+                ConfigStore.DataDirectory);
+            File.WriteAllText(
+                Path.Combine(
+                    ConfigStore.DataDirectory,
+                    "statsdetailprobe.txt"),
+                output.ToString(),
+                Encoding.UTF8);
+            Environment.ExitCode = pass ? 0 : 1;
         }
 
         /// <summary>

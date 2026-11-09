@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
@@ -115,13 +118,30 @@ namespace SelectionTranslator
             ref BLENDFUNCTION blend,
             int flags);
 
+        // 状态条是鼠标穿透窗口，收不到 MouseEnter，只能轮询光标位置。
+        [DllImport("user32.dll")]
+        private static extern bool GetCursorPos(out POINT point);
+
         private readonly Timer _timer;
+        private readonly Timer _hoverTimer;
         private readonly float _scale;
+        private readonly TrafficDayTracker _trafficDay;
+        private readonly GpuSampler _gpuSampler;
         private long _lastReceived;
         private long _lastSent;
         private ulong _lastIdle;
         private ulong _lastTotal;
         private bool _hasBaseline;
+
+        private double _lastUpload;
+        private double _lastDownload;
+        private int _lastCpu;
+        private int[] _lastGpuLoads = new int[0];
+        private DateTime _lastTrafficSave = DateTime.MinValue;
+        private DateTime _lastDetailPaint = DateTime.MinValue;
+        private Rectangle _barBounds = Rectangle.Empty;
+        private Rectangle _detailBounds = Rectangle.Empty;
+        private TaskbarStatsDetailForm _detailForm;
 
         public TaskbarStatsForm()
         {
@@ -146,9 +166,18 @@ namespace SelectionTranslator
             }
             _scale = Math.Max(1f, Math.Min(2.5f, scale));
 
+            _trafficDay = TrafficDayTracker.Load(
+                Path.Combine(
+                    ConfigStore.DataDirectory, "traffic.json"));
+            _gpuSampler = new GpuSampler();
+
             _timer = new Timer();
             _timer.Interval = 1000;
             _timer.Tick += OnTick;
+
+            _hoverTimer = new Timer();
+            _hoverTimer.Interval = 150;
+            _hoverTimer.Tick += OnHoverTick;
         }
 
         protected override CreateParams CreateParams
@@ -173,6 +202,7 @@ namespace SelectionTranslator
         {
             base.OnShown(e);
             _timer.Start();
+            _hoverTimer.Start();
             RefreshNow();
         }
 
@@ -185,20 +215,49 @@ namespace SelectionTranslator
                 {
                     _timer.Start();
                 }
+                if (!_hoverTimer.Enabled)
+                {
+                    _hoverTimer.Start();
+                }
                 RefreshNow();
             }
             else
             {
                 _timer.Stop();
+                _hoverTimer.Stop();
+                HideDetail();
             }
         }
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing && _timer != null)
+            if (disposing)
             {
-                _timer.Stop();
-                _timer.Dispose();
+                if (_hoverTimer != null)
+                {
+                    _hoverTimer.Stop();
+                    _hoverTimer.Dispose();
+                }
+                if (_timer != null)
+                {
+                    _timer.Stop();
+                    _timer.Dispose();
+                }
+                if (_detailForm != null)
+                {
+                    if (!_detailForm.IsDisposed)
+                    {
+                        _detailForm.Dispose();
+                    }
+                    _detailForm = null;
+                }
+                try
+                {
+                    _trafficDay.Save();
+                }
+                catch
+                {
+                }
             }
             base.Dispose(disposing);
         }
@@ -210,9 +269,13 @@ namespace SelectionTranslator
                 return;
             }
 
+            Dictionary<string, long> receivedByNic;
+            Dictionary<string, long> sentByNic;
             long received;
             long sent;
-            TaskbarStats.SampleTraffic(out received, out sent);
+            TaskbarStats.SampleTrafficByNic(
+                out receivedByNic, out sentByNic,
+                out received, out sent);
             ulong idle;
             ulong total;
             TaskbarStats.SampleCpu(out idle, out total);
@@ -224,6 +287,10 @@ namespace SelectionTranslator
             if (_hasBaseline)
             {
                 double seconds = _timer.Interval / 1000.0;
+                if (seconds <= 0)
+                {
+                    seconds = 1.0;
+                }
                 download = Math.Max(0, received - _lastReceived) /
                     seconds;
                 upload = Math.Max(0, sent - _lastSent) / seconds;
@@ -235,19 +302,216 @@ namespace SelectionTranslator
             _lastIdle = idle;
             _lastTotal = total;
             _hasBaseline = true;
+            _lastUpload = upload;
+            _lastDownload = download;
+            _lastCpu = cpu;
+
+            // 当日累计：按网卡记底数，避免开机以来的累计被算进今天。
+            DateTime now = DateTime.Now;
+            bool dayChanged = _trafficDay.Date !=
+                now.ToString(
+                    "yyyy-MM-dd", CultureInfo.InvariantCulture);
+            _trafficDay.Update(now, receivedByNic, sentByNic);
+            if (dayChanged ||
+                (now - _lastTrafficSave).TotalSeconds >= 30)
+            {
+                _trafficDay.Save();
+                _lastTrafficSave = now;
+            }
+
+            // GPU Engine 是累计时间计数器，必须两次采样求差；
+            // 首次返回 null，对应行自动隐藏，下一秒就有值。
+            _lastGpuLoads = TaskbarStats.AggregateGpuLoad(
+                _gpuSampler.Sample());
 
             string up = TaskbarStats.FormatSpeed(upload);
             string down = TaskbarStats.FormatSpeed(download);
             using (Bitmap bitmap = RenderBitmap(
                 up, down, cpu, memory, _scale))
             {
-                DrawLayered(bitmap);
+                Point position = DrawLayered(bitmap);
+                _barBounds = new Rectangle(position, bitmap.Size);
             }
         }
 
         private void OnTick(object sender, EventArgs e)
         {
             RefreshNow();
+        }
+
+        /// <summary>诊断实拍时挂起自动收起，否则光标不在状态条上会被收掉。</summary>
+        public bool SuspendHover { get; set; }
+
+        /// <summary>当前状态条屏幕矩形（诊断用）。</summary>
+        public Rectangle BarBounds
+        {
+            get { return _barBounds; }
+        }
+
+        /// <summary>当前详情卡片屏幕矩形（诊断用）。</summary>
+        public Rectangle DetailBounds
+        {
+            get { return _detailBounds; }
+        }
+
+        /// <summary>详情卡片当前是否可见（悬停探针用）。</summary>
+        public bool IsDetailVisible
+        {
+            get
+            {
+                return _detailForm != null &&
+                    !_detailForm.IsDisposed &&
+                    _detailForm.Visible;
+            }
+        }
+
+        /// <summary>悬停检测：光标在状态条或详情卡片内就展开，移开即收起。</summary>
+        private void OnHoverTick(object sender, EventArgs e)
+        {
+            if (SuspendHover || !Visible || IsDisposed)
+            {
+                return;
+            }
+            POINT native;
+            if (!GetCursorPos(out native))
+            {
+                return;
+            }
+            Point cursor = new Point(native.X, native.Y);
+            bool keepOpen = TaskbarStats.ShouldShowDetail(
+                cursor,
+                _barBounds,
+                _detailBounds,
+                _detailForm != null &&
+                    !_detailForm.IsDisposed &&
+                    _detailForm.Visible);
+
+            if (keepOpen)
+            {
+                EnsureDetail();
+                // 刚展开时立刻画一次，之后约每秒跟随数据刷新。
+                if (!_detailForm.Visible ||
+                    (DateTime.UtcNow - _lastDetailPaint)
+                        .TotalMilliseconds >= 900)
+                {
+                    RefreshDetail();
+                    _lastDetailPaint = DateTime.UtcNow;
+                }
+            }
+            else
+            {
+                HideDetail();
+            }
+        }
+
+        private void EnsureDetail()
+        {
+            if (_detailForm == null || _detailForm.IsDisposed)
+            {
+                _detailForm = new TaskbarStatsDetailForm();
+            }
+        }
+
+        private void HideDetail()
+        {
+            if (_detailForm != null &&
+                !_detailForm.IsDisposed &&
+                _detailForm.Visible)
+            {
+                _detailForm.Hide();
+            }
+            _detailBounds = Rectangle.Empty;
+        }
+
+        /// <summary>用当前缓存 + 即时采样组装一帧详情。</summary>
+        private TaskbarStats.DetailSample CaptureDetail()
+        {
+            TaskbarStats.DetailSample sample =
+                new TaskbarStats.DetailSample();
+            sample.DayReceived = _trafficDay.DayReceived;
+            sample.DaySent = _trafficDay.DaySent;
+            sample.UploadBps = _lastUpload;
+            sample.DownloadBps = _lastDownload;
+            sample.CpuPercent = _lastCpu;
+            sample.CpuMhz = TaskbarStats.CpuFrequencyMhz();
+
+            ulong memoryUsed;
+            ulong memoryTotal;
+            TaskbarStats.MemoryBytes(
+                out memoryUsed, out memoryTotal);
+            sample.MemoryUsed = memoryUsed >
+                (ulong)long.MaxValue
+                    ? long.MaxValue : (long)memoryUsed;
+            sample.MemoryTotal = memoryTotal >
+                (ulong)long.MaxValue
+                    ? long.MaxValue : (long)memoryTotal;
+
+            long diskFree;
+            long diskTotal;
+            TaskbarStats.DiskSpace(out diskFree, out diskTotal);
+            sample.DiskFree = diskFree;
+            sample.DiskTotal = diskTotal;
+
+            bool hasBattery;
+            int batteryPercent;
+            bool onAc;
+            int remainSeconds;
+            TaskbarStats.Battery(
+                out hasBattery, out batteryPercent,
+                out onAc, out remainSeconds);
+            sample.HasBattery = hasBattery;
+            sample.BatteryPercent = batteryPercent;
+            sample.BatteryOnAc = onAc;
+            sample.BatteryRemainSeconds = remainSeconds;
+
+            sample.GpuLoads = _lastGpuLoads;
+            return sample;
+        }
+
+        private void RefreshDetail()
+        {
+            if (_detailForm == null || _detailForm.IsDisposed)
+            {
+                return;
+            }
+            List<TaskbarStats.DetailRow> rows =
+                TaskbarStats.FormatDetailRows(CaptureDetail());
+            _detailBounds = _detailForm.ShowAt(
+                _barBounds,
+                GetTaskbarRect(),
+                rows,
+                IsLightTheme());
+        }
+
+        /// <summary>诊断用：不依赖鼠标，直接把详情卡片显示出来。</summary>
+        public void ShowDetailForProbe()
+        {
+            EnsureDetail();
+            RefreshNow();
+            RefreshDetail();
+        }
+
+        /// <summary>预览与自检共用的假数据行。</summary>
+        public static List<TaskbarStats.DetailRow> BuildPreviewRows()
+        {
+            TaskbarStats.DetailSample sample =
+                new TaskbarStats.DetailSample();
+            sample.DayReceived = 1834L * 1024 * 1024;
+            sample.DaySent = 246L * 1024 * 1024;
+            sample.UploadBps = 6.6 * 1024;
+            sample.DownloadBps = 5.04 * 1024;
+            sample.CpuPercent = 28;
+            sample.CpuMhz = 3370;
+            sample.MemoryUsed = 9L * 1024 * 1024 * 1024;
+            sample.MemoryTotal = 16L * 1024 * 1024 * 1024;
+            sample.DiskFree = 128L * 1024 * 1024 * 1024;
+            sample.DiskTotal = 512L * 1024 * 1024 * 1024;
+            sample.GpuLoads = new int[] { 17 };
+            sample.HasBattery = true;
+            sample.BatteryPercent = 82;
+            sample.BatteryOnAc = false;
+            sample.BatteryRemainSeconds = 8100;
+            return TaskbarStats.FormatDetailRows(sample);
         }
 
         /// <summary>
@@ -337,8 +601,8 @@ namespace SelectionTranslator
             }
         }
 
-        /// <summary>任务栏是浅色时用深字，深色时用浅字。</summary>
-        public static Color TextColor()
+        /// <summary>系统是否使用浅色任务栏（详情卡片配色也跟着走）。</summary>
+        public static bool IsLightTheme()
         {
             try
             {
@@ -348,20 +612,25 @@ namespace SelectionTranslator
                 {
                     object value = key == null
                         ? null : key.GetValue("SystemUsesLightTheme");
-                    bool light = value == null ||
+                    return value == null ||
                         Convert.ToInt32(value) != 0;
-                    return light
-                        ? Color.FromArgb(255, 26, 28, 32)
-                        : Color.FromArgb(255, 240, 242, 246);
                 }
             }
             catch
             {
-                return Color.FromArgb(255, 26, 28, 32);
+                return true;
             }
         }
 
-        private void DrawLayered(Bitmap bitmap)
+        /// <summary>任务栏是浅色时用深字，深色时用浅字。</summary>
+        public static Color TextColor()
+        {
+            return IsLightTheme()
+                ? Color.FromArgb(255, 26, 28, 32)
+                : Color.FromArgb(255, 240, 242, 246);
+        }
+
+        private Point DrawLayered(Bitmap bitmap)
         {
             IntPtr screenDc = GetDC(IntPtr.Zero);
             IntPtr memoryDc = CreateCompatibleDC(screenDc);
@@ -398,6 +667,7 @@ namespace SelectionTranslator
                     0,
                     ref blend,
                     ULW_ALPHA);
+                return position;
             }
             finally
             {
