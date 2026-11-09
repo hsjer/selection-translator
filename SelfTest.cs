@@ -176,6 +176,76 @@ namespace SelectionTranslator
                     statsLine1, "↑ 1.00 KB/s   CPU: 17%");
                 Check(output, ref ok, "stats line 2",
                     statsLine2, "↓ 2.00 KB/s   内存: 62%");
+                TaskbarStats.BarLine barFirst;
+                TaskbarStats.BarLine barSecond;
+                TaskbarStats.FormatLineParts(
+                    "1.00 KB/s", "2.00 KB/s", 17, 62,
+                    out barFirst, out barSecond);
+                Check(output, ref ok, "bar parts first",
+                    barFirst.Arrow + "|" + barFirst.Speed + "|" +
+                    barFirst.Label + "|" + barFirst.Percent,
+                    "↑|1.00 KB/s|CPU|17%");
+                Check(output, ref ok, "bar parts second",
+                    barSecond.Arrow + "|" + barSecond.Speed + "|" +
+                    barSecond.Label + "|" + barSecond.Percent,
+                    "↓|2.00 KB/s|内存|62%");
+
+                // 数字位数从最短跳到最长，位图尺寸和文本右端都必须
+                // 保持不动，否则右边缘贴托盘的状态条会整体左右抖，
+                // 两行的列也会上下错开。
+                Func<Bitmap, int> rightmostInk = delegate(Bitmap image)
+                {
+                    int best = -1;
+                    for (int yy = 0; yy < image.Height; yy++)
+                    {
+                        for (int xx = image.Width - 1;
+                            xx > best; xx--)
+                        {
+                            if (image.GetPixel(xx, yy).A > 8)
+                            {
+                                best = xx;
+                                break;
+                            }
+                        }
+                    }
+                    return best;
+                };
+                using (Bitmap smallNumbers =
+                    TaskbarStatsForm.RenderBitmap(
+                        "0 B/s", "0 B/s", 8, 9, 1f))
+                using (Bitmap bigNumbers =
+                    TaskbarStatsForm.RenderBitmap(
+                        "999.99 MB/s", "1023.99 KB/s",
+                        100, 100, 1f))
+                {
+                    Check(output, ref ok, "bar width stable",
+                        (smallNumbers.Width ==
+                            bigNumbers.Width).ToString(),
+                        "True");
+                    Check(output, ref ok, "bar height stable",
+                        (smallNumbers.Height ==
+                            bigNumbers.Height).ToString(),
+                        "True");
+                    Check(output, ref ok, "bar right edge stable",
+                        (Math.Abs(
+                            rightmostInk(smallNumbers) -
+                            rightmostInk(bigNumbers)) <= 1)
+                            .ToString(), "True");
+                }
+                using (Bitmap scaledSmall =
+                    TaskbarStatsForm.RenderBitmap(
+                        "0 B/s", "0 B/s", 8, 9, 1.25f))
+                using (Bitmap scaledBig =
+                    TaskbarStatsForm.RenderBitmap(
+                        "999.99 MB/s", "1023.99 KB/s",
+                        100, 100, 1.25f))
+                {
+                    Check(output, ref ok,
+                        "bar width stable at 125%",
+                        (scaledSmall.Width ==
+                            scaledBig.Width).ToString(),
+                        "True");
+                }
                 Point statsPosition = TaskbarStats.ComputePosition(
                     new Rectangle(0, 1040, 1920, 40),
                     new Rectangle(1600, 1040, 320, 40),
@@ -380,6 +450,11 @@ namespace SelectionTranslator
                         (lightCard.Width > 150).ToString(), "True");
                     Check(output, ref ok, "detail card height",
                         (lightCard.Height > 100).ToString(), "True");
+                    // 悬停卡片要紧凑，别盖住大半个桌面。
+                    Check(output, ref ok, "detail card compact width",
+                        (lightCard.Width < 320).ToString(), "True");
+                    Check(output, ref ok, "detail card compact height",
+                        (lightCard.Height < 175).ToString(), "True");
                     Check(output, ref ok, "detail card rounded corner",
                         lightCard.GetPixel(0, 0).A < 128
                             ? "transparent" : "opaque",
@@ -1990,12 +2065,19 @@ namespace SelectionTranslator
                         SetCursorPos(
                             bar.Left + bar.Width / 2,
                             bar.Top + bar.Height / 2);
-                        for (int i = 0; i < 10; i++)
+                        // 连续跑多个诊断时系统可能忙，轮询到状态变化
+                        // 为止，最多等 1.2 秒，避免固定 500ms 误报。
+                        bool opened = false;
+                        for (int i = 0; i < 24; i++)
                         {
                             Application.DoEvents();
                             System.Threading.Thread.Sleep(50);
+                            if (form.IsDetailVisible)
+                            {
+                                opened = true;
+                                break;
+                            }
                         }
-                        bool opened = form.IsDetailVisible;
                         output.AppendLine("detailBounds=" +
                             form.DetailBounds);
                         output.AppendLine("after hover in, visible=" +
@@ -2006,12 +2088,17 @@ namespace SelectionTranslator
                         }
 
                         SetCursorPos(20, 20);
-                        for (int i = 0; i < 10; i++)
+                        bool closed = false;
+                        for (int i = 0; i < 24; i++)
                         {
                             Application.DoEvents();
                             System.Threading.Thread.Sleep(50);
+                            if (!form.IsDetailVisible)
+                            {
+                                closed = true;
+                                break;
+                            }
                         }
-                        bool closed = !form.IsDetailVisible;
                         output.AppendLine("after hover out, hidden=" +
                             closed);
                         if (!closed)
@@ -2144,6 +2231,19 @@ namespace SelectionTranslator
                     output.AppendLine("detailBounds=" + detail);
                     output.AppendLine("taskbar=" + taskbar);
                     if (detail.Width <= 0 || detail.Height <= 0)
+                    {
+                        pass = false;
+                    }
+                    // 卡片应整体偏到状态条右侧，但仍留一段水平重叠，
+                    // 保证鼠标从状态条斜移进卡片时不会被误判为移开。
+                    bool shiftedRight = detail.Right > bar.Right;
+                    bool keepsOverlap = detail.Left < bar.Right;
+                    bool compact =
+                        detail.Width < bar.Width * 3;
+                    output.AppendLine("shiftedRight=" +
+                        shiftedRight + " keepsOverlap=" +
+                        keepsOverlap + " compact=" + compact);
+                    if (!shiftedRight || !keepsOverlap || !compact)
                     {
                         pass = false;
                     }
@@ -2353,6 +2453,78 @@ namespace SelectionTranslator
                                 ConfigStore.DataDirectory,
                                 "ui-stats.png"),
                             ImageFormat.Png);
+                    }
+                }
+
+                // 数字从最短跳到最长的放大对比：两张位图应等宽等高，
+                // 每列右端重合，肉眼看得出不会再左右抖 / 上下错开。
+                using (Bitmap compact =
+                    TaskbarStatsForm.RenderBitmap(
+                        "0 B/s", "0 B/s", 8, 9, 1f,
+                        Color.FromArgb(255, 26, 28, 32)))
+                using (Bitmap wide =
+                    TaskbarStatsForm.RenderBitmap(
+                        "999.99 MB/s", "1023.99 KB/s",
+                        100, 100, 1f,
+                        Color.FromArgb(255, 26, 28, 32)))
+                {
+                    const int zoom = 3;
+                    int zoomWidth = wide.Width * zoom + 24;
+                    int zoomHeight =
+                        (compact.Height + wide.Height) * zoom + 36;
+                    using (Bitmap zoomed = new Bitmap(
+                        zoomWidth, zoomHeight))
+                    {
+                        using (Graphics graphics =
+                            Graphics.FromImage(zoomed))
+                        {
+                            graphics.Clear(Color.White);
+                            using (SolidBrush barBackground =
+                                new SolidBrush(
+                                    Color.FromArgb(243, 243, 243)))
+                            {
+                                graphics.FillRectangle(
+                                    barBackground, 0, 0,
+                                    zoomWidth, zoomHeight);
+                            }
+                            graphics.InterpolationMode =
+                                System.Drawing.Drawing2D
+                                .InterpolationMode.NearestNeighbor;
+                            graphics.DrawImage(
+                                compact,
+                                new Rectangle(
+                                    12, 8,
+                                    compact.Width * zoom,
+                                    compact.Height * zoom),
+                                new Rectangle(
+                                    0, 0,
+                                    compact.Width,
+                                    compact.Height),
+                                GraphicsUnit.Pixel);
+                            graphics.DrawImage(
+                                wide,
+                                new Rectangle(
+                                    12, 16 + compact.Height * zoom,
+                                    wide.Width * zoom,
+                                    wide.Height * zoom),
+                                new Rectangle(
+                                    0, 0,
+                                    wide.Width, wide.Height),
+                                GraphicsUnit.Pixel);
+                        }
+                        zoomed.Save(
+                            Path.Combine(
+                                ConfigStore.DataDirectory,
+                                "ui-bar-zoom.png"),
+                            ImageFormat.Png);
+                    }
+                    output.AppendLine("bar stable sizes=" +
+                        compact.Width + "x" + compact.Height +
+                        " / " + wide.Width + "x" + wide.Height);
+                    if (compact.Width != wide.Width ||
+                        compact.Height != wide.Height)
+                    {
+                        pass = false;
                     }
                 }
             }

@@ -100,12 +100,13 @@ namespace SelectionTranslator
                 ? Color.FromArgb(110, 150, 158, 168)
                 : Color.FromArgb(90, 255, 255, 255);
 
-            float fontSize = 12f * scale;
-            int paddingX = (int)Math.Round(12 * scale);
-            int paddingY = (int)Math.Round(9 * scale);
-            int rowGap = (int)Math.Round(6 * scale);
-            int labelValueGap = (int)Math.Round(18 * scale);
-            int corner = (int)Math.Round(10 * scale);
+            // 卡片刻意做得紧凑：悬停看一眼就够，不要盖住大半个桌面。
+            float fontSize = 10.5f * scale;
+            int paddingX = (int)Math.Round(9 * scale);
+            int paddingY = (int)Math.Round(7 * scale);
+            int rowGap = (int)Math.Round(3 * scale);
+            int labelValueGap = (int)Math.Round(12 * scale);
+            int corner = (int)Math.Round(8 * scale);
 
             using (Font font = new Font(
                 "Microsoft YaHei UI",
@@ -258,8 +259,9 @@ namespace SelectionTranslator
         }
 
         /// <summary>
-        /// 把卡片贴到状态条上方（任务栏在顶部时贴下方）。
-        /// 返回卡片实际屏幕矩形，供悬停检测判断光标是否还在卡片内。
+        /// 把紧凑卡片贴到状态条上方偏右（任务栏在顶部时贴下方偏右）。
+        /// 右边缘尽量靠近任务栏右端，同时保证与状态条有水平重叠，
+        /// 避免光标过渡时卡片被误收起。返回实际屏幕矩形供悬停检测。
         /// </summary>
         public Rectangle ShowAt(
             Rectangle barBounds,
@@ -271,7 +273,27 @@ namespace SelectionTranslator
                 rows, _scale, lightTheme))
             {
                 int margin = (int)Math.Round(6 * _scale);
-                int x = barBounds.Right - bitmap.Width;
+
+                // 面板整体靠右：右边缘尽量贴近任务栏右端（托盘区上方），
+                // 而不是像以前那样与状态条右对齐、整块往左伸出一大截。
+                int preferredRight = taskbar.Width > 0
+                    ? taskbar.Right - margin
+                    : barBounds.Right;
+                int x = preferredRight - bitmap.Width;
+
+                // 但要和状态条保留一点水平重叠：否则光标从状态条斜移到
+                // 卡片时会掉进中间的空隙，悬停判定会误以为「移开」而收起。
+                if (!barBounds.IsEmpty && barBounds.Width > 0)
+                {
+                    int minOverlap =
+                        (int)Math.Round(36 * _scale);
+                    int maxX = barBounds.Right - minOverlap;
+                    if (x > maxX)
+                    {
+                        x = maxX;
+                    }
+                }
+
                 int y;
                 bool taskbarOnTop =
                     taskbar.Height > 0 &&

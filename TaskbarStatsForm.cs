@@ -557,11 +557,11 @@ namespace SelectionTranslator
                 scale = 2.5f;
             }
 
-            string first;
-            string second;
-            TaskbarStats.FormatLines(
+            TaskbarStats.BarLine firstLine;
+            TaskbarStats.BarLine secondLine;
+            TaskbarStats.FormatLineParts(
                 upload, download, cpuPercent, memoryPercent,
-                out first, out second);
+                out firstLine, out secondLine);
 
             using (Font font = new Font(
                 "Microsoft YaHei UI",
@@ -574,14 +574,43 @@ namespace SelectionTranslator
             using (Graphics measure = Graphics.FromImage(probe))
             {
                 StringFormat format = StringFormat.GenericTypographic;
-                SizeF firstSize = measure.MeasureString(
-                    first, font, 4096, format);
-                SizeF secondSize = measure.MeasureString(
-                    second, font, 4096, format);
-                int width = (int)Math.Ceiling(
-                    Math.Max(firstSize.Width, secondSize.Width)) +
-                    (int)Math.Round(8 * scale);
-                int lineHeight = (int)Math.Ceiling(14 * scale);
+
+                // 列边界一律按「最长可能出现的文本」测量，与当前数据
+                // 无关。以前按两行实测宽度取最大值，数字位数一变位图
+                // 就变宽变窄，右边缘又固定贴托盘，左边缘便来回抖，
+                // 两行的 CPU / 内存列也跟着上下错开。
+                float arrowW = Math.Max(
+                    measure.MeasureString(
+                        "↑", font, 4096, format).Width,
+                    measure.MeasureString(
+                        "↓", font, 4096, format).Width);
+                float speedW = measure.MeasureString(
+                    "1023.99 MB/s", font, 4096, format).Width;
+                float labelW = Math.Max(
+                    measure.MeasureString(
+                        "CPU", font, 4096, format).Width,
+                    measure.MeasureString(
+                        "内存", font, 4096, format).Width);
+                float pctW = measure.MeasureString(
+                    "100%", font, 4096, format).Width;
+
+                int leftPad = (int)Math.Round(2 * scale);
+                int rightPad = (int)Math.Round(6 * scale);
+                int gapArrow = (int)Math.Round(5 * scale);
+                int gapSpeed = (int)Math.Round(10 * scale);
+                int gapLabel = (int)Math.Round(5 * scale);
+
+                int arrowX = leftPad;
+                int speedX = leftPad +
+                    (int)Math.Ceiling(arrowW) + gapArrow;
+                int labelRight = speedX +
+                    (int)Math.Ceiling(speedW) + gapSpeed +
+                    (int)Math.Ceiling(labelW);
+                int pctRight = labelRight + gapLabel +
+                    (int)Math.Ceiling(pctW);
+                int width = pctRight + rightPad;
+                // 行高留足，避免两行字被压在一起显得上下不齐。
+                int lineHeight = (int)Math.Ceiling(16 * scale);
                 int height = lineHeight * 2 +
                     (int)Math.Round(4 * scale);
                 if (width < 1)
@@ -600,15 +629,53 @@ namespace SelectionTranslator
                     graphics.Clear(Color.Transparent);
                     graphics.TextRenderingHint =
                         TextRenderingHint.AntiAliasGridFit;
-                    graphics.DrawString(
-                        first, font, brush,
-                        2 * scale, 0, format);
-                    graphics.DrawString(
-                        second, font, brush,
-                        2 * scale, lineHeight, format);
+                    DrawBarLine(
+                        graphics, measure, font, brush, format,
+                        firstLine, 0, arrowX,
+                        speedX, labelRight, pctRight);
+                    DrawBarLine(
+                        graphics, measure, font, brush, format,
+                        secondLine, lineHeight, arrowX,
+                        speedX, labelRight, pctRight);
                 }
                 return bitmap;
             }
+        }
+
+        /// <summary>
+        /// 一行四段：箭头和速度左对齐到固定列起点，标签 / 百分比
+        /// 右对齐到固定列右端。数字位数变化时只有文本自身向右伸展，
+        /// 各列边界和整条状态条的宽度都不动。
+        /// </summary>
+        private static void DrawBarLine(
+            Graphics graphics,
+            Graphics measure,
+            Font font,
+            Brush brush,
+            StringFormat format,
+            TaskbarStats.BarLine line,
+            int y,
+            int arrowX,
+            int speedX,
+            int labelRight,
+            int pctRight)
+        {
+            graphics.DrawString(
+                line.Arrow, font, brush, arrowX, y, format);
+            graphics.DrawString(
+                line.Speed, font, brush, speedX, y, format);
+
+            float labelWidth = measure.MeasureString(
+                line.Label, font, 4096, format).Width;
+            graphics.DrawString(
+                line.Label, font, brush,
+                labelRight - labelWidth, y, format);
+
+            float percentWidth = measure.MeasureString(
+                line.Percent, font, 4096, format).Width;
+            graphics.DrawString(
+                line.Percent, font, brush,
+                pctRight - percentWidth, y, format);
         }
 
         /// <summary>系统是否使用浅色任务栏（详情卡片配色也跟着走）。</summary>

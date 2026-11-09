@@ -734,7 +734,44 @@ namespace SelectionTranslator
             return new Point(x, y);
         }
 
-        /// <summary>两行文案，和数据刷新分开，方便自检与预览复用。</summary>
+        /// <summary>
+        /// 状态条一行的四段。拆开画是为了让两行共用固定的列边界，
+        /// 数字位数跳变时列位置不跟着动（否则上下会明显不对称）。
+        /// </summary>
+        internal sealed class BarLine
+        {
+            public string Arrow;
+            public string Speed;
+            public string Label;
+            public string Percent;
+        }
+
+        /// <summary>把两行文本拆成对齐用的四段，纯函数便于自检。</summary>
+        public static void FormatLineParts(
+            string upload,
+            string download,
+            int cpuPercent,
+            int memoryPercent,
+            out BarLine first,
+            out BarLine second)
+        {
+            first = new BarLine();
+            first.Arrow = "↑";
+            first.Speed = upload;
+            first.Label = "CPU";
+            first.Percent = cpuPercent + "%";
+
+            second = new BarLine();
+            second.Arrow = "↓";
+            second.Speed = download;
+            second.Label = "内存";
+            second.Percent = memoryPercent + "%";
+        }
+
+        /// <summary>
+        /// 两行文案，和数据刷新分开，方便自检与预览复用。
+        /// 绘制已改用 FormatLineParts 的分段布局，这里只保留文本形式。
+        /// </summary>
         public static void FormatLines(
             string upload,
             string download,
