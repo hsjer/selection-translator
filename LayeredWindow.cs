@@ -68,6 +68,40 @@ namespace SelectionTranslator
             ref BLENDFUNCTION blend,
             int flags);
 
+        private const uint SWP_NOSIZE = 0x0001;
+        private const uint SWP_NOMOVE = 0x0002;
+        private const uint SWP_NOACTIVATE = 0x0010;
+        private const uint SWP_NOOWNERZORDER = 0x0200;
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SetWindowPos(
+            IntPtr hWnd,
+            IntPtr hWndInsertAfter,
+            int x,
+            int y,
+            int cx,
+            int cy,
+            uint flags);
+
+        /// <summary>
+        /// 把分层窗口重新放回 topmost 层顶部。点击任务栏后 Explorer 会把
+        /// 任务栏提到同样 topmost 的我们之上，状态条文字就被盖住了；
+        /// 重新置顶即可恢复，且 SWP_NOACTIVATE 保证不抢焦点、不改位置尺寸。
+        /// </summary>
+        public static void KeepTopMost(IntPtr hWnd)
+        {
+            if (hWnd == IntPtr.Zero)
+            {
+                return;
+            }
+            SetWindowPos(
+                hWnd,
+                new IntPtr(-1), // HWND_TOPMOST
+                0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE |
+                SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        }
+
         public static void Draw(
             IntPtr hWnd, Bitmap bitmap, Point position)
         {

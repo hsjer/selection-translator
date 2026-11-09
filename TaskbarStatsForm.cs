@@ -378,6 +378,16 @@ namespace SelectionTranslator
                 return;
             }
             Point cursor = new Point(native.X, native.Y);
+
+            // 光标在任务栏上时快速恢复 Z 序（点一下任务栏就会被 Explorer
+            // 压下去），不必等下一秒的采样刷新；鼠标不在任务栏上（例如
+            // 全屏游戏）就不额外抢顶层，避免打扰其它窗口。
+            Rectangle taskbar = GetTaskbarRect();
+            if (!taskbar.IsEmpty && taskbar.Contains(cursor))
+            {
+                LayeredWindow.KeepTopMost(Handle);
+            }
+
             bool keepOpen = TaskbarStats.ShouldShowDetail(
                 cursor,
                 _barBounds,
@@ -667,6 +677,9 @@ namespace SelectionTranslator
                     0,
                     ref blend,
                     ULW_ALPHA);
+                // 每次重绘都重新压回 topmost 顶部：点任务栏 / 托盘图标后
+                // Explorer 会把任务栏提到我们上面，文字就整块消失。
+                LayeredWindow.KeepTopMost(Handle);
                 return position;
             }
             finally

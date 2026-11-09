@@ -46,6 +46,12 @@ namespace SelectionTranslator
                 return;
             }
 
+            if (Array.IndexOf(args, "--occlusionprobe") >= 0)
+            {
+                SelfTest.RunOcclusionProbe();
+                return;
+            }
+
             int imageTestIndex = Array.IndexOf(args, "--imagetest");
             if (imageTestIndex >= 0)
             {

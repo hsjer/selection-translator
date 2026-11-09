@@ -15,6 +15,14 @@ namespace SelectionTranslator
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern bool SetCursorPos(int x, int y);
 
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern void mouse_event(
+            uint flags, uint dx, uint dy,
+            uint data, IntPtr extraInfo);
+
+        private const uint MouseLeftDown = 0x0002;
+        private const uint MouseLeftUp = 0x0004;
+
         public static void Run()
         {
             StringBuilder output = new StringBuilder();
@@ -1748,6 +1756,204 @@ namespace SelectionTranslator
                 "selftest.txt");
             File.WriteAllText(path, output.ToString(), Encoding.UTF8);
             Environment.ExitCode = ok ? 0 : 1;
+        }
+
+        /// <summary>截取屏幕上一块矩形。</summary>
+        private static Bitmap Capture(Rectangle area)
+        {
+            if (area.IsEmpty || area.Width <= 0 || area.Height <= 0)
+            {
+                return null;
+            }
+            Bitmap shot = new Bitmap(area.Width, area.Height);
+            using (Graphics graphics = Graphics.FromImage(shot))
+            {
+                graphics.CopyFromScreen(
+                    area.Left, area.Top, 0, 0, area.Size);
+            }
+            return shot;
+        }
+
+        /// <summary>
+        /// 统计深色文字像素。状态条只画深/浅文字、没有底色，
+        /// 被任务栏盖住后这块区域会变成纯任务栏背景，深色像素骤减。
+        /// </summary>
+        private static int CountDarkPixels(Bitmap shot)
+        {
+            if (shot == null)
+            {
+                return -1;
+            }
+            int count = 0;
+            for (int y = 0; y < shot.Height; y++)
+            {
+                for (int x = 0; x < shot.Width; x++)
+                {
+                    Color pixel = shot.GetPixel(x, y);
+                    if (pixel.R < 130 &&
+                        pixel.G < 130 &&
+                        pixel.B < 130)
+                    {
+                        count++;
+                    }
+                }
+            }
+            return count;
+        }
+
+        /// <summary>
+        /// 复现「点一下任务栏后状态条消失」：先截状态条区域的深色文字像素，
+        /// 真实左键点一次任务栏空白处，等两秒后再截一次比对。
+        /// 结束前恢复光标位置。
+        /// </summary>
+        public static void RunOcclusionProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool pass = true;
+            Point original = Cursor.Position;
+            string directory = ConfigStore.DataDirectory;
+            try
+            {
+                Application.EnableVisualStyles();
+                using (TaskbarStatsForm form =
+                    new TaskbarStatsForm())
+                {
+                    form.SuspendHover = true;
+                    form.Show();
+                    for (int i = 0; i < 12; i++)
+                    {
+                        Application.DoEvents();
+                        System.Threading.Thread.Sleep(50);
+                    }
+                    form.RefreshNow();
+                    Rectangle bar = form.BarBounds;
+                    Rectangle taskbar =
+                        TaskbarStatsForm.GetTaskbarRect();
+                    output.AppendLine("barBounds=" + bar);
+                    output.AppendLine("taskbar=" + taskbar);
+                    if (bar.IsEmpty || taskbar.IsEmpty)
+                    {
+                        throw new InvalidOperationException(
+                            "bar or taskbar rectangle is empty");
+                    }
+
+                    int before;
+                    using (Bitmap shot = Capture(bar))
+                    {
+                        before = CountDarkPixels(shot);
+                        if (shot != null)
+                        {
+                            shot.Save(
+                                Path.Combine(
+                                    directory,
+                                    "ui-occlusion-before.png"),
+                                ImageFormat.Png);
+                        }
+                    }
+                    output.AppendLine("darkPixelsBefore=" + before);
+
+                    int clickX = Math.Max(
+                        taskbar.Left + 10, bar.Left - 250);
+                    int clickY = taskbar.Top +
+                        taskbar.Height / 2;
+                    output.AppendLine("clickAt=" + clickX + "," +
+                        clickY);
+                    SetCursorPos(clickX, clickY);
+                    mouse_event(
+                        MouseLeftDown, 0, 0, 0, IntPtr.Zero);
+                    mouse_event(
+                        MouseLeftUp, 0, 0, 0, IntPtr.Zero);
+                    for (int i = 0; i < 40; i++)
+                    {
+                        Application.DoEvents();
+                        System.Threading.Thread.Sleep(50);
+                    }
+
+                    int after;
+                    using (Bitmap shot = Capture(bar))
+                    {
+                        after = CountDarkPixels(shot);
+                        if (shot != null)
+                        {
+                            shot.Save(
+                                Path.Combine(
+                                    directory,
+                                    "ui-occlusion-after.png"),
+                                ImageFormat.Png);
+                        }
+                    }
+                    output.AppendLine("darkPixelsAfter=" + after);
+                    if (before < 20)
+                    {
+                        pass = false;
+                        output.AppendLine(
+                            "bar text not visible before click");
+                    }
+                    if (after < before / 2)
+                    {
+                        pass = false;
+                        output.AppendLine(
+                            "bar text disappeared after taskbar click");
+                    }
+
+                    // 第二段：开启悬停检测、光标停在状态条上，只等 400ms，
+                    // 验证「点完立刻恢复」的快速路径，而不只是等下一秒采样。
+                    form.SuspendHover = false;
+                    SetCursorPos(
+                        bar.Left + bar.Width / 2,
+                        bar.Top + bar.Height / 2);
+                    mouse_event(
+                        MouseLeftDown, 0, 0, 0, IntPtr.Zero);
+                    mouse_event(
+                        MouseLeftUp, 0, 0, 0, IntPtr.Zero);
+                    for (int i = 0; i < 8; i++)
+                    {
+                        Application.DoEvents();
+                        System.Threading.Thread.Sleep(50);
+                    }
+                    int fast;
+                    using (Bitmap shot = Capture(bar))
+                    {
+                        fast = CountDarkPixels(shot);
+                        if (shot != null)
+                        {
+                            shot.Save(
+                                Path.Combine(
+                                    directory,
+                                    "ui-occlusion-fast.png"),
+                                ImageFormat.Png);
+                        }
+                    }
+                    output.AppendLine("darkPixelsFast400ms=" + fast);
+                    output.AppendLine("detailVisible=" +
+                        form.IsDetailVisible);
+                    if (fast < before / 2)
+                    {
+                        pass = false;
+                        output.AppendLine(
+                            "bar text not restored within 400ms");
+                    }
+                    form.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                pass = false;
+                output.AppendLine("EXCEPTION: " + ex);
+            }
+            finally
+            {
+                SetCursorPos(original.X, original.Y);
+            }
+
+            output.AppendLine(
+                pass ? "RESULT: OK" : "RESULT: FAILED");
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(
+                Path.Combine(directory, "occlusionprobe.txt"),
+                output.ToString(),
+                Encoding.UTF8);
+            Environment.ExitCode = pass ? 0 : 1;
         }
 
         /// <summary>

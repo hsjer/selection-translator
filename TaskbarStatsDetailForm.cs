@@ -315,6 +315,7 @@ namespace SelectionTranslator
                     Show();
                 }
                 LayeredWindow.Draw(Handle, bitmap, new Point(x, y));
+                LayeredWindow.KeepTopMost(Handle);
                 return new Rectangle(
                     x, y, bitmap.Width, bitmap.Height);
             }
