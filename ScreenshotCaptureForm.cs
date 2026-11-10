@@ -86,6 +86,7 @@ namespace SelectionTranslator
             Mosaic,
             Undo,
             Crop,
+            Scroll,
             Color,
             Width,
             Save,
@@ -622,6 +623,12 @@ namespace SelectionTranslator
         // 想重新截图需要再按一次快捷键（或 Esc 取消后重按）。
         private bool _selectionLocked;
 
+        // 滚动截图期间会隐藏浮层，防止重复进入。
+        private bool _scrollInProgress;
+        // 截图开始前的前台窗口：滚动截图时要把焦点还给它，
+        // 否则滚轮会滚到我们自己的（已隐藏的）窗口上。
+        private readonly IntPtr _foregroundWindow;
+
         // ---- 窗口直接选取 ----
         // 鼠标悬停在一个窗口上时把整窗高亮出来，单击即截这个窗口，
         // 不用先把整个窗口小心翼翼地圈一遍。
@@ -674,6 +681,7 @@ namespace SelectionTranslator
 
             // 必须在窗口创建 / 显示之前抓屏，否则会把自己的黑色窗体
             // 一起拍进去，看上去就像「截图没内容」。
+            _foregroundWindow = NativeMethods.GetForegroundWindow();
             CaptureFullScreen();
 
             _tips = new ToolTip();
@@ -704,6 +712,95 @@ namespace SelectionTranslator
 
         /// <summary>选区左上角对应的屏幕坐标（贴图窗口用它定位）。</summary>
         public Point CaptureLocation { get; private set; }
+
+        /// <summary>自检 / 探针用：直接指定选区（客户区坐标，已锁定）。</summary>
+        internal void DebugSelect(Rectangle clientRect)
+        {
+            _selection = Rectangle.Intersect(
+                clientRect,
+                new Rectangle(0, 0, ClientSize.Width, ClientSize.Height));
+            if (!HasSelection())
+            {
+                return;
+            }
+            _selectionLocked = true;
+            PlaceToolbar();
+            Invalidate();
+        }
+
+        /// <summary>自检 / 探针用：触发工具栏上的「滚动截图」。</summary>
+        internal void DebugStartScroll()
+        {
+            OnScrollClicked(this, EventArgs.Empty);
+        }
+
+        /// <summary>自检 / 探针用：把工具栏所有图标放大画成一张对照图。</summary>
+        internal static Bitmap RenderIconStripForTest(int scale)
+        {
+            IconKind[] kinds = (IconKind[])Enum.GetValues(
+                typeof(IconKind));
+            if (scale < 1)
+            {
+                scale = 1;
+            }
+            int cell = 34 * scale;
+            int perRow = 9;
+            int rows = (kinds.Length + perRow - 1) / perRow;
+            Bitmap strip = new Bitmap(
+                perRow * cell + 8, rows * (cell + 18) + 8);
+            using (Graphics g = Graphics.FromImage(strip))
+            using (Font font = new Font(
+                "Microsoft YaHei UI", 9f, FontStyle.Regular,
+                GraphicsUnit.Pixel))
+            {
+                g.Clear(Color.White);
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                for (int i = 0; i < kinds.Length; i++)
+                {
+                    Rectangle box = new Rectangle(
+                        4 + (i % perRow) * cell,
+                        4 + (i / perRow) * (cell + 18),
+                        cell, cell);
+                    try
+                    {
+                        using (Bitmap one = new Bitmap(cell, cell))
+                        {
+                            using (Graphics og = Graphics.FromImage(one))
+                            {
+                                og.Clear(ToolbarBack);
+                                DrawIcon(og, kinds[i],
+                                    new Rectangle(0, 0, cell, cell),
+                                    IconInk, 2f);
+                            }
+                            g.DrawImage(one, box);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error("渲染图标失败：" + kinds[i], ex);
+                    }
+                    TextRenderer.DrawText(
+                        g, kinds[i].ToString(), font,
+                        new Point(box.X, box.Bottom + 2),
+                        Color.Black);
+                }
+            }
+            return strip;
+        }
+
+        /// <summary>自检 / 探针用：当前选区对应的屏幕矩形。</summary>
+        internal Rectangle CaptureArea
+        {
+            get
+            {
+                if (!HasSelection())
+                {
+                    return Rectangle.Empty;
+                }
+                return new Rectangle(
+                    PointToScreen(_selection.Location), _selection.Size);
+            }
+        }
 
         /// <summary>
         /// Finish() 中构建结果位图 + 关闭浮层的耗时（毫秒），
@@ -787,6 +884,9 @@ namespace SelectionTranslator
                 "撤销 (Ctrl+Z)", OnUndoClicked);
             AddActionButton(panel, ref x, IconKind.Crop,
                 "裁剪选区（在选区内拖出新范围）", OnCropClicked);
+            AddActionButton(panel, ref x, IconKind.Scroll,
+                "滚动截图（长截图）：点一下，然后拨鼠标滚轮滚动页面",
+                OnScrollClicked);
             x = AddSeparator(panel, x);
 
             AddActionButton(panel, ref x, IconKind.Color,
@@ -1807,6 +1907,194 @@ namespace SelectionTranslator
             Invalidate();
         }
 
+        // ------------------------------------------------------------------
+        // 滚动截图（长截图）
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// 点工具栏的「滚动截图」后：浮层先藏起来（否则拍到的是自己的
+        /// 冻结画面），把焦点还给原来的窗口，然后定时抓选区画面，
+        /// 用「画布底部重叠比对」把新滚出来的内容接在下面。
+        /// 结束时把拼好的长图交给预览窗口保存 / 复制 / 贴图。
+        /// </summary>
+        private void OnScrollClicked(object sender, EventArgs e)
+        {
+            if (_scrollInProgress || !HasSelection())
+            {
+                return;
+            }
+
+            Point origin = PointToScreen(_selection.Location);
+            Rectangle screenRect = ScrollCaptureSession.ClampToScreen(
+                new Rectangle(origin, _selection.Size));
+            if (screenRect.Width < 32 || screenRect.Height < 32)
+            {
+                MessageBox.Show(
+                    this,
+                    "选区太小了。先框选一块页面内容（比如正文区域），再点滚动截图。",
+                    "滚动截图",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            _scrollInProgress = true;
+            RemoveTextInput(false);
+            _tool = Tool.None;
+            SyncToolButtons();
+            _toolbar.Visible = false;
+
+            ScrollCaptureSession session = null;
+            ScrollCaptureBar bar = null;
+            ScrollKeyWatcher keys = null;
+            Bitmap result = null;
+            bool delivered = false;
+            try
+            {
+                // 浮层藏起来之后被它盖住的页面才会重画，抓到的才是真内容。
+                Hide();
+                Application.DoEvents();
+                System.Threading.Thread.Sleep(220);
+                Application.DoEvents();
+
+                if (_foregroundWindow != IntPtr.Zero &&
+                    NativeMethods.IsWindow(_foregroundWindow))
+                {
+                    NativeMethods.SetForegroundWindow(_foregroundWindow);
+                }
+
+                session = new ScrollCaptureSession(screenRect);
+                bar = new ScrollCaptureBar(
+                    screenRect, session.StitchedHeight);
+                keys = new ScrollKeyWatcher();
+
+                ScrollCaptureSession active = session;
+                ScrollCaptureBar strip = bar;
+                session.Changed += delegate
+                {
+                    strip.Status = active.ReachedLimit
+                        ? "已拼接 " + active.StitchedHeight +
+                            " px（已到长度上限）"
+                        : "已拼接 " + active.StitchedHeight + " px";
+                };
+                keys.FinishRequested += delegate
+                {
+                    strip.RequestFinish();
+                };
+                keys.CancelRequested += delegate
+                {
+                    strip.RequestCancel();
+                };
+
+                if (!session.Start())
+                {
+                    Show();
+                    PlaceToolbar();
+                    _scrollInProgress = false;
+                    return;
+                }
+
+                if (!bar.PlaceOutsideCapture())
+                {
+                    Log.Info("滚动截图：选区几乎占满屏幕，" +
+                        "悬浮条可能被拍进长图。");
+                }
+
+                keys.Start();
+                DialogResult choice = bar.ShowDialog();
+
+                session.Stop();
+                if (choice == DialogResult.OK)
+                {
+                    result = session.Finish();
+                }
+
+                if (result == null ||
+                    result.Height <= screenRect.Height)
+                {
+                    if (result != null)
+                    {
+                        result.Dispose();
+                        result = null;
+                    }
+                    // 没拼出东西：把浮层还原，用户可以重新框选或换个窗口。
+                    Show();
+                    PlaceToolbar();
+                    Invalidate();
+                    _scrollInProgress = false;
+                    MessageBox.Show(
+                        this,
+                        "这次没有拼接出新内容。\r\n" +
+                        "滚动截图需要鼠标滚轮把页面滚起来，" +
+                        "并且选区里最好是页面正文，别框到固定不动的区域。",
+                        "滚动截图",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("滚动截图失败", ex);
+                if (result != null)
+                {
+                    result.Dispose();
+                    result = null;
+                }
+                if (!IsDisposed && !Visible)
+                {
+                    Show();
+                    PlaceToolbar();
+                }
+            }
+            finally
+            {
+                if (keys != null)
+                {
+                    keys.Dispose();
+                }
+                if (bar != null)
+                {
+                    bar.Dispose();
+                }
+                if (session != null)
+                {
+                    session.Dispose();
+                }
+                _scrollInProgress = false;
+            }
+
+            if (result == null)
+            {
+                Invalidate();
+                return;
+            }
+
+            // 长图已经拼好，浮层这次的任务结束了：交给预览窗口。
+            _finished = true;
+            DialogResult = DialogResult.Cancel;
+            Close();
+
+            try
+            {
+                LongShotForm preview = new LongShotForm(result);
+                delivered = true;
+                preview.Show();
+                preview.Activate();
+            }
+            catch (Exception ex)
+            {
+                Log.Error("打开长截图预览失败", ex);
+            }
+            finally
+            {
+                if (!delivered)
+                {
+                    result.Dispose();
+                }
+            }
+        }
+
         private IconButton FindButton(IconKind kind)
         {
             for (int i = 0; i < _buttons.Count; i++)
@@ -2381,6 +2669,27 @@ namespace SelectionTranslator
                         {
                             U(1.5f, 5f), U(13f, 5f), U(13f, 16.5f)
                         });
+                        break;
+
+                    case IconKind.Scroll:
+                        // 左边一张「纸」，右边上下双向箭头 = 滚动长图。
+                        using (GraphicsPath page = MakeRoundedRect(
+                            new RectangleF(1.4f, 1.8f, 9f, 14.4f), 2f))
+                        using (SolidBrush fill = new SolidBrush(
+                            Color.FromArgb(22, ink)))
+                        {
+                            g.FillPath(fill, page);
+                            g.DrawPath(pen, page);
+                        }
+                        g.DrawLine(pen, 3.6f, 5.4f, 8.2f, 5.4f);
+                        g.DrawLine(pen, 3.6f, 8.4f, 8.2f, 8.4f);
+                        g.DrawLine(pen, 3.6f, 11.4f, 6.8f, 11.4f);
+                        // 箭头画窄一点、陡一点，1:1 时才不会糊成一团。
+                        g.DrawLine(pen, 14.8f, 4.4f, 14.8f, 13.6f);
+                        g.DrawLine(pen, 13.2f, 6.6f, 14.8f, 4.4f);
+                        g.DrawLine(pen, 16.4f, 6.6f, 14.8f, 4.4f);
+                        g.DrawLine(pen, 13.2f, 11.4f, 14.8f, 13.6f);
+                        g.DrawLine(pen, 16.4f, 11.4f, 14.8f, 13.6f);
                         break;
 
                     case IconKind.Color:

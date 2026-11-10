@@ -88,6 +88,42 @@ namespace SelectionTranslator
                 return;
             }
 
+            if (Array.IndexOf(args, "--scrollshotprobe") >= 0)
+            {
+                SelfTest.RunScrollShotProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--scrollbarprobe") >= 0)
+            {
+                SelfTest.RunScrollBarProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--scrollflowprobe") >= 0)
+            {
+                SelfTest.RunScrollFlowProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--captureuiprobe") >= 0)
+            {
+                SelfTest.RunCaptureUiProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--iconstrip") >= 0)
+            {
+                SelfTest.RunIconStripProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--scrollshotpreview") >= 0)
+            {
+                SelfTest.RunScrollShotPreview();
+                return;
+            }
+
             if (Array.IndexOf(args, "--softrenderprobe") >= 0)
             {
                 SelfTest.RunSoftwareRenderProbe();

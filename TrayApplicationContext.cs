@@ -15,6 +15,7 @@ namespace SelectionTranslator
         private const int HotkeyIdScreenshot = 3;
         private const int HotkeyIdVoice = 4;
         private const int HotkeyIdClipboard = 5;
+        private const int HotkeyIdFileSearch = 6;
 
         private readonly NotifyIcon _trayIcon;
         private readonly ContextMenuStrip _trayMenu;
@@ -24,6 +25,7 @@ namespace SelectionTranslator
         private readonly ToolStripMenuItem _screenshotMenuItem;
         private readonly ToolStripMenuItem _voiceMenuItem;
         private readonly ToolStripMenuItem _clipboardMenuItem;
+        private readonly ToolStripMenuItem _fileSearchMenuItem;
         private readonly Icon _trayIconImage;
         private readonly HotkeyWindow _hotkeyWindow;
         private readonly System.Windows.Forms.Timer _firstRunTimer;
@@ -171,13 +173,15 @@ namespace SelectionTranslator
             };
             _trayMenu.Items.Add(softwareItem);
 
-            ToolStripMenuItem fileSearchItem =
+            _fileSearchMenuItem =
                 new ToolStripMenuItem("文件秒搜…");
-            fileSearchItem.Click += delegate
+            _fileSearchMenuItem.ShortcutKeyDisplayString =
+                _config.HotkeyFileSearch;
+            _fileSearchMenuItem.Click += delegate
             {
                 FileSearchForm.ShowWindow();
             };
-            _trayMenu.Items.Add(fileSearchItem);
+            _trayMenu.Items.Add(_fileSearchMenuItem);
 
             _clipboardMenuItem = new ToolStripMenuItem(
                 "剪贴板历史…");
@@ -438,6 +442,29 @@ namespace SelectionTranslator
                 Log.Info("快捷键格式无效：" +
                     _config.HotkeyClipboardHistory);
             }
+
+            if (HotkeyParser.TryParse(
+                _config.HotkeyFileSearch,
+                out modifiers,
+                out key))
+            {
+                bool ok = _hotkeyWindow.Register(
+                    HotkeyIdFileSearch,
+                    modifiers | NativeMethods.MOD_NOREPEAT,
+                    key);
+                if (!ok)
+                {
+                    Log.Info("全局快捷键 " +
+                        _config.HotkeyFileSearch +
+                        " 注册失败，可能已被其他程序占用。");
+                    _hotkeyFailures.Add(HotkeyIdFileSearch);
+                }
+            }
+            else
+            {
+                Log.Info("快捷键格式无效：" +
+                    _config.HotkeyFileSearch);
+            }
         }
 
         /// <summary>
@@ -450,6 +477,7 @@ namespace SelectionTranslator
             _hotkeyWindow.Unregister(HotkeyIdScreenshot);
             _hotkeyWindow.Unregister(HotkeyIdVoice);
             _hotkeyWindow.Unregister(HotkeyIdClipboard);
+            _hotkeyWindow.Unregister(HotkeyIdFileSearch);
         }
 
         /// <summary>
@@ -486,6 +514,10 @@ namespace SelectionTranslator
                 _clipboardMenuItem,
                 _config.HotkeyClipboardHistory,
                 HotkeyIdClipboard);
+            SetHotkeyDisplay(
+                _fileSearchMenuItem,
+                _config.HotkeyFileSearch,
+                HotkeyIdFileSearch);
         }
 
         private void SetHotkeyDisplay(
@@ -527,6 +559,10 @@ namespace SelectionTranslator
             if (_hotkeyFailures.Contains(HotkeyIdVoice))
             {
                 names.Add("语音识别");
+            }
+            if (_hotkeyFailures.Contains(HotkeyIdFileSearch))
+            {
+                names.Add("文件秒搜");
             }
 
             try
@@ -937,6 +973,11 @@ namespace SelectionTranslator
             if (id == HotkeyIdClipboard)
             {
                 ClipboardHistoryForm.ShowHistory();
+                return;
+            }
+            if (id == HotkeyIdFileSearch)
+            {
+                FileSearchForm.ShowWindow();
                 return;
             }
             await TranslateSelectionAsync();

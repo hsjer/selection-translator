@@ -51,6 +51,7 @@ namespace SelectionTranslator
         private readonly NumericUpDown _clipboardMaxBox;
         private readonly TextBox _hotkeyClipboardField;
         private readonly TextBox _downloadDirBox;
+        private readonly TextBox _hotkeyFileSearchField;
         private TextBox _capturingField;
         private string _capturingFieldOriginal;
         private int _captureModifiers;
@@ -301,7 +302,7 @@ namespace SelectionTranslator
             Label hintLabel = new Label();
             hintLabel.Text =
                 "点一下输入框，按住 Ctrl / Alt / Shift / Win 再按一个键。\r\n" +
-                "也可只按 F1–F12 等功能键；四个快捷键不能相同。";
+                "也可只按 F1–F12 等功能键；各快捷键不能相同。";
             hintLabel.Location = new Point(16, 504);
             hintLabel.Size = new Size(440, 46);
             hintLabel.ForeColor = Color.FromArgb(90, 98, 112);
@@ -690,6 +691,52 @@ namespace SelectionTranslator
             dirHint.Location = new Point(12, 60);
             downloadGroup.Controls.Add(dirHint);
 
+            // --------------------------------------------------------------
+            // 文件秒搜：全局快捷键（放在最下方，前面所有分组的位置都不用动）
+            // --------------------------------------------------------------
+            int contentBottom = 0;
+            foreach (Control child in _contentHost.Controls)
+            {
+                if (child.Bottom > contentBottom)
+                {
+                    contentBottom = child.Bottom;
+                }
+            }
+
+            GroupBox fileSearchGroup = new GroupBox();
+            fileSearchGroup.Text = "文件秒搜";
+            fileSearchGroup.Location =
+                new Point(16, contentBottom + 12);
+            fileSearchGroup.Size = new Size(448, 92);
+            _contentHost.Controls.Add(fileSearchGroup);
+
+            Label searchHotkeyLabel = new Label();
+            searchHotkeyLabel.Text = "打开快捷键";
+            searchHotkeyLabel.AutoSize = true;
+            searchHotkeyLabel.Location = new Point(12, 28);
+            fileSearchGroup.Controls.Add(searchHotkeyLabel);
+
+            _hotkeyFileSearchField = new TextBox();
+            _hotkeyFileSearchField.ReadOnly = true;
+            _hotkeyFileSearchField.TextAlign =
+                HorizontalAlignment.Center;
+            _hotkeyFileSearchField.Location = new Point(84, 24);
+            _hotkeyFileSearchField.Size = new Size(120, 24);
+            _hotkeyFileSearchField.Text =
+                config.HotkeyFileSearch;
+            BindHotkeyField(_hotkeyFileSearchField);
+            fileSearchGroup.Controls.Add(_hotkeyFileSearchField);
+
+            Label searchHint = new Label();
+            searchHint.Text =
+                "默认 Ctrl+F，任何程序里按下都能唤出搜索框。\r\n" +
+                "若按下没反应，说明组合已被别的程序占用，换一个即可。";
+            searchHint.AutoSize = false;
+            searchHint.Size = new Size(420, 40);
+            searchHint.ForeColor = Color.FromArgb(90, 98, 112);
+            searchHint.Location = new Point(12, 52);
+            fileSearchGroup.Controls.Add(searchHint);
+
             ApplyDpiScale();
         }
 
@@ -873,6 +920,8 @@ namespace SelectionTranslator
             edited.HotkeyClipboardHistory =
                 _hotkeyClipboardField.Text.Trim();
             edited.EnableDoubleCtrlHotkey = _doubleCtrlBox.Checked;
+            edited.HotkeyFileSearch =
+                _hotkeyFileSearchField.Text.Trim();
             edited.SoftwareDownloadDirectory =
                 NormalizeDownloadDirectory(_downloadDirBox.Text);
 
@@ -1544,14 +1593,30 @@ namespace SelectionTranslator
                 return;
             }
 
-            // 五个快捷键不能相同。
+            if (!HotkeyParser.TryParse(
+                edited.HotkeyFileSearch,
+                out modifiers,
+                out key))
+            {
+                MessageBox.Show(
+                    this,
+                    "「文件秒搜快捷键」格式无效。\r\n" +
+                    "请点击输入框后重新按下组合键。",
+                    "保存设置",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            // 六个快捷键不能相同。
             string[] hotkeys = new string[]
             {
                 edited.HotkeyTranslateSelection,
                 edited.HotkeyManualInput,
                 edited.HotkeyScreenshot,
                 edited.HotkeyVoiceInput,
-                edited.HotkeyClipboardHistory
+                edited.HotkeyClipboardHistory,
+                edited.HotkeyFileSearch
             };
             string[] hotkeyNames = new string[]
             {
@@ -1559,7 +1624,8 @@ namespace SelectionTranslator
                 "手动翻译",
                 "截图",
                 "语音识别",
-                "剪贴板历史"
+                "剪贴板历史",
+                "文件秒搜"
             };
             for (int i = 0; i < hotkeys.Length; i++)
             {

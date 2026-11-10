@@ -19,6 +19,7 @@ namespace SelectionTranslator
         public const uint WM_SYSKEYDOWN = 0x0104;
         public const uint WM_SYSKEYUP = 0x0105;
         public const int VK_ESCAPE = 0x1B;
+        public const int VK_RETURN = 0x0D;
         /// <summary>KBDLLHOOKSTRUCT.flags：程序注入的按键。</summary>
         public const uint LLKHF_INJECTED = 0x10;
         public const uint LLKHF_LOWER_IL_INJECTED = 0x02;

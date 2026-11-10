@@ -2625,6 +2625,8 @@ namespace SelectionTranslator
                         "auto").GetAwaiter().GetResult();
                 Check(output, ref ok, "empty line translation",
                     emptyLines.Lines.Count.ToString(), "0");
+
+                RunScrollShotChecks(output, ref ok);
             }
             catch (Exception ex)
             {
@@ -2639,6 +2641,734 @@ namespace SelectionTranslator
                 "selftest.txt");
             File.WriteAllText(path, output.ToString(), Encoding.UTF8);
             Environment.ExitCode = ok ? 0 : 1;
+        }
+
+        // ------------------------------------------------------------------
+        // 滚动截图 / 文件秒搜快捷键
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// 滚动截图的纯计算验证：帧采样、重叠匹配、回滚不重复拼接。
+        /// 全部用「每行颜色唯一」的合成图，不依赖屏幕，跑得也快。
+        /// </summary>
+        private static void RunScrollShotChecks(
+            StringBuilder output, ref bool ok)
+        {
+            // ---- 文件秒搜快捷键 ----
+            Check(output, ref ok, "filesearch hotkey default",
+                new AppConfig().HotkeyFileSearch, "Ctrl+F");
+            Check(output, ref ok, "filesearch hotkey old config",
+                ConfigStore.HasFileSearchHotkeySetting(
+                    "{\"AppId\":\"x\"}").ToString(), "False");
+            Check(output, ref ok, "filesearch hotkey new config",
+                ConfigStore.HasFileSearchHotkeySetting(
+                    "{\"HotkeyFileSearch\":\"Ctrl+F\"}").ToString(),
+                "True");
+            int mods;
+            Keys key;
+            bool parsed = HotkeyParser.TryParse(
+                AppConfig.DefaultFileSearchHotkey, out mods, out key);
+            Check(output, ref ok, "filesearch hotkey parses",
+                parsed.ToString(), "True");
+            Check(output, ref ok, "filesearch hotkey main key",
+                parsed ? key.ToString() : "-", "F");
+            Check(output, ref ok, "filesearch hotkey ctrl bit",
+                parsed ? mods.ToString() : "-",
+                NativeMethods.MOD_CONTROL.ToString());
+
+            // ---- 灰度换算 ----
+            using (Bitmap white = new Bitmap(4, 4))
+            {
+                using (Graphics g = Graphics.FromImage(white))
+                {
+                    g.Clear(Color.White);
+                }
+                ScrollFrame whiteFrame = ScrollFrame.FromBitmap(white);
+                Check(output, ref ok, "scroll frame white gray",
+                    whiteFrame.Gray(1, 1).ToString(), "255");
+            }
+            using (Bitmap black = new Bitmap(4, 4))
+            {
+                using (Graphics g = Graphics.FromImage(black))
+                {
+                    g.Clear(Color.Black);
+                }
+                ScrollFrame blackFrame = ScrollFrame.FromBitmap(black);
+                Check(output, ref ok, "scroll frame black gray",
+                    blackFrame.Gray(2, 2).ToString(), "0");
+            }
+
+            // ---- 重叠匹配 ----
+            const int width = 120;
+            const int height = 800;
+            Bitmap firstShot = MakeScrollProbeSlice(width, height, 0);
+            ScrollFrame canvas = ScrollFrame.FromBitmap(firstShot);
+            firstShot.Dispose();
+            Check(output, ref ok, "scroll frame size",
+                canvas.Width + "x" + canvas.Height, "120x800");
+
+            ScrollFrame reference = canvas.Tail(240);
+            Check(output, ref ok, "scroll reference height",
+                reference.Height.ToString(), "240");
+            Check(output, ref ok, "scroll reference content",
+                reference.Gray(5, 0).ToString(),
+                canvas.Gray(5, 560).ToString());
+
+            // 向下滚 300 px：参考带顶部在下一帧里应出现在第 260 行
+            Bitmap shiftedShot = MakeScrollProbeSlice(width, height, 300);
+            ScrollFrame shifted = ScrollFrame.FromBitmap(shiftedShot);
+            shiftedShot.Dispose();
+            int diff;
+            int y = ScrollMath.MatchOffset(
+                reference, shifted,
+                ScrollMath.DefaultTolerance, out diff);
+            output.AppendLine("scroll match y=" + y + " diff=" + diff);
+            Check(output, ref ok, "scroll match offset",
+                y.ToString(), "260");
+            Check(output, ref ok, "scroll new rows",
+                (shifted.Height - (y + reference.Height)).ToString(),
+                "300");
+
+            // 往回滚到原点：参考带出现在第 560 行，新增行数应为 0
+            Bitmap backShot = MakeScrollProbeSlice(width, height, 0);
+            ScrollFrame backFrame = ScrollFrame.FromBitmap(backShot);
+            backShot.Dispose();
+            int backY = ScrollMath.MatchOffset(
+                reference, backFrame, ScrollMath.DefaultTolerance);
+            Check(output, ref ok, "scroll rollback offset",
+                backY.ToString(), "560");
+            Check(output, ref ok, "scroll rollback no new rows",
+                (backFrame.Height - (backY + reference.Height))
+                    .ToString(), "0");
+
+            // 完全不相干的画面（全黑）不能被当成命中
+            using (Bitmap blank = new Bitmap(width, height))
+            {
+                using (Graphics g = Graphics.FromImage(blank))
+                {
+                    g.Clear(Color.Black);
+                }
+                ScrollFrame blankFrame = ScrollFrame.FromBitmap(blank);
+                Check(output, ref ok, "scroll blank frame rejected",
+                    ScrollMath.MatchOffset(
+                        reference, blankFrame,
+                        ScrollMath.DefaultTolerance).ToString(),
+                    "-1");
+            }
+
+            // ---- 同一帧判定 ----
+            Bitmap duplicate = MakeScrollProbeSlice(width, height, 0);
+            ScrollFrame duplicateFrame = ScrollFrame.FromBitmap(duplicate);
+            duplicate.Dispose();
+            Check(output, ref ok, "scroll same frame detected",
+                ScrollMath.LooksSame(canvas, duplicateFrame, 2)
+                    .ToString(), "True");
+            Check(output, ref ok, "scroll moved frame detected",
+                ScrollMath.LooksSame(canvas, shifted, 2).ToString(),
+                "False");
+        }
+
+        /// <summary>探针用的「文档行颜色」：256×256 的周期，足够区分每一行。</summary>
+        internal static Color ScrollProbeColor(int row)
+        {
+            if (row < 0)
+            {
+                row = 0;
+            }
+            int r = row % 256;
+            int g = ((row / 256) * 37) % 256;
+            int b = ((row * 61) ^ (row / 256)) % 256;
+            return Color.FromArgb(255, r, g, b);
+        }
+
+        private static Bitmap MakeScrollProbeSlice(
+            int width, int height, int startRow)
+        {
+            Bitmap slice = new Bitmap(
+                width, height, PixelFormat.Format32bppArgb);
+            using (Graphics g = Graphics.FromImage(slice))
+            using (SolidBrush brush = new SolidBrush(Color.Black))
+            {
+                for (int y = 0; y < height; y++)
+                {
+                    brush.Color = ScrollProbeColor(startRow + y);
+                    g.FillRectangle(brush, 0, y, width, 1);
+                }
+            }
+            return slice;
+        }
+
+        /// <summary>
+        /// 端到端滚动截图：真的开一个可滚动的内容窗口，真的滚 8 次，
+        /// 真的抓屏拼接，最后逐行核对颜色，确认没有错位或重复。
+        /// 结果图存 scroll-shot.png。
+        /// </summary>
+        public static void RunScrollShotProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            ScrollProbeForm probe = null;
+            ScrollCaptureSession session = null;
+            Bitmap stitched = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                probe = new ScrollProbeForm();
+                probe.Location = new Point(140, 120);
+                probe.Show();
+                probe.Activate();
+                PumpMessages(400);
+
+                Rectangle area = probe.DocumentArea;
+                output.AppendLine("area=" + area.Width + "x" +
+                    area.Height + " at " + area.Location);
+
+                session = new ScrollCaptureSession(area);
+                Check(output, ref ok, "scroll probe start",
+                    session.Start().ToString(), "True");
+                Check(output, ref ok, "scroll probe first frame",
+                    session.StitchedHeight.ToString(),
+                    area.Height.ToString());
+
+                const int step = 60;
+                const int steps = 8;
+                for (int i = 0; i < steps; i++)
+                {
+                    probe.ScrollBy(step);
+                    PumpMessages(260);
+                }
+
+                stitched = session.Finish();
+                int expectedHeight = area.Height + step * steps;
+                int actualHeight = stitched == null ? 0 : stitched.Height;
+                output.AppendLine("stitched=" + actualHeight +
+                    " expected=" + expectedHeight);
+                Check(output, ref ok, "scroll probe stitched",
+                    (stitched != null).ToString(), "True");
+                Check(output, ref ok, "scroll probe height",
+                    (Math.Abs(actualHeight - expectedHeight) <= step)
+                        .ToString(), "True");
+
+                if (stitched != null)
+                {
+                    int[] rows = new int[] { 4, 127, 250, 375, 499 };
+                    int good = 0;
+                    for (int i = 0; i < rows.Length; i++)
+                    {
+                        int row = rows[i];
+                        if (row >= stitched.Height)
+                        {
+                            continue;
+                        }
+                        Color expected = ScrollProbeColor(
+                            probe.StartRow + row);
+                        Color actual = stitched.GetPixel(
+                            stitched.Width / 2, row);
+                        bool same =
+                            Math.Abs(actual.R - expected.R) <= 3 &&
+                            Math.Abs(actual.G - expected.G) <= 3 &&
+                            Math.Abs(actual.B - expected.B) <= 3;
+                        if (!same)
+                        {
+                            output.AppendLine("row " + row +
+                                " actual=" + actual +
+                                " expected=" + expected);
+                        }
+                        else
+                        {
+                            good++;
+                        }
+                    }
+                    output.AppendLine("alignedRows=" + good + "/" +
+                        rows.Length);
+                    Check(output, ref ok,
+                        "scroll probe content aligned",
+                        good.ToString(), rows.Length.ToString());
+
+                    stitched.Save(
+                        Path.Combine(
+                            ConfigStore.DataDirectory,
+                            "scroll-shot.png"),
+                        ImageFormat.Png);
+                }
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                if (session != null)
+                {
+                    session.Dispose();
+                }
+                if (stitched != null)
+                {
+                    stitched.Dispose();
+                }
+                if (probe != null)
+                {
+                    probe.Close();
+                    probe.Dispose();
+                }
+                output.AppendLine(
+                    ok ? "RESULT: OK" : "RESULT: FAILED");
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory,
+                        "scrollshotprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        /// <summary>
+        /// 悬浮条 + Esc/Enter 钩子：确认悬浮条不会压在选区上、
+        /// 点「取消」能正常结束、Esc 能被钩子接住并吞掉。
+        /// </summary>
+        public static void RunScrollBarProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            ScrollCaptureBar bar = null;
+            ScrollKeyWatcher keys = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                using (Form host = new Form())
+                {
+                    IntPtr handle = host.Handle;
+                    output.AppendLine("hostHandle=" + handle);
+                    if (SynchronizationContext.Current == null)
+                    {
+                        SynchronizationContext.SetSynchronizationContext(
+                            new WindowsFormsSynchronizationContext());
+                    }
+
+                    Rectangle avoid = new Rectangle(240, 180, 620, 520);
+                    bar = new ScrollCaptureBar(avoid, avoid.Height);
+                    bool placed = bar.PlaceOutsideCapture();
+                    output.AppendLine("placed=" + placed +
+                        " bounds=" + bar.Bounds);
+                    Check(output, ref ok, "scroll bar placed outside",
+                        placed.ToString(), "True");
+                    Check(output, ref ok,
+                        "scroll bar avoids capture area",
+                        bar.Bounds.IntersectsWith(avoid).ToString(),
+                        "False");
+
+                    bar.Show();
+                    PumpMessages(450);
+                    bar.Status = "已拼接 " + (avoid.Height + 360) + " px";
+                    PumpMessages(250);
+
+                    Rectangle shotArea = bar.Bounds;
+                    shotArea.Inflate(8, 8);
+                    using (Bitmap shot = Capture(shotArea))
+                    {
+                        if (shot != null)
+                        {
+                            shot.Save(
+                                Path.Combine(
+                                    ConfigStore.DataDirectory,
+                                    "ui-scrollbar.png"),
+                                ImageFormat.Png);
+                        }
+                    }
+                    Check(output, ref ok, "scroll bar visible",
+                        bar.Visible.ToString(), "True");
+
+                    int finished = 0;
+                    int cancelled = 0;
+                    keys = new ScrollKeyWatcher();
+                    keys.IgnoreInjectedKeys = false;
+                    keys.FinishRequested += delegate { finished++; };
+                    keys.CancelRequested += delegate { cancelled++; };
+                    keys.Start();
+                    output.AppendLine("hookInstalled=" + keys.IsRunning);
+                    if (keys.IsRunning)
+                    {
+                        ProbeKey(NativeMethods.VK_ESCAPE, false);
+                        ProbeKey(NativeMethods.VK_ESCAPE, true);
+                        PumpMessages(400);
+                        Check(output, ref ok, "scroll esc hooked",
+                            cancelled.ToString(), "1");
+
+                        ProbeKey(NativeMethods.VK_RETURN, false);
+                        ProbeKey(NativeMethods.VK_RETURN, true);
+                        PumpMessages(400);
+                        Check(output, ref ok, "scroll enter hooked",
+                            finished.ToString(), "1");
+                    }
+                    else
+                    {
+                        output.AppendLine(
+                            "SKIP: 当前会话无法安装全局键盘钩子");
+                    }
+
+                    bar.RequestCancel();
+                    PumpMessages(150);
+                    Check(output, ref ok, "scroll bar cancel result",
+                        bar.DialogResult.ToString(), "Cancel");
+                }
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                if (keys != null)
+                {
+                    keys.Dispose();
+                }
+                if (bar != null)
+                {
+                    bar.Dispose();
+                }
+                output.AppendLine(
+                    ok ? "RESULT: OK" : "RESULT: FAILED");
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory,
+                        "scrollbarprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        /// <summary>
+        /// 从「框选 → 点滚动截图按钮 → 拨滚轮 → Enter 完成」整条真实链路：
+        /// 用 ScrollProbeForm 当目标窗口，定时器负责滚动和按 Enter，
+        /// 最后验证长截图预览窗口真的弹出来了。
+        /// </summary>
+        public static void RunScrollFlowProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            ScrollProbeForm probe = null;
+            ScreenshotCaptureForm overlay = null;
+            System.Windows.Forms.Timer driver = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                probe = new ScrollProbeForm();
+                probe.Location = new Point(140, 120);
+                probe.Show();
+                probe.Activate();
+                PumpMessages(500);
+
+                Rectangle area = probe.DocumentArea;
+                output.AppendLine("target=" + area.Width + "x" +
+                    area.Height + " at " + area.Location);
+
+                overlay = new ScreenshotCaptureForm();
+                overlay.Show();
+                PumpMessages(300);
+
+                Point clientOrigin = overlay.PointToClient(
+                    new Point(area.Left, area.Top));
+                Rectangle selection = new Rectangle(
+                    clientOrigin, area.Size);
+                overlay.DebugSelect(selection);
+                output.AppendLine("selection=" + overlay.CaptureArea);
+
+                // 每 260ms 滚一格，滚完 8 次再按 Enter 结束。
+                int ticks = 0;
+                const int step = 60;
+                const int steps = 8;
+                driver = new System.Windows.Forms.Timer();
+                driver.Interval = 260;
+                driver.Tick += delegate
+                {
+                    ticks++;
+                    if (ticks <= steps)
+                    {
+                        probe.ScrollBy(step);
+                        return;
+                    }
+                    driver.Stop();
+                    ProbeKey(NativeMethods.VK_RETURN, false);
+                    ProbeKey(NativeMethods.VK_RETURN, true);
+                };
+                driver.Start();
+
+                overlay.DebugStartScroll();
+                driver.Stop();
+
+                PumpMessages(600);
+                LongShotForm longShot = null;
+                FormCollection forms = Application.OpenForms;
+                for (int i = 0; i < forms.Count; i++)
+                {
+                    LongShotForm candidate = forms[i] as LongShotForm;
+                    if (candidate != null)
+                    {
+                        longShot = candidate;
+                        break;
+                    }
+                }
+
+                Check(output, ref ok, "scroll flow opens preview",
+                    (longShot != null).ToString(), "True");
+                if (longShot != null)
+                {
+                    output.AppendLine("previewBounds=" + longShot.Bounds);
+                    Check(output, ref ok, "scroll flow overlay closed",
+                        (overlay == null || overlay.IsDisposed ||
+                            !overlay.Visible).ToString(), "True");
+                    longShot.Activate();
+                    PumpMessages(400);
+                    // 用 DrawToBitmap 抓窗口自身：探针进程在后台，
+                    // 截图可能被别的窗口挡住，但窗口内容照样要能画出来。
+                    using (Bitmap shot = new Bitmap(
+                        longShot.Width, longShot.Height))
+                    {
+                        longShot.DrawToBitmap(
+                            shot,
+                            new Rectangle(0, 0,
+                                longShot.Width, longShot.Height));
+                        shot.Save(
+                            Path.Combine(
+                                ConfigStore.DataDirectory,
+                                "ui-scrollflow.png"),
+                            ImageFormat.Png);
+                    }
+                    longShot.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                if (driver != null)
+                {
+                    driver.Stop();
+                    driver.Dispose();
+                }
+                if (overlay != null && !overlay.IsDisposed)
+                {
+                    overlay.Close();
+                    overlay.Dispose();
+                }
+                if (probe != null)
+                {
+                    probe.Close();
+                    probe.Dispose();
+                }
+                output.AppendLine(
+                    ok ? "RESULT: OK" : "RESULT: FAILED");
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory,
+                        "scrollflowprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        /// <summary>截图浮层工具栏的渲染预览（含新增的滚动截图按钮）。</summary>
+        public static void RunCaptureUiProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            ScreenshotCaptureForm overlay = null;
+            Form backdrop = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                backdrop = new Form();
+                backdrop.FormBorderStyle = FormBorderStyle.None;
+                backdrop.StartPosition = FormStartPosition.Manual;
+                backdrop.Bounds = new Rectangle(0, 0, 1280, 720);
+                backdrop.BackColor = Color.FromArgb(28, 32, 40);
+                backdrop.Show();
+                PumpMessages(400);
+
+                overlay = new ScreenshotCaptureForm();
+                overlay.Show();
+                PumpMessages(300);
+                Point origin = overlay.PointToClient(new Point(240, 160));
+                overlay.DebugSelect(new Rectangle(origin, new Size(640, 360)));
+                PumpMessages(300);
+
+                Check(output, ref ok, "capture ui selection",
+                    (overlay.CaptureArea.Width > 0).ToString(), "True");
+
+                Rectangle bounds = overlay.Bounds;
+                using (Bitmap shot = new Bitmap(
+                    Math.Min(bounds.Width, 1400),
+                    Math.Min(bounds.Height, 900)))
+                {
+                    overlay.DrawToBitmap(
+                        shot,
+                        new Rectangle(0, 0, shot.Width, shot.Height));
+                    shot.Save(
+                        Path.Combine(
+                            ConfigStore.DataDirectory,
+                            "ui-capture-toolbar.png"),
+                        ImageFormat.Png);
+                }
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                if (overlay != null && !overlay.IsDisposed)
+                {
+                    overlay.Close();
+                    overlay.Dispose();
+                }
+                if (backdrop != null)
+                {
+                    backdrop.Close();
+                    backdrop.Dispose();
+                }
+                output.AppendLine(
+                    ok ? "RESULT: OK" : "RESULT: FAILED");
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory,
+                        "captureuiprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        /// <summary>工具栏图标对照图（放大后逐个标注），看新图标有没有画歪。</summary>
+        public static void RunIconStripProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            try
+            {
+                using (Bitmap strip =
+                    ScreenshotCaptureForm.RenderIconStripForTest(4))
+                {
+                    strip.Save(
+                        Path.Combine(
+                            ConfigStore.DataDirectory,
+                            "ui-icon-strip.png"),
+                        ImageFormat.Png);
+                    Check(output, ref ok, "icon strip size",
+                        (strip.Width > 100).ToString(), "True");
+                }
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                output.AppendLine(
+                    ok ? "RESULT: OK" : "RESULT: FAILED");
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory,
+                        "iconstripprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        /// <summary>长截图预览窗口的渲染冒烟 + 截图 ui-scrollpreview.png。</summary>
+        public static void RunScrollShotPreview()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            LongShotForm form = null;
+            Bitmap tall = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                tall = new Bitmap(
+                    900, 2400, PixelFormat.Format32bppArgb);
+                using (Graphics g = Graphics.FromImage(tall))
+                {
+                    g.Clear(Color.White);
+                    using (Font title = new Font(
+                        "Microsoft YaHei UI", 28f, FontStyle.Bold))
+                    using (Font body = new Font(
+                        "Microsoft YaHei UI", 15f))
+                    using (SolidBrush ink = new SolidBrush(
+                        Color.FromArgb(32, 36, 44)))
+                    using (SolidBrush accent = new SolidBrush(
+                        Color.FromArgb(0, 122, 255)))
+                    {
+                        g.DrawString("滚动截图预览", title, ink,
+                            40f, 30f);
+                        for (int i = 0; i < 32; i++)
+                        {
+                            g.DrawString(
+                                "第 " + (i + 1) +
+                                " 段：拨动滚轮把整页内容接成一张长图。",
+                                body, i % 6 == 0 ? accent : ink,
+                                40f, 120f + i * 68f);
+                        }
+                    }
+                }
+
+                form = new LongShotForm(tall);
+                tall = null;
+                form.Show();
+                form.Activate();
+                PumpMessages(1100);
+
+                Check(output, ref ok, "scroll preview visible",
+                    form.Visible.ToString(), "True");
+                Rectangle bounds = form.Bounds;
+                using (Bitmap shot = Capture(bounds))
+                {
+                    if (shot != null)
+                    {
+                        shot.Save(
+                            Path.Combine(
+                                ConfigStore.DataDirectory,
+                                "ui-scrollpreview.png"),
+                            ImageFormat.Png);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                if (tall != null)
+                {
+                    tall.Dispose();
+                }
+                if (form != null)
+                {
+                    form.Close();
+                    form.Dispose();
+                }
+                output.AppendLine(
+                    ok ? "RESULT: OK" : "RESULT: FAILED");
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory,
+                        "scrollshotpreview.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
         }
 
         /// <summary>截取屏幕上一块矩形。</summary>
@@ -5673,6 +6403,49 @@ namespace SelectionTranslator
                         overlap.ToString(), "False");
                 }
 
+                // 新增的「文件秒搜」分组：必须存在、控件不越界、
+                // 并且真的显示默认快捷键 Ctrl+F。
+                GroupBox searchGroup = FindGroupBox(form, "文件秒搜");
+                Check(output, ref ok, "settings filesearch group exists",
+                    (searchGroup != null).ToString(), "True");
+                if (searchGroup != null)
+                {
+                    output.AppendLine("searchGroup=" +
+                        searchGroup.Bounds);
+                    bool searchInside = true;
+                    TextBox hotkeyBox = null;
+                    for (int i = 0; i < searchGroup.Controls.Count; i++)
+                    {
+                        Control child = searchGroup.Controls[i];
+                        if (child is TextBox)
+                        {
+                            hotkeyBox = (TextBox)child;
+                        }
+                        if (child.Right > searchGroup.ClientSize.Width ||
+                            child.Bottom > searchGroup.ClientSize.Height ||
+                            child.Left < 0 || child.Top < 0)
+                        {
+                            searchInside = false;
+                            output.AppendLine("searchClipped=" +
+                                child.GetType().Name + " " +
+                                child.Text + " " + child.Bounds);
+                        }
+                    }
+                    Check(output, ref ok,
+                        "settings filesearch controls inside group",
+                        searchInside.ToString(), "True");
+                    Check(output, ref ok,
+                        "settings filesearch hotkey shown",
+                        hotkeyBox == null ? "" : hotkeyBox.Text,
+                        "Ctrl+F");
+                    bool overlapsDownload = downloadGroup != null &&
+                        searchGroup.Bounds.IntersectsWith(
+                            downloadGroup.Bounds);
+                    Check(output, ref ok,
+                        "settings filesearch group below download",
+                        overlapsDownload.ToString(), "False");
+                }
+
                 string shot = Path.Combine(
                     ConfigStore.DataDirectory, "ui-settings.png");
                 try
@@ -5693,6 +6466,41 @@ namespace SelectionTranslator
                     output.AppendLine("screenshot=" + shot);
                     Check(output, ref ok, "settings screenshot",
                         File.Exists(shot).ToString(), "True");
+
+                    // 再滚到底部拍一张，方便肉眼确认「文件秒搜」分组。
+                    Panel host = null;
+                    for (int i = 0; i < form.Controls.Count; i++)
+                    {
+                        Panel panel = form.Controls[i] as Panel;
+                        if (panel != null && panel.AutoScroll)
+                        {
+                            host = panel;
+                            break;
+                        }
+                    }
+                    if (host != null)
+                    {
+                        host.AutoScrollPosition = new Point(
+                            0, host.VerticalScroll.Maximum);
+                        PumpMessages(400);
+                        using (Bitmap capture = new Bitmap(
+                            Math.Max(1, form.Width),
+                            Math.Max(1, form.Height)))
+                        {
+                            using (Graphics graphics =
+                                Graphics.FromImage(capture))
+                            {
+                                graphics.CopyFromScreen(
+                                    form.Left, form.Top, 0, 0,
+                                    capture.Size);
+                            }
+                            capture.Save(
+                                Path.Combine(
+                                    ConfigStore.DataDirectory,
+                                    "ui-settings-bottom.png"),
+                                ImageFormat.Png);
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -5783,6 +6591,67 @@ namespace SelectionTranslator
                 inputs,
                 System.Runtime.InteropServices.Marshal.SizeOf(
                     typeof(NativeMethods.INPUT)));
+        }
+    }
+
+    /// <summary>
+    /// 滚动截图的探针窗口：整窗就是一张「文档」，每一行颜色都不同，
+    /// 滚动只是换起始行号。这样拼出来的长图可以逐行核对颜色。
+    /// </summary>
+    internal sealed class ScrollProbeForm : Form
+    {
+        private int _scroll;
+
+        public ScrollProbeForm()
+        {
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.Manual;
+            ClientSize = new Size(420, 520);
+            BackColor = Color.Black;
+            ShowInTaskbar = true;
+            TopMost = true;
+            SetStyle(
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.UserPaint, true);
+        }
+
+        /// <summary>会话开始时的文档行号（探针固定从 0 开始）。</summary>
+        public int StartRow
+        {
+            get { return 0; }
+        }
+
+        public int ScrollValue
+        {
+            get { return _scroll; }
+        }
+
+        public Rectangle DocumentArea
+        {
+            get { return RectangleToScreen(ClientRectangle); }
+        }
+
+        public void ScrollBy(int delta)
+        {
+            _scroll += delta;
+            Invalidate();
+            Update();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            using (SolidBrush brush = new SolidBrush(Color.Black))
+            {
+                for (int y = 0; y < ClientSize.Height; y++)
+                {
+                    brush.Color = SelfTest.ScrollProbeColor(
+                        _scroll + y);
+                    g.FillRectangle(
+                        brush, 0, y, ClientSize.Width, 1);
+                }
+            }
         }
     }
 }

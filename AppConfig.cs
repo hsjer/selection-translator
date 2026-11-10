@@ -8,6 +8,9 @@ namespace SelectionTranslator
 {
     public class AppConfig
     {
+        /// <summary>文件秒搜的默认快捷键。用户明确要求默认 Ctrl+F。</summary>
+        public const string DefaultFileSearchHotkey = "Ctrl+F";
+
         public string AppId { get; set; }
         public string SecretProtected { get; set; }
         public string TargetLanguage { get; set; }
@@ -61,6 +64,9 @@ namespace SelectionTranslator
         public int ClipboardMaxItems { get; set; }
         /// <summary>打开剪贴板历史窗口的全局快捷键。</summary>
         public string HotkeyClipboardHistory { get; set; }
+
+        /// <summary>打开「文件秒搜」窗口的全局快捷键，默认 Ctrl+F。</summary>
+        public string HotkeyFileSearch { get; set; }
         /// <summary>快速连按两下 Ctrl 打开剪贴板历史（低级键盘钩子）。</summary>
         public bool EnableDoubleCtrlHotkey { get; set; }
 
@@ -107,6 +113,7 @@ namespace SelectionTranslator
             ClipboardTtlHours = ClipboardLogic.DefaultTtlHours;
             ClipboardMaxItems = ClipboardLogic.DefaultMaxItems;
             HotkeyClipboardHistory = "Ctrl+Alt+C";
+            HotkeyFileSearch = DefaultFileSearchHotkey;
             EnableDoubleCtrlHotkey = true;
             SoftwareDownloadDirectory = "";
             FirstRunDone = false;
@@ -296,6 +303,16 @@ namespace SelectionTranslator
                     config.SoftwareDownloadDirectory = "";
                 }
 
+                // 文件秒搜的快捷键是后加的：老配置里没有这个字段，
+                // 补上默认的 Ctrl+F；有字段但被清空也回到默认。
+                if (!HasFileSearchHotkeySetting(json) ||
+                    string.IsNullOrEmpty(
+                        (config.HotkeyFileSearch ?? "").Trim()))
+                {
+                    config.HotkeyFileSearch =
+                        AppConfig.DefaultFileSearchHotkey;
+                }
+
                 // 老用户已经有自己的开关状态，别把人家的设置改掉。
                 // 只有「完全没有 FirstRunDone 字段」才当成老配置跳过；
                 // 全新安装（config.json 不存在）在上面已经返回了 false。
@@ -382,6 +399,15 @@ namespace SelectionTranslator
             return json != null &&
                 json.IndexOf(
                     "\"EnableDoubleCtrlHotkey\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        /// <summary>供自检直接验证老配置迁移逻辑，不依赖真实 config.json。</summary>
+        public static bool HasFileSearchHotkeySetting(string json)
+        {
+            return json != null &&
+                json.IndexOf(
+                    "\"HotkeyFileSearch\"",
                     StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
