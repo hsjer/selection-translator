@@ -3237,6 +3237,8 @@ namespace SelectionTranslator
                 target.StartPosition = FormStartPosition.Manual;
                 target.BackColor = Color.White;
                 target.Bounds = new Rectangle(320, 260, 520, 380);
+                // 置顶：否则别的窗口可能压在目标上，采样点就不是纯白了。
+                target.TopMost = true;
                 // 画成「一页文档」的样子，截图里能直接看出边框框的是正文。
                 target.Paint += delegate(object sender, PaintEventArgs e)
                 {
