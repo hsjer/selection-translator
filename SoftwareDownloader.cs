@@ -68,8 +68,9 @@ namespace SelectionTranslator
     }
 
     /// <summary>
-    /// 下载安装包：直连 360 的 soft_download 地址（详情页里的「普通下载」），
-    /// 不经过 360 软件管家，所以不会顺带把 360 卫士装下来。
+    /// 下载安装包：直连软件源给出的安装包地址（360 的 soft_download，
+    /// 或者腾讯软件中心的 https 直链），不经过任何「软件管家」，
+    /// 所以不会顺带把 360 卫士之类的套装装下来。
     /// 先写 .part 再改名，取消或失败时清掉残留。
     /// </summary>
     internal static class SoftwareDownloader
@@ -143,12 +144,75 @@ namespace SelectionTranslator
             return ConfigStore.DataDirectory;
         }
 
+        /// <summary>
+        /// 设置里指定的保存目录；没设置或路径不可用时返回空串。
+        /// 每次调用都重新读一次配置，这样设置窗口改完立即生效，
+        /// 不需要重启软件下载窗口。
+        /// </summary>
+        public static string ConfiguredDirectory()
+        {
+            string configured = "";
+            try
+            {
+                AppConfig config = ConfigStore.Load();
+                if (config != null)
+                {
+                    configured =
+                        (config.SoftwareDownloadDirectory ?? "").Trim();
+                }
+            }
+            catch
+            {
+                return "";
+            }
+            if (configured.Length == 0)
+            {
+                return "";
+            }
+            try
+            {
+                // 目录不存在就建出来；建不出来（盘符没了 / 权限不足）算无效。
+                Directory.CreateDirectory(configured);
+                return Directory.Exists(configured) ? configured : "";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        /// <summary>真正要用的保存目录：用户设置优先，否则系统「下载」文件夹。</summary>
+        public static string DownloadDirectory()
+        {
+            string configured = ConfiguredDirectory();
+            return configured.Length > 0 ? configured : DefaultDirectory();
+        }
+
         /// <summary>后台下载，进度回调可能来自工作线程，界面需要自己切回 UI 线程。</summary>
         public static Task<SoftDownload> StartAsync(
             SoftItem item, string directory, Action<SoftDownload> progress)
         {
             SoftDownload job = new SoftDownload();
             job.Item = item;
+            return StartAsync(job, directory, progress);
+        }
+
+        /// <summary>
+        /// 用调用方自己创建的任务对象下载。界面必须走这个重载：
+        /// 列表里的状态是按这个对象画的，另建一个内部对象会导致
+        /// 进度和完成态永远回不到界面（下载完了还显示「下载中」）。
+        /// </summary>
+        public static Task<SoftDownload> StartAsync(
+            SoftDownload job, string directory,
+            Action<SoftDownload> progress)
+        {
+            if (job == null)
+            {
+                SoftDownload empty = new SoftDownload();
+                empty.Failed = true;
+                empty.Error = "下载任务为空";
+                return Task.FromResult(empty);
+            }
             return Task.Run(delegate
             {
                 Run(job, directory, progress);
@@ -171,7 +235,7 @@ namespace SelectionTranslator
                 }
                 if (string.IsNullOrEmpty(directory))
                 {
-                    directory = DefaultDirectory();
+                    directory = DownloadDirectory();
                 }
                 Directory.CreateDirectory(directory);
                 job.TargetPath = SoftwareCatalog.UniquePath(

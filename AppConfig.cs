@@ -64,6 +64,13 @@ namespace SelectionTranslator
         /// <summary>快速连按两下 Ctrl 打开剪贴板历史（低级键盘钩子）。</summary>
         public bool EnableDoubleCtrlHotkey { get; set; }
 
+        // ---- 软件下载 ----
+        /// <summary>
+        /// 安装包保存目录。空串表示用系统「下载」文件夹（取不到时退回桌面），
+        /// 这样配置拷到别的电脑上也不会指到一个不存在的路径。
+        /// </summary>
+        public string SoftwareDownloadDirectory { get; set; }
+
         /// <summary>
         /// 首次运行初始化（开机启动 / 右键菜单 / 打开方式）是否已经跑过。
         /// 全新安装时为 false，跑完写 true；老配置里没这个字段按 true 处理。
@@ -101,6 +108,7 @@ namespace SelectionTranslator
             ClipboardMaxItems = ClipboardLogic.DefaultMaxItems;
             HotkeyClipboardHistory = "Ctrl+Alt+C";
             EnableDoubleCtrlHotkey = true;
+            SoftwareDownloadDirectory = "";
             FirstRunDone = false;
         }
 
@@ -280,6 +288,12 @@ namespace SelectionTranslator
                 if (!HasDoubleCtrlSetting(json))
                 {
                     config.EnableDoubleCtrlHotkey = true;
+                }
+
+                // 软件下载目录：老配置里没有这个字段，保持空串（用系统默认）。
+                if (config.SoftwareDownloadDirectory == null)
+                {
+                    config.SoftwareDownloadDirectory = "";
                 }
 
                 // 老用户已经有自己的开关状态，别把人家的设置改掉。

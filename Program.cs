@@ -76,6 +76,12 @@ namespace SelectionTranslator
                 return;
             }
 
+            if (Array.IndexOf(args, "--settingspreview") >= 0)
+            {
+                SelfTest.RunSettingsPreview();
+                return;
+            }
+
             if (Array.IndexOf(args, "--hoverprobe") >= 0)
             {
                 SelfTest.RunHoverProbe();

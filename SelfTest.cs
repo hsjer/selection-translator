@@ -1004,6 +1004,139 @@ namespace SelectionTranslator
                     SoftwareDownloader.RemainingText(0, 1000, 100),
                     "剩余 10 秒");
 
+                // ---- 腾讯软件中心：xmlInfo 解析 / 两源合并 ----
+                string tencentXml =
+                    "\n<soft id=\"11488\" ostype=\"496\" osbit=\"2\">\n" +
+                    "    <displayname>\n      <![CDATA[微信]]>\n" +
+                    "    </displayname>\n" +
+                    "    <filesize>259969448</filesize>\n" +
+                    "    <https>\n      <![CDATA[https://webcdn.m.qq.com/" +
+                    "spcmgr/download/WeChatWin.exe]]>\n    </https>\n" +
+                    "    <versionname>4.2.0.13</versionname>\n" +
+                    "    <feature>\n      <![CDATA[让沟通更方便]]>\n" +
+                    "    </feature>\n" +
+                    "    <logo48>11488_48_1616464914.png</logo48>\n" +
+                    "    <point>66</point>\n" +
+                    "</soft>";
+                System.Collections.Generic.Dictionary<string, object>
+                    tencentRoot =
+                        new System.Collections.Generic.Dictionary<string, object>();
+                System.Collections.Generic.Dictionary<string, object>
+                    tencentInfo =
+                        new System.Collections.Generic.Dictionary<string, object>();
+                tencentInfo["keyword"] = "微信";
+                tencentInfo["total"] = 2;
+                System.Collections.Generic.Dictionary<string, object>
+                    tencentRow =
+                        new System.Collections.Generic.Dictionary<string, object>();
+                tencentRow["SoftID"] = 11488;
+                tencentRow["SoftName"] = "微信";
+                tencentRow["xmlInfo"] = tencentXml;
+                System.Collections.Generic.Dictionary<string, object>
+                    tencentRow2 =
+                        new System.Collections.Generic.Dictionary<string, object>();
+                tencentRow2["SoftID"] = 24239;
+                tencentRow2["SoftName"] = "抖音";
+                tencentRow2["xmlInfo"] = "";
+                tencentRoot["code"] = 0;
+                tencentRoot["info"] = tencentInfo;
+                tencentRoot["list"] = new object[]
+                {
+                    tencentRow, tencentRow2
+                };
+                System.Web.Script.Serialization.JavaScriptSerializer
+                    tencentSerializer =
+                        new System.Web.Script.Serialization.JavaScriptSerializer();
+                string tencentJson = tencentSerializer.Serialize(
+                    tencentRoot);
+                SoftSearchResult tencentSoft =
+                    SoftwareCatalog.ParseTencent(tencentJson);
+                Check(output, ref ok, "tencent parse count",
+                    tencentSoft.Items.Count + "/" + tencentSoft.Total,
+                    "2/2");
+                Check(output, ref ok, "tencent parse name",
+                    tencentSoft.Items[0].Name, "微信");
+                Check(output, ref ok, "tencent parse size",
+                    tencentSoft.Items[0].SizeText, "248 MB");
+                Check(output, ref ok, "tencent parse rating",
+                    tencentSoft.Items[0].RatingText, "6.6 分");
+                Check(output, ref ok, "tencent parse version",
+                    tencentSoft.Items[0].VersionText, "4.2.0.13");
+                Check(output, ref ok, "tencent parse download url",
+                    tencentSoft.Items[0].DownloadUrl,
+                    "https://webcdn.m.qq.com/spcmgr/download/WeChatWin.exe");
+                Check(output, ref ok, "tencent parse detail page",
+                    tencentSoft.Items[0].DetailPage,
+                    "https://pc.qq.com/detail/8/detail_11488.html");
+                Check(output, ref ok, "tencent parse logo",
+                    tencentSoft.Items[0].LogoUrl,
+                    "https://pc3.gtimg.com/softmgr/logo/48/" +
+                    "11488_48_1616464914.png");
+                Check(output, ref ok, "tencent parse source tag",
+                    tencentSoft.Items[0].Source + "/" +
+                    tencentSoft.Items[1].Source,
+                    "腾讯/腾讯");
+                Check(output, ref ok, "tencent xml cdata strip",
+                    SoftwareCatalog.XmlText(tencentXml, "displayname"),
+                    "微信");
+                Check(output, ref ok, "tencent human size",
+                    SoftwareCatalog.HumanSize(1362132), "1.30 MB");
+                Check(output, ref ok, "tencent point format",
+                    SoftwareCatalog.FormatPoint("68"), "6.8");
+
+                // 两源合并：同名同 ID 也不去重，顺序是 360 在前腾讯在后。
+                SoftItem mergeProbe = new SoftItem();
+                mergeProbe.Source = SoftwareCatalog.Source360;
+                mergeProbe.SoftId = 11488;
+                mergeProbe.Name = "微信";
+                SoftSearchResult mergedResult = SoftwareCatalog.Merge(
+                    new SoftSearchResult
+                    {
+                        Total = 1,
+                        Items = new System.Collections.Generic.List<SoftItem>
+                        {
+                            mergeProbe
+                        }
+                    },
+                    tencentSoft);
+                Check(output, ref ok, "software merge keeps duplicates",
+                    mergedResult.Items.Count + "/" + mergedResult.Total,
+                    "3/3");
+                Check(output, ref ok, "software merge order",
+                    mergedResult.Items[0].Source + "/" +
+                    mergedResult.Items[1].Source,
+                    "360/腾讯");
+                Check(output, ref ok, "software key is unique per source",
+                    mergeProbe.Key + "|" +
+                    tencentSoft.Items[0].Key,
+                    "360:11488|腾讯:11488");
+                SoftSearchResult failedSide = new SoftSearchResult();
+                failedSide.Error = "连不上软件源";
+                SoftSearchResult partialResult = SoftwareCatalog.Merge(
+                    mergedResult, failedSide);
+                Check(output, ref ok, "software merge partial failure",
+                    partialResult.Items.Count + "/" +
+                    (partialResult.Error.Length == 0) + "/" +
+                    (partialResult.Warning.Length > 0),
+                    "3/True/True");
+                Check(output, ref ok, "software merge all failed",
+                    (SoftwareCatalog.Merge(
+                        new SoftSearchResult { Error = "a" },
+                        new SoftSearchResult { Error = "b" })
+                        .Error.Length > 0).ToString(), "True");
+
+                // 下载目录：等于系统默认时不落盘（换机器还能用），
+                // 自定义目录原样保存。
+                string defaultDir = SoftwareDownloader.DefaultDirectory();
+                Check(output, ref ok, "download dir default normalized",
+                    "[" + SettingsForm.NormalizeDownloadDirectory(
+                        defaultDir + "\\") + "]",
+                    "[]");
+                Check(output, ref ok, "download dir custom kept",
+                    SettingsForm.NormalizeDownloadDirectory(
+                        @"D:\我的安装包"),
+                    @"D:\我的安装包");
+
                 // 分段翻译：长文本应被拆成多段，每段 UTF-8 字节数都不超过上限，
                 // 且拼接后能还原原文。
                 StringBuilder longText = new StringBuilder();
@@ -3904,14 +4037,35 @@ namespace SelectionTranslator
                 output.AppendLine("elapsedMs=" +
                     (int)(DateTime.Now - started).TotalMilliseconds);
                 output.AppendLine("error=" + result.Error);
+                output.AppendLine("warning=" + result.Warning);
                 output.AppendLine("total=" + result.Total +
                     " items=" + result.Items.Count);
                 output.AppendLine("api=" +
                     SoftwareCatalog.BuildSearchUrl("小红书", 1));
+
+                // 两个源分开再查一次，出问题时能一眼看出是哪一侧挂了。
+                SoftSearchResult only360 =
+                    SoftwareCatalog.Search360("小红书", 1);
+                SoftSearchResult onlyTencent =
+                    SoftwareCatalog.SearchTencent("小红书");
+                output.AppendLine("source360=" + only360.Items.Count +
+                    " total=" + only360.Total +
+                    " error=" + only360.Error);
+                output.AppendLine("sourceTencent=" +
+                    onlyTencent.Items.Count +
+                    " total=" + onlyTencent.Total +
+                    " error=" + onlyTencent.Error);
+                output.AppendLine("apiTencent=" +
+                    SoftwareCatalog.BuildTencentSearchUrl(
+                        "小红书", 1, SoftwareCatalog.PageSize));
                 Check(output, ref ok, "probe software search ok",
                     (result.Error.Length == 0).ToString(), "True");
                 Check(output, ref ok, "probe software has results",
                     (result.Items.Count > 0).ToString(), "True");
+                Check(output, ref ok, "probe software merged both sources",
+                    (HasSource(result, SoftwareCatalog.Source360) &&
+                        HasSource(result, SoftwareCatalog.SourceTencent))
+                        .ToString(), "True");
 
                 if (result.Items.Count > 0)
                 {
@@ -3962,6 +4116,46 @@ namespace SelectionTranslator
                             "），可能是网络或 CDN 限制");
                     }
                 }
+
+                if (onlyTencent.Items.Count > 0)
+                {
+                    SoftItem tencent = onlyTencent.Items[0];
+                    output.AppendLine("tencent[0]=" + tencent.Name +
+                        " | " + tencent.VersionText +
+                        " | " + tencent.SizeText +
+                        " | " + tencent.RatingText +
+                        " | " + tencent.Source);
+                    output.AppendLine("        " +
+                        tencent.DownloadUrl);
+                    output.AppendLine("        " + tencent.LogoUrl);
+                    output.AppendLine("        " + tencent.DetailPage);
+                    Check(output, ref ok,
+                        "probe tencent detail page",
+                        tencent.DetailPage.StartsWith(
+                            "https://pc.qq.com/detail/",
+                            StringComparison.Ordinal).ToString(),
+                        "True");
+                    Check(output, ref ok,
+                        "probe tencent download url",
+                        tencent.DownloadUrl.StartsWith(
+                            "https://", StringComparison.Ordinal)
+                            .ToString(), "True");
+                    Check(output, ref ok,
+                        "probe tencent size text",
+                        (tencent.SizeText.Length > 0).ToString(),
+                        "True");
+                    long tencentLength;
+                    string tencentStatus = SoftwareCatalog.ProbeDownload(
+                        tencent.DownloadUrl, out tencentLength);
+                    output.AppendLine("tencentPackageStatus=" +
+                        tencentStatus + " length=" + tencentLength);
+                    if (tencentStatus == "200" || tencentStatus == "206")
+                    {
+                        Check(output, ref ok,
+                            "probe tencent package reachable",
+                            (tencentLength > 0).ToString(), "True");
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -3991,95 +4185,16 @@ namespace SelectionTranslator
             bool ok = true;
             string directory = Path.Combine(
                 ConfigStore.DataDirectory, "software-probe");
+            string tencentDirectory = Path.Combine(
+                ConfigStore.DataDirectory, "software-probe-qq");
             try
             {
-                SoftSearchResult result =
-                    SoftwareCatalog.Search("小红书", 1);
-                if (result.Error.Length > 0 || result.Items.Count == 0)
-                {
-                    output.AppendLine("SKIP: 搜索不可用：" +
-                        result.Error);
-                }
-                else
-                {
-                    // 先挑最小的那个，别为了测试拉几百兆。
-                    SoftItem pick = result.Items[0];
-                    double best = double.MaxValue;
-                    for (int i = 0; i < result.Items.Count; i++)
-                    {
-                        SoftItem item = result.Items[i];
-                        if (item.DownloadUrl.Length == 0)
-                        {
-                            continue;
-                        }
-                        double mb = ParseSizeMb(item.SizeText);
-                        if (mb > 0 && mb < best)
-                        {
-                            best = mb;
-                            pick = item;
-                        }
-                    }
-                    output.AppendLine("pick=" + pick.Name +
-                        " | " + pick.SizeText);
-                    output.AppendLine("url=" + pick.DownloadUrl);
-
-                    if (Directory.Exists(directory))
-                    {
-                        Directory.Delete(directory, true);
-                    }
-                    Directory.CreateDirectory(directory);
-                    int updates = 0;
-                    SoftDownload job = SoftwareDownloader.StartAsync(
-                        pick, directory,
-                        delegate(SoftDownload progress) { updates++; })
-                        .Result;
-                    output.AppendLine("done=" + job.Done +
-                        " failed=" + job.Failed +
-                        " error=" + job.Error);
-                    output.AppendLine("received=" + job.Received +
-                        " total=" + job.TotalLength +
-                        " progressCallbacks=" + updates);
-                    output.AppendLine("path=" + job.TargetPath);
-                    Check(output, ref ok, "probe software download done",
-                        job.Done.ToString(), "True");
-                    Check(output, ref ok,
-                        "probe software downloaded file exists",
-                        (job.TargetPath.Length > 0 &&
-                            File.Exists(job.TargetPath)).ToString(),
-                        "True");
-                    long length = 0;
-                    try
-                    {
-                        length = new FileInfo(job.TargetPath).Length;
-                    }
-                    catch
-                    {
-                    }
-                    Check(output, ref ok,
-                        "probe software downloaded size",
-                        (length > 100 * 1024 &&
-                            (job.TotalLength <= 0 ||
-                                length == job.TotalLength)).ToString(),
-                        "True");
-                    bool exeHeader = false;
-                    try
-                    {
-                        byte[] head = new byte[2];
-                        using (FileStream stream = File.OpenRead(
-                            job.TargetPath))
-                        {
-                            exeHeader = stream.Read(head, 0, 2) == 2 &&
-                                head[0] == 'M' && head[1] == 'Z';
-                        }
-                    }
-                    catch
-                    {
-                    }
-                    output.AppendLine("exeHeader=" + exeHeader);
-                    Check(output, ref ok,
-                        "probe software downloaded is exe",
-                        exeHeader.ToString(), "True");
-                }
+                // 两个源各下一个小包：360 用「小红书」里最小的，
+                // 腾讯用「7-Zip」里最小的（腾讯源小包多，适合做端到端）。
+                RunDownloadCase("360", SoftwareCatalog.Search360("小红书", 1),
+                    directory, output, ref ok);
+                RunDownloadCase("tencent", SoftwareCatalog.SearchTencent("7-Zip"),
+                    tencentDirectory, output, ref ok);
             }
             catch (Exception ex)
             {
@@ -4094,6 +4209,10 @@ namespace SelectionTranslator
                     {
                         Directory.Delete(directory, true);
                     }
+                    if (Directory.Exists(tencentDirectory))
+                    {
+                        Directory.Delete(tencentDirectory, true);
+                    }
                 }
                 catch
                 {
@@ -4107,6 +4226,120 @@ namespace SelectionTranslator
                     output.ToString(), Encoding.UTF8);
                 Environment.ExitCode = ok ? 0 : 1;
             }
+        }
+
+        /// <summary>
+        /// 从一批搜索结果里挑体积最小的一个真下下来，校验大小与 MZ 头。
+        /// label 用于区分两个源，会写进断言名字里。
+        /// </summary>
+        private static void RunDownloadCase(
+            string label, SoftSearchResult result, string directory,
+            StringBuilder output, ref bool ok)
+        {
+            if (result == null || result.Error.Length > 0 ||
+                result.Items.Count == 0)
+            {
+                output.AppendLine("SKIP(" + label + "): 搜索不可用：" +
+                    (result == null ? "null" : result.Error));
+                return;
+            }
+
+            // 先挑最小的那个，别为了测试拉几百兆。
+            SoftItem pick = result.Items[0];
+            double best = double.MaxValue;
+            for (int i = 0; i < result.Items.Count; i++)
+            {
+                SoftItem item = result.Items[i];
+                if (item.DownloadUrl.Length == 0)
+                {
+                    continue;
+                }
+                double mb = ParseSizeMb(item.SizeText);
+                if (mb > 0 && mb < best)
+                {
+                    best = mb;
+                    pick = item;
+                }
+            }
+            output.AppendLine("pick(" + label + ")=" + pick.Name +
+                " | " + pick.SizeText + " | " + pick.Source);
+            output.AppendLine("url=" + pick.DownloadUrl);
+
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, true);
+            }
+            Directory.CreateDirectory(directory);
+            int updates = 0;
+            SoftDownload job = new SoftDownload();
+            job.Item = pick;
+            SoftwareDownloader.StartAsync(
+                job, directory,
+                delegate(SoftDownload progress) { updates++; })
+                .Wait();
+            output.AppendLine("done=" + job.Done +
+                " failed=" + job.Failed +
+                " error=" + job.Error);
+            output.AppendLine("received=" + job.Received +
+                " total=" + job.TotalLength +
+                " progressCallbacks=" + updates);
+            output.AppendLine("path=" + job.TargetPath);
+            Check(output, ref ok, "probe " + label + " download done",
+                job.Done.ToString(), "True");
+            Check(output, ref ok,
+                "probe " + label + " downloaded file exists",
+                (job.TargetPath.Length > 0 &&
+                    File.Exists(job.TargetPath)).ToString(),
+                "True");
+            long length = 0;
+            try
+            {
+                length = new FileInfo(job.TargetPath).Length;
+            }
+            catch
+            {
+            }
+            Check(output, ref ok,
+                "probe " + label + " downloaded size",
+                (length > 100 * 1024 &&
+                    (job.TotalLength <= 0 ||
+                        length == job.TotalLength)).ToString(),
+                "True");
+            bool exeHeader = false;
+            try
+            {
+                byte[] head = new byte[2];
+                using (FileStream stream = File.OpenRead(
+                    job.TargetPath))
+                {
+                    exeHeader = stream.Read(head, 0, 2) == 2 &&
+                        head[0] == 'M' && head[1] == 'Z';
+                }
+            }
+            catch
+            {
+            }
+            output.AppendLine("exeHeader=" + exeHeader);
+            Check(output, ref ok,
+                "probe " + label + " downloaded is exe",
+                exeHeader.ToString(), "True");
+        }
+
+        private static bool HasSource(SoftSearchResult result, string source)
+        {
+            if (result == null)
+            {
+                return false;
+            }
+            for (int i = 0; i < result.Items.Count; i++)
+            {
+                if (string.Equals(result.Items[i].Source, source,
+                    StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private static double ParseSizeMb(string text)
@@ -4159,16 +4392,28 @@ namespace SelectionTranslator
                 List<SoftItem> items = new List<SoftItem>();
                 items.Add(MakeSoftItem(
                     2000004652, "小红书手机版", "31.00 MB", "6.0",
-                    "聊天", "3亿人的生活指南，标记我的生活"));
+                    "聊天", "3亿人的生活指南，标记我的生活",
+                    SoftwareCatalog.Source360, ""));
                 items.Add(MakeSoftItem(
                     2000008141, "小红书(应用宝版)", "7.00 MB", "6.0",
-                    "聊天", "手机端应用，需要先安装应用宝支持应用运行"));
+                    "聊天", "手机端应用，需要先安装应用宝支持应用运行",
+                    SoftwareCatalog.Source360, ""));
                 items.Add(MakeSoftItem(
                     600004913, "小红书私信通", "139.00 MB", "6.0",
-                    "营销", "私信智能管理与营销工具，批量回复自动回复"));
+                    "营销", "私信智能管理与营销工具，批量回复自动回复",
+                    SoftwareCatalog.Source360, ""));
                 items.Add(MakeSoftItem(
                     600009911, "小红书直播助手", "384.00 MB", "6.0",
-                    "直播", "小红书官方推出的电脑端直播工具"));
+                    "直播", "小红书官方推出的电脑端直播工具",
+                    SoftwareCatalog.Source360, ""));
+                items.Add(MakeSoftItem(
+                    35986, "抖音", "250.00 MB", "6.8", "",
+                    "记录美好生活，短视频与直播客户端",
+                    SoftwareCatalog.SourceTencent, "8.7.0"));
+                items.Add(MakeSoftItem(
+                    11488, "微信", "247.93 MB", "6.6", "",
+                    "让沟通更方便",
+                    SoftwareCatalog.SourceTencent, "4.2.0.13"));
 
                 form = SoftwareDownloadForm.ShowPreview(items);
                 output.AppendLine("formBounds=" + form.Bounds);
@@ -4241,19 +4486,178 @@ namespace SelectionTranslator
 
         private static SoftItem MakeSoftItem(
             int id, string name, string size, string rating,
-            string category, string description)
+            string category, string description, string source,
+            string version)
         {
             SoftItem item = new SoftItem();
+            item.Source = source;
             item.SoftId = id;
             item.Name = name;
             item.SizeText = size;
             item.Rating = rating;
             item.Category = category;
             item.Description = description;
+            item.VersionText = version ?? "";
             item.DownloadUrl =
                 "https://softdl6.360tpcdn.com/pcrj/setup_" + id + ".exe";
             item.DetailUrl = "/qbfl/" + id + ".html";
             return item;
+        }
+
+        /// <summary>
+        /// 设置窗口渲染冒烟：真的显示窗口并截图，重点检查「软件下载」分组里的
+        /// 保存位置框和两个按钮有没有被裁掉或互相压住。
+        /// 输出 settingspreview.txt / ui-settings.png。
+        /// </summary>
+        public static void RunSettingsPreview()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            SettingsForm form = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                AppConfig config = new AppConfig();
+                config.SoftwareDownloadDirectory = @"D:\安装包下载";
+                form = new SettingsForm(config);
+                form.Show();
+                form.Activate();
+                PumpMessages(900);
+                output.AppendLine("formBounds=" + form.Bounds);
+                output.AppendLine("clientSize=" + form.ClientSize);
+                Check(output, ref ok, "settings window visible",
+                    form.Visible.ToString(), "True");
+
+                GroupBox downloadGroup = FindGroupBox(form, "软件下载");
+                Check(output, ref ok, "settings download group exists",
+                    (downloadGroup != null).ToString(), "True");
+                if (downloadGroup != null)
+                {
+                    output.AppendLine("downloadGroup=" +
+                        downloadGroup.Bounds);
+                    TextBox pathBox = null;
+                    List<Button> buttons = new List<Button>();
+                    bool inside = true;
+                    for (int i = 0; i < downloadGroup.Controls.Count; i++)
+                    {
+                        Control child = downloadGroup.Controls[i];
+                        if (child is TextBox)
+                        {
+                            pathBox = (TextBox)child;
+                        }
+                        if (child is Button)
+                        {
+                            buttons.Add((Button)child);
+                        }
+                        if (child.Right > downloadGroup.ClientSize.Width ||
+                            child.Bottom > downloadGroup.ClientSize.Height ||
+                            child.Left < 0 || child.Top < 0)
+                        {
+                            inside = false;
+                            output.AppendLine("clipped=" +
+                                child.GetType().Name + " " +
+                                child.Text + " " + child.Bounds);
+                        }
+                    }
+                    Check(output, ref ok,
+                        "settings download controls inside group",
+                        inside.ToString(), "True");
+                    Check(output, ref ok, "settings download buttons",
+                        buttons.Count.ToString(), "2");
+                    bool overlap = false;
+                    if (pathBox != null)
+                    {
+                        for (int i = 0; i < buttons.Count; i++)
+                        {
+                            if (buttons[i].Left < pathBox.Right)
+                            {
+                                overlap = true;
+                            }
+                        }
+                        Check(output, ref ok,
+                            "settings download path shown",
+                            pathBox.Text, @"D:\安装包下载");
+                    }
+                    Check(output, ref ok,
+                        "settings download controls no overlap",
+                        overlap.ToString(), "False");
+                }
+
+                string shot = Path.Combine(
+                    ConfigStore.DataDirectory, "ui-settings.png");
+                try
+                {
+                    using (Bitmap capture = new Bitmap(
+                        Math.Max(1, form.Width),
+                        Math.Max(1, form.Height)))
+                    {
+                        using (Graphics graphics =
+                            Graphics.FromImage(capture))
+                        {
+                            graphics.CopyFromScreen(
+                                form.Left, form.Top, 0, 0,
+                                capture.Size);
+                        }
+                        capture.Save(shot, ImageFormat.Png);
+                    }
+                    output.AppendLine("screenshot=" + shot);
+                    Check(output, ref ok, "settings screenshot",
+                        File.Exists(shot).ToString(), "True");
+                }
+                catch (Exception ex)
+                {
+                    output.AppendLine("SKIP: 当前桌面无法截屏：" +
+                        ex.GetType().Name);
+                }
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                try
+                {
+                    if (form != null && !form.IsDisposed)
+                    {
+                        form.Close();
+                    }
+                }
+                catch
+                {
+                }
+                output.AppendLine(
+                    ok ? "RESULT: OK" : "RESULT: FAILED");
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory,
+                        "settingspreview.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        private static GroupBox FindGroupBox(Control parent, string text)
+        {
+            if (parent == null)
+            {
+                return null;
+            }
+            foreach (Control child in parent.Controls)
+            {
+                GroupBox box = child as GroupBox;
+                if (box != null && box.Text == text)
+                {
+                    return box;
+                }
+                GroupBox nested = FindGroupBox(child, text);
+                if (nested != null)
+                {
+                    return nested;
+                }
+            }
+            return null;
         }
 
         private static void PumpMessages(int milliseconds)

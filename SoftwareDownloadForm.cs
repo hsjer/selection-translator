@@ -12,9 +12,9 @@ using System.Windows.Forms;
 namespace SelectionTranslator
 {
     /// <summary>
-    /// 软件下载窗口：搜索 360 软件宝库，列表里点一下就直接下安装包。
-    /// 走的是详情页「普通下载」的那个直链，不经过 360 软件管家，
-    /// 因此不会像「安全下载」那样顺手把 360 卫士装下来。
+    /// 软件下载窗口：同时搜索 360 软件宝库和腾讯软件中心，两个源的结果
+    /// 首尾拼在一起、不去重，每条都用小标签标出来源。列表里点一下就直接
+    /// 下安装包（走各源给出的安装包直链），不会顺手装任何「管家」。
     /// </summary>
     internal sealed class SoftwareDownloadForm : ChromeForm
     {
@@ -39,11 +39,12 @@ namespace SelectionTranslator
         private readonly ContextMenuStrip _itemMenu;
         private readonly Timer _statusTimer;
         private readonly List<SoftItem> _items = new List<SoftItem>();
-        private readonly Dictionary<int, SoftDownload> _jobs =
-            new Dictionary<int, SoftDownload>();
-        private readonly Dictionary<int, Image> _logos =
-            new Dictionary<int, Image>();
-        private readonly HashSet<int> _logoLoading = new HashSet<int>();
+        private readonly Dictionary<string, SoftDownload> _jobs =
+            new Dictionary<string, SoftDownload>();
+        private readonly Dictionary<string, Image> _logos =
+            new Dictionary<string, Image>();
+        private readonly HashSet<string> _logoLoading =
+            new HashSet<string>();
         private string _keyword = "";
         private string _status = "";
         private bool _statusError;
@@ -166,7 +167,7 @@ namespace SelectionTranslator
                 _statusTimer.Stop();
                 _statusTimer.Dispose();
                 _list.DisposeLogos();
-                foreach (KeyValuePair<int, Image> pair in _logos)
+                foreach (KeyValuePair<string, Image> pair in _logos)
                 {
                     if (pair.Value != null)
                     {
@@ -174,7 +175,7 @@ namespace SelectionTranslator
                     }
                 }
                 _logos.Clear();
-                foreach (KeyValuePair<int, SoftDownload> pair in _jobs)
+                foreach (KeyValuePair<string, SoftDownload> pair in _jobs)
                 {
                     if (!pair.Value.Done)
                     {
@@ -278,8 +279,14 @@ namespace SelectionTranslator
                 string url = item.DetailPage;
                 if (url.Length == 0)
                 {
-                    url = SoftwareCatalog.SiteRoot + "/search?kw=" +
-                        Uri.EscapeDataString(item.Name);
+                    url = string.Equals(item.Source,
+                            SoftwareCatalog.SourceTencent,
+                            StringComparison.Ordinal)
+                        ? SoftwareCatalog.TencentSiteRoot +
+                            "/search.html?word=" +
+                            Uri.EscapeDataString(item.Name)
+                        : SoftwareCatalog.SiteRoot + "/search?kw=" +
+                            Uri.EscapeDataString(item.Name);
                 }
                 try
                 {
@@ -416,7 +423,7 @@ namespace SelectionTranslator
             for (int i = 0; i < result.Items.Count; i++)
             {
                 SoftItem item = result.Items[i];
-                if (IndexOf(item.SoftId) >= 0)
+                if (IndexOf(item.Key) >= 0)
                 {
                     continue;
                 }
@@ -433,21 +440,27 @@ namespace SelectionTranslator
             {
                 SetStatus("没有更多了", false);
             }
+            else if (result.Warning.Length > 0)
+            {
+                SetStatus(
+                    "找到 " + _total + " 款 · " + result.Warning, true);
+            }
             else
             {
                 SetStatus(
-                    "找到 " + _total + " 款 · 点击任意一项直接用普通下载保存安装包",
+                    "找到 " + _total + " 款 · 点击任意一项直接保存安装包",
                     false);
             }
             UpdateButtons();
             Invalidate();
         }
 
-        private int IndexOf(int softId)
+        private int IndexOf(string key)
         {
             for (int i = 0; i < _items.Count; i++)
             {
-                if (_items[i].SoftId == softId)
+                if (string.Equals(_items[i].Key, key,
+                    StringComparison.Ordinal))
                 {
                     return i;
                 }
@@ -466,14 +479,14 @@ namespace SelectionTranslator
                 }
                 SoftItem item = items[i];
                 if (item.LogoUrl.Length == 0 ||
-                    _logos.ContainsKey(item.SoftId) ||
-                    _logoLoading.Contains(item.SoftId))
+                    _logos.ContainsKey(item.Key) ||
+                    _logoLoading.Contains(item.Key))
                 {
                     continue;
                 }
-                _logoLoading.Add(item.SoftId);
+                _logoLoading.Add(item.Key);
                 started++;
-                int id = item.SoftId;
+                string key = item.Key;
                 string url = item.LogoUrl;
                 SoftwareCatalog.GetBytesAsync(url)
                     .ContinueWith(delegate(Task<byte[]> finished)
@@ -505,10 +518,10 @@ namespace SelectionTranslator
                     {
                         BeginInvoke((Action)delegate
                         {
-                            _logoLoading.Remove(id);
-                            if (image != null && !_logos.ContainsKey(id))
+                            _logoLoading.Remove(key);
+                            if (image != null && !_logos.ContainsKey(key))
                             {
-                                _logos[id] = image;
+                                _logos[key] = image;
                             }
                             else if (image != null)
                             {
@@ -531,7 +544,7 @@ namespace SelectionTranslator
                 return null;
             }
             Image image;
-            return _logos.TryGetValue(item.SoftId, out image)
+            return _logos.TryGetValue(item.Key, out image)
                 ? image : null;
         }
 
@@ -542,7 +555,7 @@ namespace SelectionTranslator
                 return null;
             }
             SoftDownload job;
-            return _jobs.TryGetValue(item.SoftId, out job) ? job : null;
+            return _jobs.TryGetValue(item.Key, out job) ? job : null;
         }
 
         private void StartDownload(SoftItem item)
@@ -570,15 +583,18 @@ namespace SelectionTranslator
                 return;
             }
 
-            string directory = SoftwareDownloader.DefaultDirectory();
+            string directory = SoftwareDownloader.DownloadDirectory();
             SoftDownload job = new SoftDownload();
             job.Item = item;
-            _jobs[item.SoftId] = job;
+            _jobs[item.Key] = job;
             _list.Invalidate();
             SetStatus("开始下载：" + item.Name, false);
 
+            // 必须把自己的 job 交给下载器：列表里的进度和「打开 / 重试」
+            // 都是按 _jobs 里这个对象画的，下载器另建对象会让界面永远停在
+            // 「下载中」——这正是之前的 bug。
             SoftwareDownloader.StartAsync(
-                item, directory,
+                job, directory,
                 delegate(SoftDownload progress)
                 {
                     if (IsDisposed)
@@ -689,7 +705,7 @@ namespace SelectionTranslator
         {
             try
             {
-                string directory = SoftwareDownloader.DefaultDirectory();
+                string directory = SoftwareDownloader.DownloadDirectory();
                 Directory.CreateDirectory(directory);
                 Process.Start("explorer.exe", "\"" + directory + "\"");
             }
@@ -753,7 +769,7 @@ namespace SelectionTranslator
                 running.Received = 14680064;
                 running.TotalLength = 33168072;
                 running.BytesPerSecond = 2411724;
-                _jobs[_items[1].SoftId] = running;
+                _jobs[_items[1].Key] = running;
             }
             if (_items.Count > 2)
             {
@@ -763,12 +779,12 @@ namespace SelectionTranslator
                 done.TotalLength = 7690000;
                 done.Received = 7690000;
                 done.TargetPath = Path.Combine(
-                    SoftwareDownloader.DefaultDirectory(),
+                    SoftwareDownloader.DownloadDirectory(),
                     SoftwareCatalog.BuildFileName(_items[2]));
-                _jobs[_items[2].SoftId] = done;
+                _jobs[_items[2].Key] = done;
             }
             _list.Invalidate();
-            SetStatus("找到 " + _total + " 款 · 点击任意一项直接用普通下载保存安装包", false);
+            SetStatus("找到 " + _total + " 款 · 点击任意一项直接保存安装包", false);
             UpdateButtons();
         }
 
@@ -874,7 +890,7 @@ namespace SelectionTranslator
 
             string subtitle = _preview
                 ? "界面预览"
-                : "360 软件宝库 · 普通下载";
+                : "360 宝库 + 腾讯软件中心 · 安装包直链";
             DarkUi.Text2(g, subtitle, DarkUi.FontSmall,
                 DarkUi.TextFaint,
                 new Rectangle(110, 10, 320, 26),
@@ -980,7 +996,8 @@ namespace SelectionTranslator
             }
             for (int i = 0; i < _rows.Count; i++)
             {
-                if (_rows[i].Item.SoftId == item.SoftId)
+                if (string.Equals(_rows[i].Item.Key, item.Key,
+                    StringComparison.Ordinal))
                 {
                     _selected = i;
                     Invalidate();
@@ -1159,7 +1176,7 @@ namespace SelectionTranslator
                 new Rectangle(0, Height / 2 - 40, Width, 28),
                 DarkUi.CenterMiddle);
             DarkUi.Text2(g,
-                "下载的是「普通下载」的安装包，不会顺带安装 360 卫士",
+                "两个源的安装包都直连下载，不会顺带安装任何「管家」",
                 DarkUi.FontSmall, DarkUi.TextFaint,
                 new Rectangle(0, Height / 2 - 12, Width, 24),
                 DarkUi.CenterMiddle);
@@ -1202,10 +1219,13 @@ namespace SelectionTranslator
                 new Rectangle(textLeft, card.Top + 8, textWidth, 22),
                 DarkUi.LeftMiddleClip);
 
-            // 第二行：评分 · 分类 · 体积
+            // 第二行：[来源标签] 评分 · 分类 / 版本 · 体积
             string meta = row.Item.RatingText;
             Color metaColor = Color.FromArgb(240, 196, 96);
             int metaLeft = textLeft;
+            int tagWidth = DrawSourceTag(g, row.Item,
+                new Point(textLeft, card.Top + 30));
+            metaLeft += tagWidth;
             if (meta.Length > 0)
             {
                 Size metaSize = TextRenderer.MeasureText(
@@ -1220,6 +1240,10 @@ namespace SelectionTranslator
             if (row.Item.Category.Length > 0)
             {
                 extra += "· " + row.Item.Category + "  ";
+            }
+            else if (row.Item.VersionText.Length > 0)
+            {
+                extra += "· v" + row.Item.VersionText + "  ";
             }
             if (row.Item.SizeText.Length > 0)
             {
@@ -1247,6 +1271,40 @@ namespace SelectionTranslator
                 card.Right - pillWidth - 14,
                 card.Top + (card.Height - 30) / 2, pillWidth, 30);
             DrawPill(g, pill, job);
+        }
+
+        /// <summary>
+        /// 画来源小标签（360 / 腾讯），返回占用宽度（含右侧间距）。
+        /// 两个源的结果混在同一个列表里，不标一下分不清是哪个库来的。
+        /// </summary>
+        private static int DrawSourceTag(
+            Graphics g, SoftItem item, Point at)
+        {
+            string text = item == null ? "" : (item.Source ?? "");
+            if (text.Length == 0)
+            {
+                return 0;
+            }
+            bool tencent = string.Equals(
+                text, SoftwareCatalog.SourceTencent,
+                StringComparison.Ordinal);
+            Color fill = tencent
+                ? Color.FromArgb(34, 70, 112)
+                : Color.FromArgb(92, 62, 40);
+            Color ink = tencent
+                ? Color.FromArgb(146, 202, 246)
+                : Color.FromArgb(238, 184, 118);
+            Size size = TextRenderer.MeasureText(text, DarkUi.FontTiny);
+            int width = Math.Max(26, size.Width + 12);
+            Rectangle rect = new Rectangle(at.X, at.Y + 1, width, 16);
+            using (GraphicsPath path = DarkUi.Rounded(rect, 5f))
+            using (SolidBrush brush = new SolidBrush(fill))
+            {
+                g.FillPath(brush, path);
+            }
+            DarkUi.Text2(g, text, DarkUi.FontTiny, ink, rect,
+                DarkUi.CenterMiddle);
+            return width + 6;
         }
 
         private void DrawLogo(Graphics g, SoftItem item, Rectangle box)

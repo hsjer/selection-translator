@@ -8,9 +8,12 @@ using System.Web.Script.Serialization;
 
 namespace SelectionTranslator
 {
-    /// <summary>360 软件宝库里的一条搜索结果。</summary>
+    /// <summary>软件搜索里的一条结果（可能来自 360 宝库，也可能来自腾讯软件中心）。</summary>
     internal sealed class SoftItem
     {
+        /// <summary>来源标记：360 / 腾讯。列表里要显示出来。</summary>
+        public string Source { get; set; }
+
         public int SoftId { get; set; }
         public string Name { get; set; }
         public string Description { get; set; }
@@ -19,6 +22,9 @@ namespace SelectionTranslator
         public string Category { get; set; }
         public string LogoUrl { get; set; }
 
+        /// <summary>版本号，腾讯源有，360 源一般没有。</summary>
+        public string VersionText { get; set; }
+
         /// <summary>详情页「普通下载」直链，通常就是安装包本体。</summary>
         public string DownloadUrl { get; set; }
 
@@ -26,6 +32,18 @@ namespace SelectionTranslator
         public string SafeDownloadUrl { get; set; }
 
         public string DetailUrl { get; set; }
+
+        /// <summary>
+        /// 跨源唯一的键。两个源各自的 ID 是独立编号，直接用 ID 做主键
+        /// 会让不同软件撞到一起（下载状态、图标缓存都按它索引）。
+        /// </summary>
+        public string Key
+        {
+            get
+            {
+                return (Source ?? "") + ":" + SoftId;
+            }
+        }
 
         public string DetailPage
         {
@@ -51,21 +69,34 @@ namespace SelectionTranslator
         public int Total;
         public List<SoftItem> Items = new List<SoftItem>();
         public string Error = "";
+        /// <summary>不影响出结果的提示，例如「腾讯源暂时不可用」。</summary>
+        public string Warning = "";
     }
 
     /// <summary>
-    /// 360 软件宝库的搜索接口。
-    /// 网页版是前端渲染，直接抓 HTML 拿不到结果；这里用它的 JSON 接口
-    /// main/v1/soft/search，字段 soft_download 正好等于详情页「普通下载」
-    /// 的地址（safe_download 是「安全下载」，会先给装 360 卫士）。
-    /// 解析部分全部是纯函数，便于自检直接喂样例 JSON。
+    /// 软件搜索：合并 360 软件宝库和腾讯软件中心两个来源。
+    /// 两边都是网页前端渲染、直接抓 HTML 拿不到结果，所以各走各的 JSON 接口：
+    /// 360 用 main/v1/soft/search（soft_download 就是详情页「普通下载」的地址，
+    /// safe_download 是「安全下载」，会先给装 360 卫士）；
+    /// 腾讯用 luban 的 searchcgi（返回的 xmlInfo 里 &lt;https&gt; 就是安装包直链）。
+    /// 两个结果直接首尾拼接，不做去重（同名软件在不同源的版本/包本来就不一样）。
+    /// 解析部分全部是纯函数，便于自检直接喂样例数据。
     /// </summary>
     internal static class SoftwareCatalog
     {
+        public const string Source360 = "360";
+        public const string SourceTencent = "腾讯";
+
         public const string ApiBase =
             "https://soft-api.safe.360.cn/main/v1/soft/search";
         public const string SiteRoot = "https://baoku.360.cn";
         public const int PageSize = 50;
+
+        public const string TencentApiBase =
+            "https://luban.m.qq.com/api/public/software-manager/searchcgi";
+        public const string TencentSiteRoot = "https://pc.qq.com";
+        public const string TencentLogoRoot =
+            "https://pc3.gtimg.com/softmgr/logo";
 
         private const string Agent =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
@@ -100,18 +131,6 @@ namespace SelectionTranslator
             {
             }
             return client;
-        }
-
-        /// <summary>后台线程执行搜索，结果直接返回解析好的条目。</summary>
-        public static Task<SoftSearchResult> SearchAsync(
-            string keyword, int page)
-        {
-            string word = (keyword ?? "").Trim();
-            int index = page < 1 ? 1 : page;
-            return Task.Run(delegate
-            {
-                return Search(word, index);
-            });
         }
 
         /// <summary>取小图（软件图标）用，失败时返回的 Task 会带异常，调用方自行吞掉。</summary>
@@ -152,7 +171,7 @@ namespace SelectionTranslator
             }
         }
 
-        /// <summary>同步搜索，供探针直接调用。</summary>
+        /// <summary>同步搜索：两个源并行请求，结果首尾拼接，不做去重。</summary>
         public static SoftSearchResult Search(string keyword, int page)
         {
             SoftSearchResult result = new SoftSearchResult();
@@ -161,13 +180,135 @@ namespace SelectionTranslator
                 result.Error = "请输入要搜索的软件名称";
                 return result;
             }
+            int index = page < 1 ? 1 : page;
+
+            // 腾讯的搜索接口只有第一页有数据，翻页时不再重复请求。
+            Task<SoftSearchResult> from360 = Task.Run(delegate
+            {
+                return Search360(keyword, index);
+            });
+            Task<SoftSearchResult> fromTencent = index <= 1
+                ? Task.Run(delegate { return SearchTencent(keyword); })
+                : null;
+
+            SoftSearchResult left = Wait(from360);
+            SoftSearchResult right = fromTencent == null
+                ? null : Wait(fromTencent);
+            return Merge(left, right);
+        }
+
+        private static SoftSearchResult Wait(Task<SoftSearchResult> task)
+        {
+            try
+            {
+                return task.Result;
+            }
+            catch (AggregateException ex)
+            {
+                SoftSearchResult failed = new SoftSearchResult();
+                failed.Error = DescribeError(
+                    ex.InnerException == null ? ex : ex.InnerException);
+                return failed;
+            }
+            catch (Exception ex)
+            {
+                SoftSearchResult failed = new SoftSearchResult();
+                failed.Error = DescribeError(ex);
+                return failed;
+            }
+        }
+
+        /// <summary>
+        /// 纯函数：把两个源的结果拼在一起。任一侧失败只记 Warning，
+        /// 另一侧照常显示；两侧都空才算整体失败。
+        /// </summary>
+        public static SoftSearchResult Merge(
+            SoftSearchResult first, SoftSearchResult second)
+        {
+            SoftSearchResult merged = new SoftSearchResult();
+            List<SoftSearchResult> parts = new List<SoftSearchResult>();
+            if (first != null)
+            {
+                parts.Add(first);
+            }
+            if (second != null)
+            {
+                parts.Add(second);
+            }
+            List<string> warnings = new List<string>();
+            for (int i = 0; i < parts.Count; i++)
+            {
+                SoftSearchResult part = parts[i];
+                if (part.Items.Count > 0)
+                {
+                    merged.Items.AddRange(part.Items);
+                    merged.Total += part.Total;
+                }
+                if (part.Error.Length > 0)
+                {
+                    warnings.Add(part.Error);
+                }
+            }
+            if (merged.Items.Count == 0)
+            {
+                merged.Error = warnings.Count > 0
+                    ? string.Join("；", warnings.ToArray())
+                    : "没有找到相关软件";
+                return merged;
+            }
+            if (warnings.Count > 0)
+            {
+                merged.Warning = warnings[0];
+            }
+            return merged;
+        }
+
+        /// <summary>360 宝库的搜索（异步包装，供后台线程调用）。</summary>
+        public static Task<SoftSearchResult> SearchAsync(
+            string keyword, int page)
+        {
+            string word = (keyword ?? "").Trim();
+            int index = page < 1 ? 1 : page;
+            return Task.Run(delegate
+            {
+                return Search(word, index);
+            });
+        }
+
+        /// <summary>只查 360 源，供自检/探针单独验证。</summary>
+        public static SoftSearchResult Search360(string keyword, int page)
+        {
+            SoftSearchResult result = new SoftSearchResult();
             string url = BuildSearchUrl(keyword, page);
             try
             {
                 byte[] body = Client.GetByteArrayAsync(url).Result;
                 string json = Encoding.UTF8.GetString(body);
-                result = Parse(json);
+                return Parse(json);
+            }
+            catch (AggregateException ex)
+            {
+                result.Error = DescribeError(
+                    ex.InnerException == null ? ex : ex.InnerException);
                 return result;
+            }
+            catch (Exception ex)
+            {
+                result.Error = DescribeError(ex);
+                return result;
+            }
+        }
+
+        /// <summary>只查腾讯软件中心，供自检/探针单独验证。</summary>
+        public static SoftSearchResult SearchTencent(string keyword)
+        {
+            SoftSearchResult result = new SoftSearchResult();
+            string url = BuildTencentSearchUrl(keyword, 1, PageSize);
+            try
+            {
+                byte[] body = Client.GetByteArrayAsync(url).Result;
+                string json = Encoding.UTF8.GetString(body);
+                return ParseTencent(json);
             }
             catch (AggregateException ex)
             {
@@ -189,15 +330,27 @@ namespace SelectionTranslator
                 "&page=" + (page < 1 ? 1 : page);
         }
 
+        /// <summary>腾讯搜索接口。接口的 jsonpCallback 不传就会返回纯 JSON。</summary>
+        public static string BuildTencentSearchUrl(
+            string keyword, int page, int perNumber)
+        {
+            return TencentApiBase +
+                "?type=search&keyword=" +
+                Uri.EscapeDataString(keyword ?? "") +
+                "&page=" + (page < 1 ? 1 : page) +
+                "&pernum=" + (perNumber <= 0 ? PageSize : perNumber) +
+                "&more=0";
+        }
+
         private static string DescribeError(Exception ex)
         {
             if (ex is TaskCanceledException)
             {
-                return "连接 360 软件宝库超时，请稍后重试";
+                return "连接软件源超时，请稍后重试";
             }
             if (ex is HttpRequestException)
             {
-                return "连不上 360 软件宝库，请检查网络或代理设置";
+                return "连不上软件源，请检查网络或代理设置";
             }
             return "搜索失败：" + ex.Message;
         }
@@ -283,6 +436,238 @@ namespace SelectionTranslator
             return result;
         }
 
+        /// <summary>
+        /// 纯函数：解析腾讯软件中心的搜索响应。
+        /// 外层是 {"code":0,"info":{…,"total":22},"list":[{"SoftID":…,
+        /// "SoftName":…,"xmlInfo":"&lt;soft&gt;…&lt;/soft&gt;"}]}，
+        /// 真正有用的字段（安装包直链、体积、版本、简介）都在 xmlInfo 里。
+        /// </summary>
+        public static SoftSearchResult ParseTencent(string json)
+        {
+            SoftSearchResult result = new SoftSearchResult();
+            if (string.IsNullOrEmpty(json))
+            {
+                result.Error = "接口没有返回内容";
+                return result;
+            }
+
+            object rootObject;
+            try
+            {
+                JavaScriptSerializer serializer =
+                    new JavaScriptSerializer();
+                serializer.MaxJsonLength = 8 * 1024 * 1024;
+                rootObject = serializer.DeserializeObject(json);
+            }
+            catch
+            {
+                result.Error = "腾讯源结果格式无法识别（接口可能已调整）";
+                return result;
+            }
+
+            Dictionary<string, object> root =
+                rootObject as Dictionary<string, object>;
+            if (root == null)
+            {
+                result.Error = "腾讯源结果格式无法识别（接口可能已调整）";
+                return result;
+            }
+
+            int code = ToInt(Get(root, "code"));
+            if (code != 0)
+            {
+                result.Error = "腾讯接口返回错误：" + code;
+                return result;
+            }
+
+            Dictionary<string, object> info =
+                Get(root, "info") as Dictionary<string, object>;
+            if (info != null)
+            {
+                result.Total = ToInt(Get(info, "total"));
+            }
+
+            object[] list = Get(root, "list") as object[];
+            if (list != null)
+            {
+                for (int i = 0; i < list.Length; i++)
+                {
+                    Dictionary<string, object> row =
+                        list[i] as Dictionary<string, object>;
+                    if (row == null)
+                    {
+                        continue;
+                    }
+                    SoftItem item = ReadTencentItem(row);
+                    if (item != null)
+                    {
+                        result.Items.Add(item);
+                    }
+                }
+            }
+            if (result.Total <= 0)
+            {
+                result.Total = result.Items.Count;
+            }
+            return result;
+        }
+
+        private static SoftItem ReadTencentItem(
+            Dictionary<string, object> row)
+        {
+            string xml = ToText(Get(row, "xmlInfo"));
+            string name = Unescape(XmlText(xml, "displayname"));
+            if (name.Length == 0)
+            {
+                name = Unescape(ToText(Get(row, "SoftName")));
+            }
+            if (name.Length == 0)
+            {
+                return null;
+            }
+
+            SoftItem item = new SoftItem();
+            item.Source = SourceTencent;
+            item.SoftId = ToInt(Get(row, "SoftID"));
+            item.Name = name;
+            item.VersionText = XmlText(xml, "versionname");
+            item.SizeText = HumanSize(ToLong(XmlText(xml, "filesize")));
+            item.Rating = FormatPoint(XmlText(xml, "point"));
+            item.Description = FirstNonEmpty(
+                XmlText(xml, "feature"),
+                XmlText(xml, "whatsnewfeature"),
+                XmlText(xml, "whatsnew"));
+            item.Category = "";
+
+            string logo48 = XmlText(xml, "logo48");
+            string logo = XmlText(xml, "logo");
+            if (logo48.Length > 0)
+            {
+                item.LogoUrl = TencentLogoRoot + "/48/" +
+                    logo48.ToLowerInvariant();
+            }
+            else if (logo.Length > 0)
+            {
+                item.LogoUrl = TencentLogoRoot + "/" +
+                    logo.ToLowerInvariant();
+            }
+            else
+            {
+                item.LogoUrl = "";
+            }
+
+            string download = XmlText(xml, "https");
+            if (download.Length == 0)
+            {
+                download = XmlText(xml, "url");
+            }
+            item.DownloadUrl = download;
+            item.SafeDownloadUrl = "";
+            item.DetailUrl = BuildTencentDetailUrl(item.SoftId);
+            return item;
+        }
+
+        /// <summary>纯函数：腾讯详情页地址，形如 /detail/11/detail_56131.html。</summary>
+        public static string BuildTencentDetailUrl(int softId)
+        {
+            if (softId <= 0)
+            {
+                return "";
+            }
+            return TencentSiteRoot + "/detail/" + (softId % 20) +
+                "/detail_" + softId + ".html";
+        }
+
+        /// <summary>
+        /// 纯函数：从 xmlInfo 里取一个标签的文本，自动剥掉 CDATA 包裹。
+        /// 只认 &lt;tag&gt;…&lt;/tag&gt; 这种没有属性的简单标签。
+        /// </summary>
+        public static string XmlText(string xml, string tag)
+        {
+            if (string.IsNullOrEmpty(xml) || string.IsNullOrEmpty(tag))
+            {
+                return "";
+            }
+            string open = "<" + tag + ">";
+            string close = "</" + tag + ">";
+            int start = xml.IndexOf(
+                open, StringComparison.OrdinalIgnoreCase);
+            if (start < 0)
+            {
+                return "";
+            }
+            start += open.Length;
+            int end = xml.IndexOf(
+                close, start, StringComparison.OrdinalIgnoreCase);
+            if (end < 0)
+            {
+                return "";
+            }
+            string value = xml.Substring(start, end - start).Trim();
+            if (value.StartsWith("<![CDATA[", StringComparison.Ordinal))
+            {
+                value = value.Substring(9);
+                if (value.EndsWith("]]>", StringComparison.Ordinal))
+                {
+                    value = value.Substring(0, value.Length - 3);
+                }
+            }
+            return value.Trim();
+        }
+
+        private static string FirstNonEmpty(
+            string first, string second, string third)
+        {
+            string[] values = new string[] { first, second, third };
+            for (int i = 0; i < values.Length; i++)
+            {
+                string value = (values[i] ?? "").Trim();
+                if (value.Length > 0)
+                {
+                    return value;
+                }
+            }
+            return "";
+        }
+
+        /// <summary>纯函数：腾讯的 point 是评分 ×10（66 → 6.6）。</summary>
+        public static string FormatPoint(string point)
+        {
+            long value = ToLong(point);
+            if (value <= 0)
+            {
+                return "";
+            }
+            return (value / 10.0).ToString("0.0");
+        }
+
+        /// <summary>纯函数：字节数写成列表里的体积文案。</summary>
+        public static string HumanSize(long bytes)
+        {
+            if (bytes <= 0)
+            {
+                return "";
+            }
+            double value = bytes;
+            string[] units = new string[]
+            {
+                "B", "KB", "MB", "GB", "TB"
+            };
+            int unit = 0;
+            while (value >= 1024 && unit < units.Length - 1)
+            {
+                value /= 1024;
+                unit++;
+            }
+            if (unit == 0)
+            {
+                return bytes + " B";
+            }
+            string format = value >= 100 ? "0"
+                : (value >= 10 ? "0.0" : "0.00");
+            return value.ToString(format) + " " + units[unit];
+        }
+
         private static SoftItem ReadItem(Dictionary<string, object> row)
         {
             string name = Unescape(ToText(Get(row, "softname")));
@@ -292,6 +677,7 @@ namespace SelectionTranslator
             }
 
             SoftItem item = new SoftItem();
+            item.Source = Source360;
             item.SoftId = ToInt(Get(row, "softid"));
             item.Name = name;
             item.Description = Unescape(
@@ -473,6 +859,17 @@ namespace SelectionTranslator
                 return parsed;
             }
             return 0;
+        }
+
+        private static long ToLong(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return 0;
+            }
+            long parsed;
+            long.TryParse(value.Trim(), out parsed);
+            return parsed;
         }
 
         /// <summary>接口里的简介偶尔带 HTML 实体，列表里要显示成正常字符。</summary>

@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.IO;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -49,6 +50,7 @@ namespace SelectionTranslator
         private readonly ComboBox _clipboardTtlBox;
         private readonly NumericUpDown _clipboardMaxBox;
         private readonly TextBox _hotkeyClipboardField;
+        private readonly TextBox _downloadDirBox;
         private TextBox _capturingField;
         private string _capturingFieldOriginal;
         private int _captureModifiers;
@@ -631,6 +633,63 @@ namespace SelectionTranslator
             clipHint.Location = new Point(12, 142);
             clipGroup.Controls.Add(clipHint);
 
+            // --------------------------------------------------------------
+            // 软件下载：安装包保存位置
+            // --------------------------------------------------------------
+            foreach (Control child in _contentHost.Controls)
+            {
+                if (child != clipGroup)
+                {
+                    child.Top += 104;
+                }
+            }
+
+            GroupBox downloadGroup = new GroupBox();
+            downloadGroup.Text = "软件下载";
+            downloadGroup.Location = new Point(16, 192);
+            downloadGroup.Size = new Size(448, 88);
+            _contentHost.Controls.Add(downloadGroup);
+
+            Label dirLabel = new Label();
+            dirLabel.Text = "保存位置";
+            dirLabel.AutoSize = true;
+            dirLabel.Location = new Point(12, 28);
+            downloadGroup.Controls.Add(dirLabel);
+
+            _downloadDirBox = new TextBox();
+            _downloadDirBox.Location = new Point(78, 24);
+            _downloadDirBox.Size = new Size(238, 24);
+            _downloadDirBox.ReadOnly = true;
+            _downloadDirBox.TabStop = false;
+            string configuredDir =
+                (config.SoftwareDownloadDirectory ?? "").Trim();
+            _downloadDirBox.Text = configuredDir.Length > 0
+                ? configuredDir
+                : SoftwareDownloader.DefaultDirectory();
+            downloadGroup.Controls.Add(_downloadDirBox);
+
+            Button pickDirButton = new Button();
+            pickDirButton.Text = "更改…";
+            pickDirButton.Location = new Point(322, 23);
+            pickDirButton.Size = new Size(52, 26);
+            pickDirButton.Click += OnPickDownloadFolder;
+            downloadGroup.Controls.Add(pickDirButton);
+
+            Button resetDirButton = new Button();
+            resetDirButton.Text = "默认";
+            resetDirButton.Location = new Point(380, 23);
+            resetDirButton.Size = new Size(52, 26);
+            resetDirButton.Click += OnResetDownloadFolder;
+            downloadGroup.Controls.Add(resetDirButton);
+
+            Label dirHint = new Label();
+            dirHint.Text = "安装包下完存在这里；「默认」为系统下载文件夹。";
+            dirHint.AutoSize = false;
+            dirHint.Size = new Size(420, 22);
+            dirHint.ForeColor = Color.FromArgb(90, 98, 112);
+            dirHint.Location = new Point(12, 60);
+            downloadGroup.Controls.Add(dirHint);
+
             ApplyDpiScale();
         }
 
@@ -814,6 +873,8 @@ namespace SelectionTranslator
             edited.HotkeyClipboardHistory =
                 _hotkeyClipboardField.Text.Trim();
             edited.EnableDoubleCtrlHotkey = _doubleCtrlBox.Checked;
+            edited.SoftwareDownloadDirectory =
+                NormalizeDownloadDirectory(_downloadDirBox.Text);
 
             // 这两项在设置窗口里没有对应控件，别因为点了一次「保存」
             // 就把首次运行标记和右键菜单开关重置掉。
@@ -896,6 +957,52 @@ namespace SelectionTranslator
         private void OnShowSecretChanged(object sender, EventArgs e)
         {
             _secretBox.UseSystemPasswordChar = !_showSecretBox.Checked;
+        }
+
+        private void OnPickDownloadFolder(object sender, EventArgs e)
+        {
+            using (FolderBrowserDialog dialog = new FolderBrowserDialog())
+            {
+                dialog.Description = "选择安装包的保存位置";
+                dialog.ShowNewFolderButton = true;
+                string current = _downloadDirBox.Text.Trim();
+                if (current.Length > 0 && Directory.Exists(current))
+                {
+                    dialog.SelectedPath = current;
+                }
+                if (dialog.ShowDialog(this) == DialogResult.OK &&
+                    dialog.SelectedPath.Length > 0)
+                {
+                    _downloadDirBox.Text = dialog.SelectedPath;
+                }
+            }
+        }
+
+        private void OnResetDownloadFolder(object sender, EventArgs e)
+        {
+            _downloadDirBox.Text = SoftwareDownloader.DefaultDirectory();
+        }
+
+        /// <summary>
+        /// 和系统默认目录一样就不写进配置：默认目录是算出来的，
+        /// 把配置拷到另一台电脑上照样指向那台机器的「下载」文件夹。
+        /// </summary>
+        internal static string NormalizeDownloadDirectory(string text)
+        {
+            string value = (text ?? "").Trim();
+            if (value.Length == 0)
+            {
+                return "";
+            }
+            string fallback = SoftwareDownloader.DefaultDirectory();
+            if (string.Equals(
+                value.TrimEnd('\\'),
+                (fallback ?? "").TrimEnd('\\'),
+                StringComparison.OrdinalIgnoreCase))
+            {
+                return "";
+            }
+            return value;
         }
 
         private void OnTencentShowKeyChanged(object sender, EventArgs e)
