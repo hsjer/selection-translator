@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -161,6 +161,14 @@ namespace SelectionTranslator
                 new ToolStripMenuItem("打开图片…");
             imageItem.Click += OnOpenImageClicked;
             _trayMenu.Items.Add(imageItem);
+
+            ToolStripMenuItem softwareItem =
+                new ToolStripMenuItem("软件下载…");
+            softwareItem.Click += delegate
+            {
+                SoftwareDownloadForm.ShowWindow();
+            };
+            _trayMenu.Items.Add(softwareItem);
 
             _clipboardMenuItem = new ToolStripMenuItem(
                 "剪贴板历史…");
@@ -2054,6 +2062,7 @@ namespace SelectionTranslator
             _hotkeyWindow.UnregisterAll();
             _hotkeyWindow.HotkeyPressed -= OnHotkeyPressed;
             ClipboardHistoryForm.CloseHistory();
+            SoftwareDownloadForm.CloseWindow();
             ClipboardManager.Stop();
 
             _trayIcon.Visible = false;
@@ -2126,6 +2135,7 @@ namespace SelectionTranslator
                 _hotkeyWindow.UnregisterAll();
                 _hotkeyWindow.Dispose();
                 ClipboardHistoryForm.CloseHistory();
+                SoftwareDownloadForm.CloseWindow();
                 ClipboardManager.Stop();
 
                 _trayIcon.Visible = false;

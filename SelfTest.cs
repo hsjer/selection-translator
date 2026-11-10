@@ -903,6 +903,107 @@ namespace SelectionTranslator
                 {
                 }
 
+                // 软件下载：360 宝库接口的解析与文件命名全是纯函数，
+                // 这里直接喂样例 JSON，不依赖网络。
+                string softJson =
+                    "{\"errno\":0,\"errmsg\":\"\",\"data\":{" +
+                    "\"total\":18,\"list\":[" +
+                    "{\"softid\":2000004652," +
+                    "\"softname\":\"小红书手机版\"," +
+                    "\"desc\":\"3亿人的生活指南\"," +
+                    "\"cname\":\"聊天\",\"size\":\"31.00 MB\"," +
+                    "\"poll\":\"6.0\"," +
+                    "\"logo\":\"//p1.ssl.qhimg.com/a.png\"," +
+                    "\"soft_download\":\"http://cds.360tpcdn.com/x/" +
+                    "2000004652_f7.exe?time=1&sign=2\"," +
+                    "\"safe_download\":\"https://softdl6.360tpcdn.com/" +
+                    "pcrj/setup.exe\"," +
+                    "\"url\":\"/qbfl/2000004652.html\"}," +
+                    "{\"softid\":1,\"softname\":\"A&amp;B\"," +
+                    "\"desc\":\"\",\"cname\":\"\",\"size\":\"\"," +
+                    "\"poll\":\"\",\"logo\":\"\"," +
+                    "\"soft_download\":\"https://down.pc.yyb.qq.com/" +
+                    "a/b/x.exe\",\"safe_download\":\"\"," +
+                    "\"url\":\"/qbfl/1.html\"}]}}";
+                SoftSearchResult softParsed =
+                    SoftwareCatalog.Parse(softJson);
+                Check(output, ref ok, "software parse count",
+                    softParsed.Items.Count + "/" + softParsed.Total,
+                    "2/18");
+                Check(output, ref ok, "software parse first",
+                    softParsed.Items[0].Name + "/" +
+                    softParsed.Items[0].SizeText,
+                    "小红书手机版/31.00 MB");
+                Check(output, ref ok, "software rating text",
+                    softParsed.Items[0].RatingText, "6.0 分");
+                Check(output, ref ok, "software logo url absolute",
+                    softParsed.Items[0].LogoUrl,
+                    "https://p1.ssl.qhimg.com/a.png");
+                Check(output, ref ok, "software detail page absolute",
+                    softParsed.Items[0].DetailPage,
+                    "https://baoku.360.cn/qbfl/2000004652.html");
+                Check(output, ref ok, "software unescape name",
+                    softParsed.Items[1].Name, "A&B");
+                Check(output, ref ok, "software url file name",
+                    SoftwareCatalog.FileNameFromUrl(
+                        "http://cds.360tpcdn.com/x/2000004652_f7.exe" +
+                        "?time=1&sign=2"),
+                    "2000004652_f7.exe");
+                Check(output, ref ok, "software build file name",
+                    SoftwareCatalog.BuildFileName(
+                        softParsed.Items[0]),
+                    "小红书手机版_2000004652.exe");
+                Check(output, ref ok, "software build file name keeps ext",
+                    SoftwareCatalog.BuildFileName(
+                        softParsed.Items[1]),
+                    "A&B_1.exe");
+                Check(output, ref ok, "software sanitize file name",
+                    (SoftwareCatalog.SanitizeFileName(
+                        "a/b:c*?\"<>|").IndexOfAny(new char[]
+                        { '/', ':', '*', '?', '"', '<', '>', '|' }) < 0)
+                        .ToString(), "True");
+                Check(output, ref ok, "software one line",
+                    SoftwareCatalog.OneLine("a\r\n\nb   c", 20),
+                    "a b c");
+                SoftSearchResult softBad = SoftwareCatalog.Parse(
+                    "{\"errno\":7,\"errmsg\":\"bad request\"}");
+                Check(output, ref ok, "software parse errno",
+                    softBad.Items.Count + "/" +
+                        (softBad.Error.Length > 0),
+                    "0/True");
+                Check(output, ref ok, "software parse broken json",
+                    (SoftwareCatalog.Parse("<html>").Error.Length > 0)
+                        .ToString(), "True");
+                string softTempDir = Path.Combine(
+                    ConfigStore.DataDirectory, "software-selftest");
+                Directory.CreateDirectory(softTempDir);
+                string softTempFile = Path.Combine(
+                    softTempDir, "工具侠.exe");
+                File.WriteAllText(softTempFile, "x");
+                string softUnique = SoftwareCatalog.UniquePath(
+                    softTempDir, "工具侠.exe");
+                Check(output, ref ok, "software unique path",
+                    Path.GetFileName(softUnique), "工具侠(1).exe");
+                try
+                {
+                    File.Delete(softTempFile);
+                    if (File.Exists(softUnique))
+                    {
+                        File.Delete(softUnique);
+                    }
+                    Directory.Delete(softTempDir);
+                }
+                catch
+                {
+                }
+                Check(output, ref ok, "software size text",
+                    SoftwareDownloader.SizeText(33168072), "31.6 MB");
+                Check(output, ref ok, "software speed text",
+                    SoftwareDownloader.SpeedText(2411724), "2.3 MB/s");
+                Check(output, ref ok, "software remaining text",
+                    SoftwareDownloader.RemainingText(0, 1000, 100),
+                    "剩余 10 秒");
+
                 // 分段翻译：长文本应被拆成多段，每段 UTF-8 字节数都不超过上限，
                 // 且拼接后能还原原文。
                 StringBuilder longText = new StringBuilder();
@@ -3784,6 +3885,375 @@ namespace SelectionTranslator
                 }
                 Environment.ExitCode = ok ? 0 : 1;
             }
+        }
+
+        /// <summary>
+        /// 软件下载端到端探针：真实请求 360 宝库的搜索接口，检查条目字段，
+        /// 再对第一条的安装包直链做一次 HEAD，确认真的能下（不拉整个文件）。
+        /// 输出 softprobe.txt。
+        /// </summary>
+        public static void RunSoftwareProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            try
+            {
+                DateTime started = DateTime.Now;
+                SoftSearchResult result =
+                    SoftwareCatalog.Search("小红书", 1);
+                output.AppendLine("elapsedMs=" +
+                    (int)(DateTime.Now - started).TotalMilliseconds);
+                output.AppendLine("error=" + result.Error);
+                output.AppendLine("total=" + result.Total +
+                    " items=" + result.Items.Count);
+                output.AppendLine("api=" +
+                    SoftwareCatalog.BuildSearchUrl("小红书", 1));
+                Check(output, ref ok, "probe software search ok",
+                    (result.Error.Length == 0).ToString(), "True");
+                Check(output, ref ok, "probe software has results",
+                    (result.Items.Count > 0).ToString(), "True");
+
+                if (result.Items.Count > 0)
+                {
+                    int show = Math.Min(3, result.Items.Count);
+                    for (int i = 0; i < show; i++)
+                    {
+                        SoftItem item = result.Items[i];
+                        output.AppendLine("item[" + i + "]=" +
+                            item.Name + " | " + item.SizeText +
+                            " | " + item.RatingText);
+                        output.AppendLine("        " +
+                            item.DownloadUrl);
+                    }
+                    SoftItem first = result.Items[0];
+                    Check(output, ref ok,
+                        "probe software download url",
+                        first.DownloadUrl.StartsWith(
+                            "http", StringComparison.Ordinal).ToString(),
+                        "True");
+                    Check(output, ref ok,
+                        "probe software file name",
+                        SoftwareCatalog.BuildFileName(first)
+                            .EndsWith(".exe",
+                                StringComparison.OrdinalIgnoreCase)
+                            .ToString(), "True");
+                    Check(output, ref ok,
+                        "probe software detail page",
+                        first.DetailPage.StartsWith(
+                            "https://baoku.360.cn/",
+                            StringComparison.Ordinal).ToString(),
+                        "True");
+
+                    long packageLength;
+                    string status = SoftwareCatalog.ProbeDownload(
+                        first.DownloadUrl, out packageLength);
+                    output.AppendLine("packageStatus=" + status +
+                        " length=" + packageLength);
+                    if (status == "200" || status == "206")
+                    {
+                        Check(output, ref ok,
+                            "probe software package reachable",
+                            (packageLength > 0).ToString(), "True");
+                    }
+                    else
+                    {
+                        output.AppendLine(
+                            "SKIP: 安装包直链探测未通过（" + status +
+                            "），可能是网络或 CDN 限制");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                output.AppendLine(
+                    ok ? "RESULT: OK" : "RESULT: FAILED");
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory, "softprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        /// <summary>
+        /// 软件下载真机探针：真的把一个小安装包下到临时目录，检查大小与 MZ 头，
+        /// 跑完删掉。用来验证下载引擎（流式写盘、进度、改名）而不是只看接口。
+        /// 输出 softdownloadprobe.txt。
+        /// </summary>
+        public static void RunSoftwareDownloadProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            string directory = Path.Combine(
+                ConfigStore.DataDirectory, "software-probe");
+            try
+            {
+                SoftSearchResult result =
+                    SoftwareCatalog.Search("小红书", 1);
+                if (result.Error.Length > 0 || result.Items.Count == 0)
+                {
+                    output.AppendLine("SKIP: 搜索不可用：" +
+                        result.Error);
+                }
+                else
+                {
+                    // 先挑最小的那个，别为了测试拉几百兆。
+                    SoftItem pick = result.Items[0];
+                    double best = double.MaxValue;
+                    for (int i = 0; i < result.Items.Count; i++)
+                    {
+                        SoftItem item = result.Items[i];
+                        if (item.DownloadUrl.Length == 0)
+                        {
+                            continue;
+                        }
+                        double mb = ParseSizeMb(item.SizeText);
+                        if (mb > 0 && mb < best)
+                        {
+                            best = mb;
+                            pick = item;
+                        }
+                    }
+                    output.AppendLine("pick=" + pick.Name +
+                        " | " + pick.SizeText);
+                    output.AppendLine("url=" + pick.DownloadUrl);
+
+                    if (Directory.Exists(directory))
+                    {
+                        Directory.Delete(directory, true);
+                    }
+                    Directory.CreateDirectory(directory);
+                    int updates = 0;
+                    SoftDownload job = SoftwareDownloader.StartAsync(
+                        pick, directory,
+                        delegate(SoftDownload progress) { updates++; })
+                        .Result;
+                    output.AppendLine("done=" + job.Done +
+                        " failed=" + job.Failed +
+                        " error=" + job.Error);
+                    output.AppendLine("received=" + job.Received +
+                        " total=" + job.TotalLength +
+                        " progressCallbacks=" + updates);
+                    output.AppendLine("path=" + job.TargetPath);
+                    Check(output, ref ok, "probe software download done",
+                        job.Done.ToString(), "True");
+                    Check(output, ref ok,
+                        "probe software downloaded file exists",
+                        (job.TargetPath.Length > 0 &&
+                            File.Exists(job.TargetPath)).ToString(),
+                        "True");
+                    long length = 0;
+                    try
+                    {
+                        length = new FileInfo(job.TargetPath).Length;
+                    }
+                    catch
+                    {
+                    }
+                    Check(output, ref ok,
+                        "probe software downloaded size",
+                        (length > 100 * 1024 &&
+                            (job.TotalLength <= 0 ||
+                                length == job.TotalLength)).ToString(),
+                        "True");
+                    bool exeHeader = false;
+                    try
+                    {
+                        byte[] head = new byte[2];
+                        using (FileStream stream = File.OpenRead(
+                            job.TargetPath))
+                        {
+                            exeHeader = stream.Read(head, 0, 2) == 2 &&
+                                head[0] == 'M' && head[1] == 'Z';
+                        }
+                    }
+                    catch
+                    {
+                    }
+                    output.AppendLine("exeHeader=" + exeHeader);
+                    Check(output, ref ok,
+                        "probe software downloaded is exe",
+                        exeHeader.ToString(), "True");
+                }
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                try
+                {
+                    if (Directory.Exists(directory))
+                    {
+                        Directory.Delete(directory, true);
+                    }
+                }
+                catch
+                {
+                }
+                output.AppendLine(
+                    ok ? "RESULT: OK" : "RESULT: FAILED");
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory,
+                        "softdownloadprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        private static double ParseSizeMb(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return 0;
+            }
+            string value = text.Trim();
+            double scale = 0;
+            if (value.EndsWith("MB", StringComparison.OrdinalIgnoreCase))
+            {
+                scale = 1;
+                value = value.Substring(0, value.Length - 2);
+            }
+            else if (value.EndsWith("GB", StringComparison.OrdinalIgnoreCase))
+            {
+                scale = 1024;
+                value = value.Substring(0, value.Length - 2);
+            }
+            else if (value.EndsWith("KB", StringComparison.OrdinalIgnoreCase))
+            {
+                scale = 1.0 / 1024;
+                value = value.Substring(0, value.Length - 2);
+            }
+            double number;
+            if (scale <= 0 ||
+                !double.TryParse(value.Trim(),
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out number))
+            {
+                return 0;
+            }
+            return number * scale;
+        }
+
+        /// <summary>
+        /// 软件下载窗口渲染冒烟：塞几条示例软件，真的显示窗口并截 ui-software.png，
+        /// 用来检查行高、按钮、进度条有没有重叠或裁切。
+        /// </summary>
+        public static void RunSoftwareUiProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            SoftwareDownloadForm form = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                List<SoftItem> items = new List<SoftItem>();
+                items.Add(MakeSoftItem(
+                    2000004652, "小红书手机版", "31.00 MB", "6.0",
+                    "聊天", "3亿人的生活指南，标记我的生活"));
+                items.Add(MakeSoftItem(
+                    2000008141, "小红书(应用宝版)", "7.00 MB", "6.0",
+                    "聊天", "手机端应用，需要先安装应用宝支持应用运行"));
+                items.Add(MakeSoftItem(
+                    600004913, "小红书私信通", "139.00 MB", "6.0",
+                    "营销", "私信智能管理与营销工具，批量回复自动回复"));
+                items.Add(MakeSoftItem(
+                    600009911, "小红书直播助手", "384.00 MB", "6.0",
+                    "直播", "小红书官方推出的电脑端直播工具"));
+
+                form = SoftwareDownloadForm.ShowPreview(items);
+                output.AppendLine("formBounds=" + form.Bounds);
+                DateTime deadline = DateTime.UtcNow.AddMilliseconds(700);
+                while (DateTime.UtcNow < deadline)
+                {
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(20);
+                }
+                output.AppendLine("formVisible=" + form.Visible);
+                Check(output, ref ok, "soft ui window visible",
+                    form.Visible.ToString(), "True");
+
+                string shot = Path.Combine(
+                    ConfigStore.DataDirectory, "ui-software.png");
+                try
+                {
+                    using (Bitmap capture = new Bitmap(
+                        Math.Max(1, form.Width),
+                        Math.Max(1, form.Height)))
+                    {
+                        using (Graphics graphics =
+                            Graphics.FromImage(capture))
+                        {
+                            graphics.CopyFromScreen(
+                                form.Left, form.Top, 0, 0,
+                                capture.Size);
+                        }
+                        capture.Save(shot, ImageFormat.Png);
+                    }
+                    output.AppendLine("screenshot=" + shot);
+                    Check(output, ref ok, "soft ui screenshot",
+                        File.Exists(shot).ToString(), "True");
+                }
+                catch (Exception ex)
+                {
+                    // 锁屏 / 远程会话下 CopyFromScreen 会失败，属环境限制。
+                    output.AppendLine("SKIP: 当前桌面无法截屏：" +
+                        ex.GetType().Name);
+                }
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                try
+                {
+                    if (form != null && !form.IsDisposed)
+                    {
+                        form.Close();
+                    }
+                }
+                catch
+                {
+                }
+                SoftwareDownloadForm.CloseWindow();
+                output.AppendLine(
+                    ok ? "RESULT: OK" : "RESULT: FAILED");
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory,
+                        "softuiprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        private static SoftItem MakeSoftItem(
+            int id, string name, string size, string rating,
+            string category, string description)
+        {
+            SoftItem item = new SoftItem();
+            item.SoftId = id;
+            item.Name = name;
+            item.SizeText = size;
+            item.Rating = rating;
+            item.Category = category;
+            item.Description = description;
+            item.DownloadUrl =
+                "https://softdl6.360tpcdn.com/pcrj/setup_" + id + ".exe";
+            item.DetailUrl = "/qbfl/" + id + ".html";
+            return item;
         }
 
         private static void PumpMessages(int milliseconds)

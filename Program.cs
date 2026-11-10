@@ -58,6 +58,24 @@ namespace SelectionTranslator
                 return;
             }
 
+            if (Array.IndexOf(args, "--softprobe") >= 0)
+            {
+                SelfTest.RunSoftwareProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--softuipreview") >= 0)
+            {
+                SelfTest.RunSoftwareUiProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--softdownloadprobe") >= 0)
+            {
+                SelfTest.RunSoftwareDownloadProbe();
+                return;
+            }
+
             if (Array.IndexOf(args, "--hoverprobe") >= 0)
             {
                 SelfTest.RunHoverProbe();
