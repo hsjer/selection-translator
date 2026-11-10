@@ -927,6 +927,7 @@ namespace SelectionTranslator
         private int _contentHeight;
         private int _hover = -1;
         private int _selected = -1;
+        private bool _drawErrorLogged;
 
         public event Action<SoftItem> ItemActivated;
         public event Action<SoftItem, Point> ItemContext;
@@ -961,6 +962,31 @@ namespace SelectionTranslator
         {
             _jobProvider = jobProvider;
             _logoProvider = logoProvider;
+        }
+
+        /// <summary>
+        /// 把「全部行」画到给定画布上，不受视口高度限制。
+        /// 给自检做离屏渲染：走的是和真实重绘完全同一个 DrawRow，
+        /// 任何一行的绘制异常都会直接抛出来，不会像 WM_PAINT 那样被
+        /// WinForms 吞掉变成弹窗。
+        /// </summary>
+        internal int RenderAllRows(Graphics g)
+        {
+            if (g == null)
+            {
+                return 0;
+            }
+            for (int i = 0; i < _rows.Count; i++)
+            {
+                DrawRow(g, i, _rows[i].Top - _scroll);
+            }
+            return _rows.Count;
+        }
+
+        /// <summary>列表内容总高度（含上下留白），离屏渲染时用来定画布尺寸。</summary>
+        internal int ContentHeight
+        {
+            get { return Math.Max(1, _contentHeight); }
         }
 
         public void SetItems(List<SoftItem> items)
@@ -1164,7 +1190,21 @@ namespace SelectionTranslator
                 {
                     continue;
                 }
-                DrawRow(g, i, top);
+                // 单行画挂了不能让整窗废掉：自绘控件里抛异常会被 WinForms
+                // 转成弹窗，每次重绘弹一次，窗口就没法用了。这里吃掉并只
+                // 记一次日志，其余行照常画。
+                try
+                {
+                    DrawRow(g, i, top);
+                }
+                catch (Exception ex)
+                {
+                    if (!_drawErrorLogged)
+                    {
+                        _drawErrorLogged = true;
+                        Log.Error("软件列表某一行绘制失败，已跳过该行", ex);
+                    }
+                }
             }
             DrawScrollBar(g);
         }

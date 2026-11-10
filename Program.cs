@@ -64,6 +64,12 @@ namespace SelectionTranslator
                 return;
             }
 
+            if (Array.IndexOf(args, "--softrenderprobe") >= 0)
+            {
+                SelfTest.RunSoftwareRenderProbe();
+                return;
+            }
+
             if (Array.IndexOf(args, "--softuipreview") >= 0)
             {
                 SelfTest.RunSoftwareUiProbe();

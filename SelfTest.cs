@@ -1125,6 +1125,33 @@ namespace SelectionTranslator
                         new SoftSearchResult { Error = "b" })
                         .Error.Length > 0).ToString(), "True");
 
+                // 只有一侧字段的条目（360 没有版本号、腾讯没有分类）：
+                // 任何字段都不能是 null，否则绘制里一次 .Length 就空引用。
+                SoftItem bareItem = new SoftItem();
+                bareItem.Source = SoftwareCatalog.Source360;
+                bareItem.Name = "只有名字";
+                Check(output, ref ok, "software bare item text fields",
+                    (bareItem.Name.Length +
+                        bareItem.Description.Length +
+                        bareItem.SizeText.Length +
+                        bareItem.Rating.Length +
+                        bareItem.Category.Length +
+                        bareItem.VersionText.Length +
+                        bareItem.LogoUrl.Length +
+                        bareItem.DownloadUrl.Length +
+                        bareItem.SafeDownloadUrl.Length +
+                        bareItem.DetailUrl.Length) + "/" +
+                    (bareItem.RatingText.Length) + "/" +
+                    bareItem.Key,
+                    "4/0/360:0");
+                bareItem.Name = null;
+                bareItem.VersionText = null;
+                Check(output, ref ok, "software null assignment normalized",
+                    (bareItem.Name.Length +
+                        bareItem.VersionText.Length) + "/" +
+                    (bareItem.Name == null).ToString(),
+                    "0/False");
+
                 // 下载目录：等于系统默认时不落盘（换机器还能用），
                 // 自定义目录原样保存。
                 string defaultDir = SoftwareDownloader.DefaultDirectory();
@@ -4381,6 +4408,222 @@ namespace SelectionTranslator
         /// 软件下载窗口渲染冒烟：塞几条示例软件，真的显示窗口并截 ui-software.png，
         /// 用来检查行高、按钮、进度条有没有重叠或裁切。
         /// </summary>
+        /// <summary>
+        /// 软件列表离屏渲染：走和真实重绘同一个 DrawRow，把每一行都画一遍。
+        /// 第一段用「只有 360 字段、没有分类也没有版本号」的条目复现历史崩溃
+        /// （腾讯源才有版本号，360 行分类为空时读 VersionText.Length 会空引用）；
+        /// 第二段拿真实搜索结果（微信 / 小红书）整份画到图上并存成 PNG。
+        /// </summary>
+        public static void RunSoftwareRenderProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            SoftListView list = null;
+            try
+            {
+                Application.EnableVisualStyles();
+
+                // ---- 第一段：两源字段不对齐的最坏情况 ----
+                List<SoftItem> edge = new List<SoftItem>();
+                SoftItem bare360 = new SoftItem();
+                bare360.Source = SoftwareCatalog.Source360;
+                bare360.SoftId = 1;
+                bare360.Name = "没有分类的360条目";
+                edge.Add(bare360);
+
+                SoftItem bareTencent = new SoftItem();
+                bareTencent.Source = SoftwareCatalog.SourceTencent;
+                bareTencent.SoftId = 2;
+                bareTencent.Name = "没有版本的腾讯条目";
+                edge.Add(bareTencent);
+
+                SoftItem emptyName = new SoftItem();
+                emptyName.Source = SoftwareCatalog.Source360;
+                emptyName.Name = "";
+                edge.Add(emptyName);
+
+                list = new SoftListView();
+                list.Width = 860;
+                list.Height = 600;
+                list.SetItems(edge);
+                list.SetProviders(null, null);
+                using (Bitmap canvas = new Bitmap(
+                    860, Math.Max(1, Math.Min(2000, list.ContentHeight))))
+                {
+                    using (Graphics graphics = Graphics.FromImage(canvas))
+                    {
+                        int painted = list.RenderAllRows(graphics);
+                        output.AppendLine("edgeRows=" + painted);
+                        Check(output, ref ok, "soft render edge rows",
+                            (painted == edge.Count).ToString(), "True");
+                    }
+                }
+                Check(output, ref ok, "soft item null fields normalized",
+                    (bare360.VersionText.Length == 0 &&
+                        bare360.Category.Length == 0 &&
+                        bare360.Description.Length == 0 &&
+                        bareTencent.Category.Length == 0 &&
+                        bareTencent.VersionText.Length == 0).ToString(),
+                    "True");
+
+                // ---- 第二段：真实搜索结果整份渲染 ----
+                string[] keywords = new string[] { "微信", "小红书" };
+                for (int k = 0; k < keywords.Length; k++)
+                {
+                    string keyword = keywords[k];
+                    SoftSearchResult result =
+                        SoftwareCatalog.Search(keyword, 1);
+                    output.AppendLine("---- " + keyword +
+                        " total=" + result.Total +
+                        " items=" + result.Items.Count +
+                        " error=" + result.Error);
+                    if (result.Error.Length > 0 ||
+                        result.Items.Count == 0)
+                    {
+                        output.AppendLine("SKIP: 搜索不可用");
+                        continue;
+                    }
+
+                    int from360 = 0;
+                    int fromTencent = 0;
+                    int nullFields = 0;
+                    for (int i = 0; i < result.Items.Count; i++)
+                    {
+                        SoftItem item = result.Items[i];
+                        if (item.Source == SoftwareCatalog.SourceTencent)
+                        {
+                            fromTencent++;
+                        }
+                        else
+                        {
+                            from360++;
+                        }
+                        if (item.Name == null || item.Description == null ||
+                            item.SizeText == null || item.Rating == null ||
+                            item.Category == null ||
+                            item.VersionText == null ||
+                            item.LogoUrl == null ||
+                            item.DownloadUrl == null ||
+                            item.Key == null)
+                        {
+                            nullFields++;
+                        }
+                    }
+                    output.AppendLine("source360=" + from360 +
+                        " sourceTencent=" + fromTencent +
+                        " nullFields=" + nullFields);
+                    Check(output, ref ok,
+                        "soft real " + keyword + " no null fields",
+                        (nullFields == 0).ToString(), "True");
+                    Check(output, ref ok,
+                        "soft real " + keyword + " has both sources",
+                        (from360 > 0 || fromTencent > 0).ToString(),
+                        "True");
+
+                    list.SetItems(result.Items);
+                    int height = Math.Min(6000, list.ContentHeight);
+                    using (Bitmap canvas = new Bitmap(860, height))
+                    {
+                        using (Graphics graphics =
+                            Graphics.FromImage(canvas))
+                        {
+                            int painted = list.RenderAllRows(graphics);
+                            output.AppendLine("rows=" + painted +
+                                " canvasHeight=" + height);
+                            Check(output, ref ok,
+                                "soft real " + keyword +
+                                " rendered all rows",
+                                (painted == result.Items.Count).ToString(),
+                                "True");
+                        }
+                        string shot = Path.Combine(
+                            ConfigStore.DataDirectory,
+                            "ui-software-real-" + keyword + ".png");
+                        canvas.Save(shot, ImageFormat.Png);
+                        output.AppendLine("png=" + shot);
+
+                        // 长图不好看，另外存一张前 900px 的局部方便肉眼确认排版。
+                        int topHeight = Math.Min(900, canvas.Height);
+                        using (Bitmap top = new Bitmap(
+                            860, topHeight))
+                        {
+                            using (Graphics topGraphics =
+                                Graphics.FromImage(top))
+                            {
+                                topGraphics.DrawImage(canvas,
+                                    new Rectangle(0, 0, 860, topHeight),
+                                    new Rectangle(0, 0, 860, topHeight),
+                                    GraphicsUnit.Pixel);
+                            }
+                            top.Save(Path.Combine(
+                                ConfigStore.DataDirectory,
+                                "ui-software-real-" + keyword +
+                                "-top.png"), ImageFormat.Png);
+                        }
+
+                        // 再存一张「第一行腾讯结果」开始的局部，便于核对来源标签。
+                        int tencentRow = -1;
+                        for (int i = 0; i < result.Items.Count; i++)
+                        {
+                            if (result.Items[i].Source ==
+                                SoftwareCatalog.SourceTencent)
+                            {
+                                tencentRow = i;
+                                break;
+                            }
+                        }
+                        if (tencentRow > 0)
+                        {
+                            int start = Math.Min(
+                                canvas.Height - 1, 4 + tencentRow * 84);
+                            int partHeight = Math.Min(900,
+                                canvas.Height - start);
+                            using (Bitmap part = new Bitmap(
+                                860, Math.Max(1, partHeight)))
+                            {
+                                using (Graphics partGraphics =
+                                    Graphics.FromImage(part))
+                                {
+                                    partGraphics.DrawImage(canvas,
+                                        new Rectangle(0, 0, 860,
+                                            partHeight),
+                                        new Rectangle(0, start, 860,
+                                            partHeight),
+                                        GraphicsUnit.Pixel);
+                                }
+                                part.Save(Path.Combine(
+                                    ConfigStore.DataDirectory,
+                                    "ui-software-real-" + keyword +
+                                    "-tencent.png"), ImageFormat.Png);
+                            }
+                            output.AppendLine("firstTencentRow=" +
+                                tencentRow);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                if (list != null)
+                {
+                    list.Dispose();
+                }
+                output.AppendLine(
+                    ok ? "RESULT: OK" : "RESULT: FAILED");
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory,
+                        "softrenderprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
         public static void RunSoftwareUiProbe()
         {
             StringBuilder output = new StringBuilder();

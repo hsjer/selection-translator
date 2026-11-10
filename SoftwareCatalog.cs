@@ -9,29 +9,96 @@ using System.Web.Script.Serialization;
 namespace SelectionTranslator
 {
     /// <summary>软件搜索里的一条结果（可能来自 360 宝库，也可能来自腾讯软件中心）。</summary>
+    /// <remarks>
+    /// 所有文本字段都保证不为 null：两个源的字段并不一一对应（腾讯有版本号、
+    /// 360 有分类），没赋值的字段如果留着 null，绘制时任何一次 .Length 都会
+    /// 直接抛空引用把整个窗口打断。这里统一在 setter 里把 null 收成空串。
+    /// </remarks>
     internal sealed class SoftItem
     {
+        private string _source = "";
+        private string _name = "";
+        private string _description = "";
+        private string _sizeText = "";
+        private string _rating = "";
+        private string _category = "";
+        private string _logoUrl = "";
+        private string _versionText = "";
+        private string _downloadUrl = "";
+        private string _safeDownloadUrl = "";
+        private string _detailUrl = "";
+
         /// <summary>来源标记：360 / 腾讯。列表里要显示出来。</summary>
-        public string Source { get; set; }
+        public string Source
+        {
+            get { return _source; }
+            set { _source = value ?? ""; }
+        }
 
         public int SoftId { get; set; }
-        public string Name { get; set; }
-        public string Description { get; set; }
-        public string SizeText { get; set; }
-        public string Rating { get; set; }
-        public string Category { get; set; }
-        public string LogoUrl { get; set; }
+
+        public string Name
+        {
+            get { return _name; }
+            set { _name = value ?? ""; }
+        }
+
+        public string Description
+        {
+            get { return _description; }
+            set { _description = value ?? ""; }
+        }
+
+        public string SizeText
+        {
+            get { return _sizeText; }
+            set { _sizeText = value ?? ""; }
+        }
+
+        public string Rating
+        {
+            get { return _rating; }
+            set { _rating = value ?? ""; }
+        }
+
+        public string Category
+        {
+            get { return _category; }
+            set { _category = value ?? ""; }
+        }
+
+        public string LogoUrl
+        {
+            get { return _logoUrl; }
+            set { _logoUrl = value ?? ""; }
+        }
 
         /// <summary>版本号，腾讯源有，360 源一般没有。</summary>
-        public string VersionText { get; set; }
+        public string VersionText
+        {
+            get { return _versionText; }
+            set { _versionText = value ?? ""; }
+        }
 
         /// <summary>详情页「普通下载」直链，通常就是安装包本体。</summary>
-        public string DownloadUrl { get; set; }
+        public string DownloadUrl
+        {
+            get { return _downloadUrl; }
+            set { _downloadUrl = value ?? ""; }
+        }
 
         /// <summary>「安全下载」直链，会先装 360 卫士，只在用户主动选择时使用。</summary>
-        public string SafeDownloadUrl { get; set; }
+        public string SafeDownloadUrl
+        {
+            get { return _safeDownloadUrl; }
+            set { _safeDownloadUrl = value ?? ""; }
+        }
 
-        public string DetailUrl { get; set; }
+        public string DetailUrl
+        {
+            get { return _detailUrl; }
+            set { _detailUrl = value ?? ""; }
+        }
 
         /// <summary>
         /// 跨源唯一的键。两个源各自的 ID 是独立编号，直接用 ID 做主键
