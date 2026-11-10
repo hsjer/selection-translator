@@ -483,7 +483,7 @@ namespace SelectionTranslator
                     fill = Color.FromArgb(239, 243, 249);
                 }
 
-                if (fill != Color.Empty)
+                if (fill != Color.Empty && Enabled)
                 {
                     using (GraphicsPath path = MakeRoundedRect(inner, 8f))
                     using (SolidBrush brush = new SolidBrush(fill))
@@ -512,6 +512,11 @@ namespace SelectionTranslator
                 if (_kind == IconKind.Color)
                 {
                     ink = _swatch;
+                }
+                // 不可用的按钮（比如长图状态下的「滚动截图」）画淡一点。
+                if (!Enabled)
+                {
+                    ink = Color.FromArgb(186, 192, 202);
                 }
 
                 DrawIcon(g, _kind,
@@ -612,6 +617,8 @@ namespace SelectionTranslator
         private MouseButtons _dragButton = MouseButtons.None;
         private Point _dragStart;
         private Point _lastPoint;
+        // 标注起点：屏幕坐标下等于 _dragStart，长图模式下是「长图坐标」。
+        private Point _drawStart;
         private Rectangle _dragOrigin;
         private Shape _preview;
         private Tool _tool = Tool.None;
@@ -625,6 +632,13 @@ namespace SelectionTranslator
 
         // 滚动截图期间会隐藏浮层，防止重复进入。
         private bool _scrollInProgress;
+
+        // ---- 长图状态 ----
+        // 滚动截图拼好之后不另开窗口，而是把长图直接当成这张「截图」：
+        // 浮层原地回来，选区变成 1:1 的取景框，滚轮上下翻看，
+        // 标注 / 保存 / 复制 / 贴图 / 翻译全都和普通截图一模一样。
+        private Bitmap _longImage;
+        private int _longScroll;
         // 截图开始前的前台窗口：滚动截图时要把焦点还给它，
         // 否则滚轮会滚到我们自己的（已隐藏的）窗口上。
         private readonly IntPtr _foregroundWindow;
@@ -732,6 +746,190 @@ namespace SelectionTranslator
         internal void DebugStartScroll()
         {
             OnScrollClicked(this, EventArgs.Empty);
+        }
+
+        /// <summary>当前是不是「滚动截图拼好的长图」在编辑中。</summary>
+        internal bool InLongMode
+        {
+            get { return _longImage != null; }
+        }
+
+        /// <summary>自检 / 探针用：长图尺寸（非长图状态返回空）。</summary>
+        internal Size LongImageSize
+        {
+            get
+            {
+                return _longImage == null
+                    ? Size.Empty : _longImage.Size;
+            }
+        }
+
+        /// <summary>自检 / 探针用：当前纵向滚动偏移。</summary>
+        internal int LongScroll
+        {
+            get { return _longScroll; }
+        }
+
+        /// <summary>
+        /// 接管一张拼好的长图：浮层保持打开，选区改成 1:1 的取景框，
+        /// 之后的一切（标注、保存、复制、贴图、翻译、✓ 完成）都和普通截图一致。
+        /// 位图所有权转移给本窗口。
+        /// </summary>
+        internal void EnterLongMode(Bitmap image)
+        {
+            if (image == null)
+            {
+                return;
+            }
+            if (_longImage != null && !ReferenceEquals(_longImage, image))
+            {
+                _longImage.Dispose();
+            }
+
+            _longImage = image;
+            _longScroll = 0;
+            _shapes.Clear();
+            _undo.Clear();
+            _numberCounter = 1;
+            _tool = Tool.None;
+            _preview = null;
+            _selectionLocked = true;
+
+            LayoutLongViewport();
+
+            // 长图已经是最终结果，不允许再滚一次（会截到浮层自己）。
+            IconButton scroll = FindButton(IconKind.Scroll);
+            if (scroll != null)
+            {
+                scroll.Enabled = false;
+                _tips.SetToolTip(scroll, "长图已拼接完成，可以直接标注或点 ✓ 完成");
+            }
+
+            SyncToolButtons();
+            PlaceToolbar();
+            Invalidate();
+        }
+
+        /// <summary>
+        /// 给长图安排取景框：宽度 1:1，高度铺满可用区域，
+        /// 超出的部分靠滚轮上下翻。这样标注精度和真实像素完全一致，
+        /// 也不会把几千像素的长图压成一条细线。
+        /// </summary>
+        private void LayoutLongViewport()
+        {
+            if (_longImage == null)
+            {
+                return;
+            }
+
+            int marginX = 48;
+            int topMargin = 46;   // 上方留给「尺寸」标签
+            int bottomReserve = 92;  // 下方留给工具栏
+
+            int maxWidth = Math.Max(120, ClientSize.Width - marginX * 2);
+            int maxHeight = Math.Max(
+                160, ClientSize.Height - topMargin - bottomReserve);
+
+            int width = Math.Min(_longImage.Width, maxWidth);
+            int height = Math.Min(_longImage.Height, maxHeight);
+
+            int left = (ClientSize.Width - width) / 2;
+            int top = topMargin + Math.Max(0, (maxHeight - height) / 2);
+            _selection = new Rectangle(left, top, width, height);
+
+            int maxScroll = MaxLongScroll;
+            if (_longScroll > maxScroll)
+            {
+                _longScroll = maxScroll;
+            }
+        }
+
+        private int MaxLongScroll
+        {
+            get
+            {
+                if (_longImage == null || _selection.Height <= 0)
+                {
+                    return 0;
+                }
+                return Math.Max(0, _longImage.Height - _selection.Height);
+            }
+        }
+
+        /// <summary>自检 / 探针用：纵向最多能滚多少像素。</summary>
+        internal int LongScrollRange
+        {
+            get { return MaxLongScroll; }
+        }
+
+        /// <summary>滚长图（像素）。返回是否真的动了，供探针断言。</summary>
+        internal bool ScrollLongBy(int delta)
+        {
+            if (_longImage == null)
+            {
+                return false;
+            }
+            int next = _longScroll + delta;
+            next = Math.Max(0, Math.Min(MaxLongScroll, next));
+            if (next == _longScroll)
+            {
+                return false;
+            }
+            _longScroll = next;
+            Invalidate();
+            return true;
+        }
+
+        /// <summary>自检 / 探针用：按当前标注导出一张成品（调用方释放）。</summary>
+        internal Bitmap DebugBuildResult()
+        {
+            return BuildResult();
+        }
+
+        /// <summary>自检 / 探针用：模拟一格滚轮（正数向上）。</summary>
+        internal void DebugWheel(int delta)
+        {
+            OnMouseWheel(new MouseEventArgs(
+                MouseButtons.None, 0, 0, 0, delta));
+        }
+
+        /// <summary>自检 / 探针用：按「长图坐标」加一个矩形标注。</summary>
+        internal void DebugAddFrame(Rectangle imageRect, Color color)
+        {
+            FrameShape frame = new FrameShape();
+            frame.Rect = imageRect;
+            frame.Ellipse = false;
+            frame.Color = color;
+            frame.Width = 4f;
+            _shapes.Add(frame);
+            Invalidate();
+        }
+
+        /// <summary>
+        /// 客户区坐标 → 图像坐标。普通截图两者相同；长图模式下
+        /// 还要扣掉取景框原点、加上纵向滚动量。
+        /// </summary>
+        private Point ToImagePoint(Point client)
+        {
+            if (_longImage == null)
+            {
+                return client;
+            }
+            return new Point(
+                client.X - _selection.Left,
+                client.Y - _selection.Top + _longScroll);
+        }
+
+        /// <summary>图像坐标 → 客户区坐标（文本框这类真实控件要用）。</summary>
+        private Point ToClientPoint(Point image)
+        {
+            if (_longImage == null)
+            {
+                return image;
+            }
+            return new Point(
+                image.X + _selection.Left,
+                image.Y + _selection.Top - _longScroll);
         }
 
         /// <summary>自检 / 探针用：把工具栏所有图标放大画成一张对照图。</summary>
@@ -988,19 +1186,26 @@ namespace SelectionTranslator
             {
                 Rectangle visible = Rectangle.Intersect(
                     _selection,
-                    new Rectangle(0, 0, _screen.Width, _screen.Height));
+                    new Rectangle(0, 0, ClientSize.Width, ClientSize.Height));
 
                 // 选区内恢复原图亮度，并把标注裁剪在选区内。
                 GraphicsState state = g.Save();
                 g.SetClip(visible, CombineMode.Replace);
-                g.DrawImage(_screen, 0, 0);
-                for (int i = 0; i < _shapes.Count; i++)
+                if (_longImage != null)
                 {
-                    _shapes[i].Draw(g, _screen);
+                    DrawLongImage(g);
                 }
-                if (_preview != null)
+                else
                 {
-                    _preview.Draw(g, _screen);
+                    g.DrawImage(_screen, 0, 0);
+                    for (int i = 0; i < _shapes.Count; i++)
+                    {
+                        _shapes[i].Draw(g, _screen);
+                    }
+                    if (_preview != null)
+                    {
+                        _preview.Draw(g, _screen);
+                    }
                 }
                 g.Restore(state);
 
@@ -1014,6 +1219,37 @@ namespace SelectionTranslator
             {
                 DrawHint(g);
             }
+        }
+
+        /// <summary>
+        /// 画长图的当前可见片段（1:1），并把原点平移到「长图坐标」，
+        /// 后面的标注就是按真实像素落笔，导出时不需要任何缩放。
+        /// </summary>
+        private void DrawLongImage(Graphics g)
+        {
+            g.InterpolationMode = InterpolationMode.NearestNeighbor;
+            g.PixelOffsetMode = PixelOffsetMode.Half;
+            g.DrawImage(
+                _longImage,
+                _selection,
+                0,
+                _longScroll,
+                _selection.Width,
+                _selection.Height,
+                GraphicsUnit.Pixel);
+
+            g.TranslateTransform(
+                _selection.Left, _selection.Top - _longScroll);
+            for (int i = 0; i < _shapes.Count; i++)
+            {
+                _shapes[i].Draw(g, _longImage);
+            }
+            if (_preview != null)
+            {
+                _preview.Draw(g, _longImage);
+            }
+            g.TranslateTransform(
+                -_selection.Left, -(_selection.Top - _longScroll));
         }
 
         /// <summary>
@@ -1089,22 +1325,31 @@ namespace SelectionTranslator
                 g.DrawRectangle(pen, _selection);
             }
 
-            // 8 个白色方块手柄，蓝色描边。
-            Point[] handles = HandlePoints(_selection);
-            using (SolidBrush fill = new SolidBrush(Color.White))
-            using (Pen border = new Pen(AccentColor, 1.4f))
+            // 8 个白色方块手柄，蓝色描边。长图模式下取景框大小由画面决定，
+            // 不给手柄，免得用户以为能像裁剪那样改尺寸。
+            if (_longImage == null)
             {
-                for (int i = 0; i < handles.Length; i++)
+                Point[] handles = HandlePoints(_selection);
+                using (SolidBrush fill = new SolidBrush(Color.White))
+                using (Pen border = new Pen(AccentColor, 1.4f))
                 {
-                    Rectangle box = new Rectangle(
-                        handles[i].X - 4, handles[i].Y - 4, 8, 8);
-                    g.FillRectangle(fill, box);
-                    g.DrawRectangle(border, box);
+                    for (int i = 0; i < handles.Length; i++)
+                    {
+                        Rectangle box = new Rectangle(
+                            handles[i].X - 4, handles[i].Y - 4, 8, 8);
+                        g.FillRectangle(fill, box);
+                        g.DrawRectangle(border, box);
+                    }
                 }
             }
 
             // 尺寸标签：深色底 + 白字，位于选区左上角上方。
-            string text = _selection.Width + " × " + _selection.Height;
+            // 长图模式显示的是长图真实尺寸（不是取景框尺寸）。
+            string text = _longImage == null
+                ? _selection.Width + " × " + _selection.Height
+                : _longImage.Width + " × " + _longImage.Height +
+                    " 长图" +
+                    (MaxLongScroll > 0 ? " · 滚轮上下看" : "");
             using (Font font = new Font(
                 "Microsoft YaHei UI", 11f, FontStyle.Regular,
                 GraphicsUnit.Pixel))
@@ -1160,6 +1405,48 @@ namespace SelectionTranslator
                     g.FillRectangle(back, banner);
                     g.DrawString(cropTip, font, fore, banner, format);
                 }
+            }
+
+            // 长图模式：右内侧一条细滚动条，提示「上面 / 下面还有内容」。
+            if (_longImage != null && MaxLongScroll > 0)
+            {
+                DrawLongScrollBar(g);
+            }
+        }
+
+        private void DrawLongScrollBar(Graphics g)
+        {
+            const int trackWidth = 6;
+            Rectangle track = new Rectangle(
+                _selection.Right - trackWidth - 3,
+                _selection.Top + 4,
+                trackWidth,
+                Math.Max(12, _selection.Height - 8));
+            using (SolidBrush back = new SolidBrush(
+                Color.FromArgb(105, 0, 0, 0)))
+            {
+                g.FillRectangle(back, track);
+            }
+
+            float ratio = (float)_selection.Height / _longImage.Height;
+            int thumbHeight = (int)Math.Round(track.Height * ratio);
+            if (thumbHeight < 28)
+            {
+                thumbHeight = 28;
+            }
+            if (thumbHeight > track.Height)
+            {
+                thumbHeight = track.Height;
+            }
+            int travel = track.Height - thumbHeight;
+            int top = travel <= 0 ? track.Top : track.Top +
+                (int)Math.Round(
+                    travel * (double)_longScroll / MaxLongScroll);
+            using (SolidBrush fore = new SolidBrush(
+                Color.FromArgb(205, 255, 255, 255)))
+            {
+                g.FillRectangle(
+                    fore, new Rectangle(track.X, top, track.Width, thumbHeight));
             }
         }
 
@@ -1247,7 +1534,8 @@ namespace SelectionTranslator
             _dragStart = new Point(e.X, e.Y);
             _lastPoint = _dragStart;
             _dragOrigin = _selection;
-            _handle = HitHandle(_dragStart);
+            _handle = _longImage == null
+                ? HitHandle(_dragStart) : HandleKind.None;
 
             // 首次框选时左右键都可以；锁定后右键已在上面拦截，
             // 左键只允许改手柄 / 移动 / 标注 / 裁剪，不允许开新选区。
@@ -1256,7 +1544,8 @@ namespace SelectionTranslator
                 _dragMode = DragMode.Resize;
                 PushUndo();
             }
-            else if (_tool == Tool.Crop && HasSelection())
+            else if (_tool == Tool.Crop && HasSelection() &&
+                _longImage == null)
             {
                 _dragMode = DragMode.Select;
                 PushUndo();
@@ -1264,10 +1553,10 @@ namespace SelectionTranslator
             else if (HasSelection() && _tool != Tool.None &&
                 _selection.Contains(_dragStart))
             {
-                BeginDraw(_dragStart);
+                BeginDraw(ToImagePoint(_dragStart));
             }
             else if (_tool == Tool.None && HasSelection() &&
-                _selection.Contains(_dragStart))
+                _longImage == null && _selection.Contains(_dragStart))
             {
                 _dragMode = DragMode.Move;
                 PushUndo();
@@ -1312,7 +1601,11 @@ namespace SelectionTranslator
 
             if (_dragMode == DragMode.None)
             {
-                UpdateHoverWindow(current);
+                // 长图模式下画面上没有「窗口」可选，别再做窗口高亮。
+                if (_longImage == null)
+                {
+                    UpdateHoverWindow(current);
+                }
                 UpdateCursor(current);
                 return;
             }
@@ -1332,7 +1625,7 @@ namespace SelectionTranslator
                     break;
 
                 case DragMode.Draw:
-                    UpdateDraw(current);
+                    UpdateDraw(ToImagePoint(current));
                     break;
             }
 
@@ -1425,6 +1718,28 @@ namespace SelectionTranslator
             {
                 Finish(CaptureResult.Copy);
             }
+        }
+
+        /// <summary>
+        /// 长图模式下滚轮就是「上下翻长图」：一屏装不下的部分靠它看，
+        /// Shift 按住滚得更快。普通截图不响应滚轮（免得误操作）。
+        /// </summary>
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+
+            if (_longImage == null || MaxLongScroll <= 0)
+            {
+                return;
+            }
+
+            int step = (ModifierKeys & Keys.Shift) != 0 ? 288 : 96;
+            int notches = e.Delta / 120;
+            if (notches == 0)
+            {
+                notches = e.Delta > 0 ? 1 : -1;
+            }
+            ScrollLongBy(-notches * step);
         }
 
         private bool HasSelection()
@@ -1623,7 +1938,8 @@ namespace SelectionTranslator
                 return;
             }
 
-            switch (HitHandle(p))
+            // 长图模式没有手柄，别显示缩放光标。
+            switch (_longImage == null ? HitHandle(p) : HandleKind.None)
             {
                 case HandleKind.TopLeft:
                 case HandleKind.BottomRight:
@@ -1659,6 +1975,7 @@ namespace SelectionTranslator
         private void BeginDraw(Point p)
         {
             PushUndo();
+            _drawStart = p;
 
             if (_tool == Tool.Text)
             {
@@ -1727,15 +2044,15 @@ namespace SelectionTranslator
             {
                 FrameShape frame = (FrameShape)_preview;
                 frame.Rect = new RectangleF(
-                    _dragStart.X, _dragStart.Y,
-                    p.X - _dragStart.X, p.Y - _dragStart.Y);
+                    _drawStart.X, _drawStart.Y,
+                    p.X - _drawStart.X, p.Y - _drawStart.Y);
             }
             else if (_preview is FillShape)
             {
                 FillShape fill = (FillShape)_preview;
                 fill.Rect = new RectangleF(
-                    _dragStart.X, _dragStart.Y,
-                    p.X - _dragStart.X, p.Y - _dragStart.Y);
+                    _drawStart.X, _drawStart.Y,
+                    p.X - _drawStart.X, p.Y - _drawStart.Y);
             }
             else if (_preview is StrokeShape)
             {
@@ -1791,11 +2108,12 @@ namespace SelectionTranslator
                 "Microsoft YaHei UI", Math.Max(13f, _stroke * 3f + 8f),
                 FontStyle.Bold, GraphicsUnit.Pixel);
             _textInput.Width = 250;
+            Point where = ToClientPoint(p);
             _textInput.Location = new Point(
                 Math.Max(0, Math.Min(
-                    ClientSize.Width - 250, p.X)),
+                    ClientSize.Width - 250, where.X)),
                 Math.Max(0, Math.Min(
-                    ClientSize.Height - 30, p.Y - 12)));
+                    ClientSize.Height - 30, where.Y - 12)));
             _textInput.KeyDown += OnTextKeyDown;
             _textInput.Leave += OnTextLeave;
             Controls.Add(_textInput);
@@ -1845,7 +2163,9 @@ namespace SelectionTranslator
                 PushUndo();
                 TextShape shape = new TextShape();
                 shape.Text = text;
-                shape.Position = new PointF(location.X, location.Y);
+                Point imageLocation = ToImagePoint(location);
+                shape.Position = new PointF(
+                    imageLocation.X, imageLocation.Y);
                 shape.Size = size;
                 shape.Color = _color;
                 shape.Width = _stroke;
@@ -1915,12 +2235,21 @@ namespace SelectionTranslator
         /// 点工具栏的「滚动截图」后：浮层先藏起来（否则拍到的是自己的
         /// 冻结画面），把焦点还给原来的窗口，然后定时抓选区画面，
         /// 用「画布底部重叠比对」把新滚出来的内容接在下面。
-        /// 结束时把拼好的长图交给预览窗口保存 / 复制 / 贴图。
+        ///
+        /// 期间用一个只画在选区外侧的边框窗提示「正在截哪一块」；
+        /// 结束后浮层原地回来，长图直接当作本次截图继续编辑，
+        /// 和普通截图一样点 ✓ 完成（或先标注再完成）。
         /// </summary>
         private void OnScrollClicked(object sender, EventArgs e)
         {
             if (_scrollInProgress || !HasSelection())
             {
+                return;
+            }
+
+            if (_longImage != null)
+            {
+                // 长图已经是结果了，再滚一次只会截到浮层自己。
                 return;
             }
 
@@ -1946,9 +2275,9 @@ namespace SelectionTranslator
 
             ScrollCaptureSession session = null;
             ScrollCaptureBar bar = null;
+            ScrollCaptureFrame frame = null;
             ScrollKeyWatcher keys = null;
             Bitmap result = null;
-            bool delivered = false;
             try
             {
                 // 浮层藏起来之后被它盖住的页面才会重画，抓到的才是真内容。
@@ -1966,6 +2295,10 @@ namespace SelectionTranslator
                 session = new ScrollCaptureSession(screenRect);
                 bar = new ScrollCaptureBar(
                     screenRect, session.StitchedHeight);
+                // 选区边框：画在选区外侧 3px，所以不会把自己拍进去，
+                // 但用户始终能看清「现在截的是这一块」。
+                frame = new ScrollCaptureFrame(session.Area);
+                frame.Show();
                 keys = new ScrollKeyWatcher();
 
                 ScrollCaptureSession active = session;
@@ -1988,6 +2321,10 @@ namespace SelectionTranslator
 
                 if (!session.Start())
                 {
+                    if (frame != null)
+                    {
+                        frame.Hide();
+                    }
                     Show();
                     PlaceToolbar();
                     _scrollInProgress = false;
@@ -2053,6 +2390,11 @@ namespace SelectionTranslator
                 {
                     keys.Dispose();
                 }
+                if (frame != null)
+                {
+                    frame.Hide();
+                    frame.Dispose();
+                }
                 if (bar != null)
                 {
                     bar.Dispose();
@@ -2070,29 +2412,19 @@ namespace SelectionTranslator
                 return;
             }
 
-            // 长图已经拼好，浮层这次的任务结束了：交给预览窗口。
-            _finished = true;
-            DialogResult = DialogResult.Cancel;
-            Close();
+            // 长图拼好了：浮层原地回来，把长图当成本次截图继续编辑。
+            // 之后的标注 / 保存 / 复制 / 贴图 / 翻译 / ✓ 完成全都是
+            // 普通截图那套逻辑，用户不用学第二套界面。
+            EnterLongMode(result);
 
-            try
+            if (!IsDisposed && !Visible)
             {
-                LongShotForm preview = new LongShotForm(result);
-                delivered = true;
-                preview.Show();
-                preview.Activate();
+                Show();
             }
-            catch (Exception ex)
-            {
-                Log.Error("打开长截图预览失败", ex);
-            }
-            finally
-            {
-                if (!delivered)
-                {
-                    result.Dispose();
-                }
-            }
+            Activate();
+            Focus();
+            PlaceToolbar();
+            Invalidate();
         }
 
         private IconButton FindButton(IconKind kind)
@@ -2242,6 +2574,26 @@ namespace SelectionTranslator
                     _tool = (Tool)(e.KeyCode - Keys.D1 + 1);
                     SyncToolButtons();
                 }
+                else if (_longImage != null)
+                {
+                    // 长图模式：键盘也能翻页，PgDn 直达底部更顺手。
+                    if (e.KeyCode == Keys.PageDown)
+                    {
+                        ScrollLongBy(_selection.Height - 40);
+                    }
+                    else if (e.KeyCode == Keys.PageUp)
+                    {
+                        ScrollLongBy(-(_selection.Height - 40));
+                    }
+                    else if (e.KeyCode == Keys.End)
+                    {
+                        ScrollLongBy(MaxLongScroll);
+                    }
+                    else if (e.KeyCode == Keys.Home)
+                    {
+                        ScrollLongBy(-MaxLongScroll);
+                    }
+                }
             }
         }
 
@@ -2347,6 +2699,19 @@ namespace SelectionTranslator
         /// <summary>只裁切原屏快照，不带任何标注，供图片翻译使用。</summary>
         private Bitmap BuildRawResult()
         {
+            if (_longImage != null)
+            {
+                Bitmap copy = new Bitmap(
+                    _longImage.Width, _longImage.Height,
+                    PixelFormat.Format32bppArgb);
+                using (Graphics g = Graphics.FromImage(copy))
+                {
+                    g.CompositingMode = CompositingMode.SourceCopy;
+                    g.DrawImageUnscaled(_longImage, 0, 0);
+                }
+                return copy;
+            }
+
             Rectangle r = Rectangle.Intersect(
                 _selection,
                 new Rectangle(0, 0, _screen.Width, _screen.Height));
@@ -2370,6 +2735,26 @@ namespace SelectionTranslator
 
         private Bitmap BuildResult()
         {
+            if (_longImage != null)
+            {
+                Bitmap longShot = new Bitmap(
+                    _longImage.Width, _longImage.Height,
+                    PixelFormat.Format32bppArgb);
+                using (Graphics g = Graphics.FromImage(longShot))
+                {
+                    g.CompositingMode = CompositingMode.SourceCopy;
+                    g.DrawImageUnscaled(_longImage, 0, 0);
+                    g.CompositingMode = CompositingMode.SourceOver;
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    // 标注本来就存在长图坐标里，这里不需要任何平移。
+                    for (int i = 0; i < _shapes.Count; i++)
+                    {
+                        _shapes[i].Draw(g, _longImage);
+                    }
+                }
+                return longShot;
+            }
+
             Rectangle r = Rectangle.Intersect(
                 _selection,
                 new Rectangle(0, 0, _screen.Width, _screen.Height));
@@ -2484,6 +2869,11 @@ namespace SelectionTranslator
             {
                 _dimmed.Dispose();
                 _dimmed = null;
+            }
+            if (_longImage != null)
+            {
+                _longImage.Dispose();
+                _longImage = null;
             }
             if (_screen != null)
             {

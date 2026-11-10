@@ -720,7 +720,7 @@ namespace SelectionTranslator
 
             TextRenderer.DrawText(
                 g,
-                _status + " · Esc 取消 / Enter 完成",
+                _status + " · Esc 取消 / Enter 结束并继续编辑",
                 DarkUi.FontTiny,
                 new Point(16, 40),
                 DarkUi.TextDim,
@@ -895,354 +895,110 @@ namespace SelectionTranslator
     }
 
     /// <summary>
-    /// 长截图预览：滚轮上下看整张图，右键/按钮保存或复制。
-    /// 滚动截图结束后由浮层打开，位图所有权归本窗口。
+    /// 滚动截图期间的选区边框。
+    ///
+    /// 只画在选区**外侧**的一圈亮边：既让用户随时看清正在截哪一块，
+    /// 又保证边框自己永远进不了拼出来的长图（抓屏只抓选区内部）。
+    /// 窗口不激活、不吃鼠标，页面的滚轮照样能滚。
     /// </summary>
-    internal sealed class LongShotForm : ChromeForm
+    internal sealed class ScrollCaptureFrame : Form
     {
-        private readonly Bitmap _image;
-        private readonly LongShotCanvas _canvas;
-        private readonly FlatButton _saveButton;
-        private readonly FlatButton _copyButton;
-        private readonly FlatButton _pinButton;
-        private readonly FlatButton _closeButton;
-        private readonly GlyphButton _closeGlyph;
-        private readonly string _title;
+        private const int Thickness = 4;
 
-        public LongShotForm(Bitmap image)
+        private readonly Rectangle _area;
+
+        public ScrollCaptureFrame(Rectangle area)
         {
-            _image = image;
-            _title = "长截图 · " + image.Width + " × " + image.Height;
+            _area = area;
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.Manual;
+            ShowInTaskbar = false;
+            TopMost = true;
+            BackColor = Color.FromArgb(0, 122, 255);
+            Bounds = new Rectangle(
+                area.Left - Thickness,
+                area.Top - Thickness,
+                area.Width + Thickness * 2,
+                area.Height + Thickness * 2);
+            SetStyle(
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.UserPaint, true);
+            DoubleBuffered = true;
+        }
 
-            Text = "长截图 - " + AppInfo.Name;
-            ClientSize = new Size(760, 620);
-            MinimumSize = new Size(520, 360);
-            StartPosition = FormStartPosition.CenterScreen;
-            KeyPreview = true;
+        /// <summary>边框框住的屏幕矩形。</summary>
+        public Rectangle Area
+        {
+            get { return _area; }
+        }
 
-            _canvas = new LongShotCanvas();
-            _canvas.SetImage(image);
-            Controls.Add(_canvas);
+        protected override bool ShowWithoutActivation
+        {
+            get { return true; }
+        }
 
-            _saveButton = MakeButton("保存 PNG", OnSave);
-            _copyButton = MakeButton("复制", OnCopy);
-            _pinButton = MakeButton("贴到桌面", OnPin);
-            _closeButton = MakeButton("关闭", delegate
+        protected override CreateParams CreateParams
+        {
+            get
             {
-                Close();
-            });
-
-            _closeGlyph = new GlyphButton(
-                GlyphKind.Close, DarkUi.Window, 40, 30);
-            _closeGlyph.Click += delegate { Close(); };
-            Controls.Add(_closeGlyph);
-
-            LayoutChildren();
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= NativeMethods.WS_EX_NOACTIVATE |
+                    NativeMethods.WS_EX_TOOLWINDOW |
+                    NativeMethods.WS_EX_TOPMOST |
+                    NativeMethods.WS_EX_TRANSPARENT;
+                return cp;
+            }
         }
 
-        protected override int HeaderHeight
+        protected override void OnHandleCreated(EventArgs e)
         {
-            get { return 46; }
+            base.OnHandleCreated(e);
+            ApplyRing();
         }
 
-        private FlatButton MakeButton(
-            string text, EventHandler onClick)
+        protected override void OnSizeChanged(EventArgs e)
         {
-            FlatButton button = new FlatButton();
-            button.Text = text;
-            button.Size = new Size(96, 34);
-            button.SurfaceColor = DarkUi.Surface;
-            button.Click += onClick;
-            Controls.Add(button);
-            return button;
+            base.OnSizeChanged(e);
+            ApplyRing();
         }
 
-        protected override void OnResize(EventArgs e)
+        /// <summary>把窗口裁成「回」字形，中间那块永远不属于这个窗口。</summary>
+        private void ApplyRing()
         {
-            base.OnResize(e);
-            LayoutChildren();
-        }
-
-        private void LayoutChildren()
-        {
-            // 基类构造函数里设置 ClientSize / MinimumSize 就会触发 OnResize，
-            // 那时候子控件还没建出来，直接返回。
-            if (_canvas == null || _saveButton == null ||
-                _closeGlyph == null)
+            if (Width <= 0 || Height <= 0)
             {
                 return;
             }
 
-            const int footer = 54;
-            _canvas.SetBounds(
-                0, HeaderHeight, ClientSize.Width,
-                Math.Max(40, ClientSize.Height - HeaderHeight - footer));
-
-            int y = ClientSize.Height - footer + 10;
-            _saveButton.Location = new Point(16, y);
-            _copyButton.Location = new Point(118, y);
-            _pinButton.Location = new Point(220, y);
-            _closeButton.Location = new Point(
-                Math.Max(16, ClientSize.Width - 112), y);
-            _closeGlyph.Location = new Point(
-                ClientSize.Width - 44, 8);
+            Region previous = Region;
+            using (GraphicsPath path = new GraphicsPath())
+            {
+                path.AddRectangle(new Rectangle(0, 0, Width, Height));
+                int innerWidth = Width - Thickness * 2;
+                int innerHeight = Height - Thickness * 2;
+                if (innerWidth > 0 && innerHeight > 0)
+                {
+                    path.AddRectangle(new Rectangle(
+                        Thickness, Thickness, innerWidth, innerHeight));
+                }
+                Region = new Region(path);
+            }
+            if (previous != null)
+            {
+                previous.Dispose();
+            }
         }
 
         protected override void OnPaint(PaintEventArgs e)
         {
-            base.OnPaint(e);
             Graphics g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.Clear(DarkUi.Window);
-
-            using (Pen pen = new Pen(DarkUi.BorderSoft, 1f))
+            g.Clear(BackColor);
+            // 外沿压一条深色线：白底页面上也能一眼看见边界。
+            using (Pen pen = new Pen(Color.FromArgb(20, 26, 38), 1f))
             {
-                g.DrawLine(pen, 0, HeaderHeight - 1,
-                    ClientSize.Width, HeaderHeight - 1);
-                g.DrawLine(pen, 0,
-                    ClientSize.Height - 54, ClientSize.Width,
-                    ClientSize.Height - 54);
-            }
-
-            TextRenderer.DrawText(
-                g, _title, DarkUi.FontTitle, new Point(16, 12),
-                DarkUi.Text, TextFormatFlags.Left |
-                    TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(
-                g,
-                "滚轮上下查看 · Ctrl+滚轮缩放 · Esc 关闭",
-                DarkUi.FontTiny,
-                new Point(ClientSize.Width - 400, 18),
-                DarkUi.TextFaint,
-                TextFormatFlags.Left | TextFormatFlags.NoPadding);
-        }
-
-        protected override void OnMouseDown(MouseEventArgs e)
-        {
-            if (e.Button == MouseButtons.Left && e.Y < HeaderHeight)
-            {
-                BeginWindowDrag();
-            }
-            base.OnMouseDown(e);
-        }
-
-        protected override void OnMouseWheel(MouseEventArgs e)
-        {
-            if ((ModifierKeys & Keys.Control) != 0)
-            {
-                float factor = e.Delta > 0 ? 1.1f : 1f / 1.1f;
-                _canvas.Zoom(factor);
-                return;
-            }
-            base.OnMouseWheel(e);
-        }
-
-        protected override void OnKeyDown(KeyEventArgs e)
-        {
-            if (e.KeyCode == Keys.Escape)
-            {
-                Close();
-                return;
-            }
-            if (e.Control && e.KeyCode == Keys.S)
-            {
-                OnSave(this, EventArgs.Empty);
-                return;
-            }
-            if (e.Control && e.KeyCode == Keys.C)
-            {
-                OnCopy(this, EventArgs.Empty);
-                return;
-            }
-            base.OnKeyDown(e);
-        }
-
-        private void OnSave(object sender, EventArgs e)
-        {
-            using (SaveFileDialog dialog = new SaveFileDialog())
-            {
-                dialog.Title = "保存长截图";
-                dialog.Filter = "PNG 图片 (*.png)|*.png";
-                dialog.DefaultExt = "png";
-                dialog.FileName = "长截图_" +
-                    DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".png";
-                if (dialog.ShowDialog(this) != DialogResult.OK)
-                {
-                    return;
-                }
-                try
-                {
-                    _image.Save(dialog.FileName, ImageFormat.Png);
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show(
-                        this,
-                        "保存失败：" + ex.Message,
-                        "保存长截图",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Warning);
-                }
-            }
-        }
-
-        private void OnCopy(object sender, EventArgs e)
-        {
-            try
-            {
-                ClipboardPasteFiles.WriteBitmap(
-                    _image, ClipboardWriteMode.Auto);
-            }
-            catch (Exception ex)
-            {
-                Log.Error("复制长截图失败", ex);
-            }
-        }
-
-        private void OnPin(object sender, EventArgs e)
-        {
-            try
-            {
-                Bitmap copy = new Bitmap(_image);
-                PinnedImageForm pin = new PinnedImageForm(
-                    copy, Point.Empty);
-                pin.Show();
-                Close();
-            }
-            catch (Exception ex)
-            {
-                Log.Error("贴长截图失败", ex);
-            }
-        }
-
-        protected override void OnFormClosing(FormClosingEventArgs e)
-        {
-            base.OnFormClosing(e);
-            if (e.Cancel)
-            {
-                return;
-            }
-            _canvas.SetImage(null);
-            _image.Dispose();
-        }
-
-        /// <summary>
-        /// 预览画布：按宽度自适应缩放，纵向用 ScrollableControl 自带滚动。
-        /// </summary>
-        private sealed class LongShotCanvas : ScrollableControl
-        {
-            private Bitmap _image;
-            private float _scale = 1f;
-            // 默认按窗口宽度自适应；用户手动缩放后就不再跟着窗口变。
-            private bool _autoFit = true;
-
-            public LongShotCanvas()
-            {
-                SetStyle(
-                    ControlStyles.AllPaintingInWmPaint |
-                    ControlStyles.OptimizedDoubleBuffer |
-                    ControlStyles.UserPaint |
-                    ControlStyles.ResizeRedraw, true);
-                BackColor = DarkUi.Sunken;
-                AutoScroll = true;
-            }
-
-            public void SetImage(Bitmap image)
-            {
-                _image = image;
-                _autoFit = true;
-                FitWidth();
-            }
-
-            public void FitWidth()
-            {
-                if (_image == null)
-                {
-                    AutoScrollMinSize = Size.Empty;
-                    Invalidate();
-                    return;
-                }
-                float width = Math.Max(80f, ClientSize.Width - 32f);
-                float scale = width / _image.Width;
-                if (scale > 1f)
-                {
-                    scale = 1f;
-                }
-                if (scale < 0.02f)
-                {
-                    scale = 0.02f;
-                }
-                _scale = scale;
-                ApplySize();
-            }
-
-            public void Zoom(float factor)
-            {
-                if (_image == null)
-                {
-                    return;
-                }
-                _autoFit = false;
-                float next = _scale * factor;
-                if (next < 0.05f)
-                {
-                    next = 0.05f;
-                }
-                if (next > 4f)
-                {
-                    next = 4f;
-                }
-                _scale = next;
-                ApplySize();
-            }
-
-            private void ApplySize()
-            {
-                int w = (int)Math.Round(_image.Width * _scale);
-                int h = (int)Math.Round(_image.Height * _scale);
-                AutoScrollMinSize = new Size(w + 32, h + 32);
-                Invalidate();
-            }
-
-            protected override void OnResize(EventArgs e)
-            {
-                base.OnResize(e);
-                // 没手动缩放过就一直跟着窗口宽度走。
-                if (_image != null && _autoFit)
-                {
-                    FitWidth();
-                }
-            }
-
-            protected override void OnPaint(PaintEventArgs e)
-            {
-                Graphics g = e.Graphics;
-                g.Clear(DarkUi.Sunken);
-                if (_image == null)
-                {
-                    return;
-                }
-
-                g.InterpolationMode = _scale < 1f
-                    ? InterpolationMode.HighQualityBicubic
-                    : InterpolationMode.NearestNeighbor;
-                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-
-                int w = (int)Math.Round(_image.Width * _scale);
-                int h = (int)Math.Round(_image.Height * _scale);
-                int x = Math.Max(16,
-                    (ClientSize.Width - w) / 2);
-                int y = 16 + AutoScrollPosition.Y;
-
-                Rectangle target = new Rectangle(x, y, w, h);
-                using (SolidBrush shadow = new SolidBrush(
-                    Color.FromArgb(90, 0, 0, 0)))
-                {
-                    g.FillRectangle(shadow,
-                        target.X + 4, target.Y + 4,
-                        target.Width, target.Height);
-                }
-                g.DrawImage(_image, target);
+                g.DrawRectangle(
+                    pen, 0, 0, Width - 1, Height - 1);
             }
         }
     }

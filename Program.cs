@@ -106,6 +106,12 @@ namespace SelectionTranslator
                 return;
             }
 
+            if (Array.IndexOf(args, "--scrollframeprobe") >= 0)
+            {
+                SelfTest.RunScrollFrameProbe();
+                return;
+            }
+
             if (Array.IndexOf(args, "--captureuiprobe") >= 0)
             {
                 SelfTest.RunCaptureUiProbe();

@@ -3100,45 +3100,89 @@ namespace SelectionTranslator
                 overlay.DebugStartScroll();
                 driver.Stop();
 
-                PumpMessages(600);
-                LongShotForm longShot = null;
-                FormCollection forms = Application.OpenForms;
-                for (int i = 0; i < forms.Count; i++)
+                PumpMessages(700);
+
+                bool overlayAlive = overlay != null &&
+                    !overlay.IsDisposed && overlay.Visible;
+                Check(output, ref ok, "scroll flow keeps overlay open",
+                    overlayAlive.ToString(), "True");
+                Check(output, ref ok, "scroll flow enters long mode",
+                    (overlay != null && overlay.InLongMode).ToString(),
+                    "True");
+                if (overlay == null || !overlayAlive || !overlay.InLongMode)
                 {
-                    LongShotForm candidate = forms[i] as LongShotForm;
-                    if (candidate != null)
+                    return;
+                }
+
+                Size longSize = overlay.LongImageSize;
+                output.AppendLine("longImage=" + longSize.Width +
+                    "x" + longSize.Height);
+                Check(output, ref ok, "scroll flow long image width",
+                    longSize.Width.ToString(), area.Width.ToString());
+                Check(output, ref ok, "scroll flow long image grew",
+                    (longSize.Height > area.Height).ToString(), "True");
+
+                // 滚轮 / 翻页：滚轮一格 96px（不足一屏时按余量封顶）。
+                int before = overlay.LongScroll;
+                int range = overlay.LongScrollRange;
+                output.AppendLine("scrollRange=" + range);
+                int expectWheel = Math.Min(96, Math.Max(0, range - before));
+                overlay.DebugWheel(-120);
+                Check(output, ref ok, "scroll flow wheel scrolls",
+                    (overlay.LongScroll - before).ToString(),
+                    expectWheel.ToString());
+                overlay.DebugWheel(120);
+                Check(output, ref ok, "scroll flow wheel scrolls back",
+                    overlay.LongScroll.ToString(), before.ToString());
+
+                // 导出必须是整张长图（不是取景框那么高），
+                // 而且第 y 行的颜色必须等于文档第 y 行——被取景框裁掉
+                // 或整体错位都会当场失败。
+                using (Bitmap exported = overlay.DebugBuildResult())
+                {
+                    Check(output, ref ok, "scroll flow export size",
+                        exported.Width + "x" + exported.Height,
+                        longSize.Width + "x" + longSize.Height);
+
+                    int[] probes = new int[]
                     {
-                        longShot = candidate;
-                        break;
+                        0, longSize.Height / 3,
+                        area.Height, longSize.Height - 1
+                    };
+                    for (int i = 0; i < probes.Length; i++)
+                    {
+                        int row = probes[i];
+                        Color want = ScrollProbeColor(row);
+                        Color got = exported.GetPixel(
+                            Math.Min(30, exported.Width - 1), row);
+                        Check(output, ref ok,
+                            "scroll flow export row " + row,
+                            got.R + "," + got.G + "," + got.B,
+                            want.R + "," + want.G + "," + want.B);
+                        // 最左一列也不能被选区边框染上颜色。
+                        Color edge = exported.GetPixel(0, row);
+                        Check(output, ref ok,
+                            "scroll flow export edge " + row,
+                            edge.R + "," + edge.G + "," + edge.B,
+                            want.R + "," + want.G + "," + want.B);
                     }
                 }
 
-                Check(output, ref ok, "scroll flow opens preview",
-                    (longShot != null).ToString(), "True");
-                if (longShot != null)
+                // 浮层里现在应该是「长图 + 工具栏」的正常编辑状态。
+                overlay.Activate();
+                PumpMessages(400);
+                using (Bitmap shot = new Bitmap(
+                    overlay.Width, overlay.Height))
                 {
-                    output.AppendLine("previewBounds=" + longShot.Bounds);
-                    Check(output, ref ok, "scroll flow overlay closed",
-                        (overlay == null || overlay.IsDisposed ||
-                            !overlay.Visible).ToString(), "True");
-                    longShot.Activate();
-                    PumpMessages(400);
-                    // 用 DrawToBitmap 抓窗口自身：探针进程在后台，
-                    // 截图可能被别的窗口挡住，但窗口内容照样要能画出来。
-                    using (Bitmap shot = new Bitmap(
-                        longShot.Width, longShot.Height))
-                    {
-                        longShot.DrawToBitmap(
-                            shot,
-                            new Rectangle(0, 0,
-                                longShot.Width, longShot.Height));
-                        shot.Save(
-                            Path.Combine(
-                                ConfigStore.DataDirectory,
-                                "ui-scrollflow.png"),
-                            ImageFormat.Png);
-                    }
-                    longShot.Close();
+                    overlay.DrawToBitmap(
+                        shot,
+                        new Rectangle(0, 0,
+                            overlay.Width, overlay.Height));
+                    shot.Save(
+                        Path.Combine(
+                            ConfigStore.DataDirectory,
+                            "ui-scrollflow.png"),
+                        ImageFormat.Png);
                 }
             }
             catch (Exception ex)
@@ -3170,6 +3214,149 @@ namespace SelectionTranslator
                     Path.Combine(
                         ConfigStore.DataDirectory,
                         "scrollflowprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        /// <summary>
+        /// 滚动截图期间的「选区边框」：确认边框真的画出来了，
+        /// 而且一像素都不许压进选区内部（否则会被拼进长图）。
+        /// </summary>
+        public static void RunScrollFrameProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            Form target = null;
+            ScrollCaptureFrame frame = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                target = new Form();
+                target.FormBorderStyle = FormBorderStyle.None;
+                target.StartPosition = FormStartPosition.Manual;
+                target.BackColor = Color.White;
+                target.Bounds = new Rectangle(320, 260, 520, 380);
+                // 画成「一页文档」的样子，截图里能直接看出边框框的是正文。
+                target.Paint += delegate(object sender, PaintEventArgs e)
+                {
+                    Graphics g = e.Graphics;
+                    using (Font title = new Font(
+                        "Microsoft YaHei UI", 20f, FontStyle.Bold))
+                    using (Font body = new Font(
+                        "Microsoft YaHei UI", 12f))
+                    using (SolidBrush ink = new SolidBrush(
+                        Color.FromArgb(32, 36, 44)))
+                    using (SolidBrush soft = new SolidBrush(
+                        Color.FromArgb(120, 128, 140)))
+                    {
+                        g.DrawString("滚动截图选区", title, ink, 34f, 26f);
+                        for (int i = 0; i < 12; i++)
+                        {
+                            g.DrawString(
+                                "第 " + (i + 1) +
+                                " 行正文：蓝框标出的就是正在截的区域。",
+                                body, i % 4 == 0 ? ink : soft,
+                                34f, 92f + i * 22f);
+                        }
+                    }
+                };
+                target.Show();
+                PumpMessages(300);
+
+                Rectangle area = target.RectangleToScreen(
+                    target.ClientRectangle);
+                output.AppendLine("area=" + area);
+
+                frame = new ScrollCaptureFrame(area);
+                frame.Show();
+                PumpMessages(450);
+
+                Check(output, ref ok, "frame visible",
+                    frame.Visible.ToString(), "True");
+                Check(output, ref ok, "frame keeps capture area",
+                    frame.Area.ToString(), area.ToString());
+
+                const int pad = 8;
+                Rectangle shotRect = new Rectangle(
+                    area.Left - pad, area.Top - pad,
+                    area.Width + pad * 2, area.Height + pad * 2);
+                using (Bitmap shot = Capture(shotRect))
+                {
+                    if (shot == null)
+                    {
+                        Check(output, ref ok, "frame screenshot",
+                            "null", "bitmap");
+                    }
+                    else
+                    {
+                        shot.Save(
+                            Path.Combine(
+                                ConfigStore.DataDirectory,
+                                "ui-scrollframe.png"),
+                            ImageFormat.Png);
+
+                        // 选区内四边 + 中间必须还是白底：边框没压进来。
+                        Point[] inside = new Point[]
+                        {
+                            new Point(pad, pad),
+                            new Point(pad + area.Width - 1, pad),
+                            new Point(pad, pad + area.Height - 1),
+                            new Point(pad + area.Width - 1,
+                                pad + area.Height - 1),
+                            new Point(pad + area.Width / 2, pad),
+                            new Point(pad, pad + area.Height / 2)
+                        };
+                        int dirty = 0;
+                        for (int i = 0; i < inside.Length; i++)
+                        {
+                            Color c = shot.GetPixel(
+                                inside[i].X, inside[i].Y);
+                            if (c.R < 240 || c.G < 240 || c.B < 240)
+                            {
+                                dirty++;
+                                output.AppendLine(
+                                    "  inner " + inside[i] + " = " +
+                                    c.R + "," + c.G + "," + c.B);
+                            }
+                        }
+                        Check(output, ref ok, "frame outside the area",
+                            dirty.ToString(), "0");
+
+                        // 选区外 2px 处必须是我们画的蓝色边框。
+                        Color ring = shot.GetPixel(pad - 2, pad + 20);
+                        output.AppendLine("ring=" + ring.R + "," +
+                            ring.G + "," + ring.B);
+                        Check(output, ref ok, "frame border drawn",
+                            (ring.B > 150 && ring.R < 120).ToString(),
+                            "True");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                if (frame != null)
+                {
+                    frame.Hide();
+                    frame.Dispose();
+                }
+                if (target != null)
+                {
+                    target.Close();
+                    target.Dispose();
+                }
+                output.AppendLine(
+                    ok ? "RESULT: OK" : "RESULT: FAILED");
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory,
+                        "scrollframeprobe.txt"),
                     output.ToString(), Encoding.UTF8);
                 Environment.ExitCode = ok ? 0 : 1;
             }
@@ -3290,57 +3477,91 @@ namespace SelectionTranslator
         {
             StringBuilder output = new StringBuilder();
             bool ok = true;
-            LongShotForm form = null;
+            ScreenshotCaptureForm form = null;
             Bitmap tall = null;
             try
             {
                 Application.EnableVisualStyles();
                 tall = new Bitmap(
-                    900, 2400, PixelFormat.Format32bppArgb);
+                    760, 2400, PixelFormat.Format32bppArgb);
                 using (Graphics g = Graphics.FromImage(tall))
                 {
                     g.Clear(Color.White);
                     using (Font title = new Font(
-                        "Microsoft YaHei UI", 28f, FontStyle.Bold))
+                        "Microsoft YaHei UI", 30f, FontStyle.Bold))
                     using (Font body = new Font(
                         "Microsoft YaHei UI", 15f))
                     using (SolidBrush ink = new SolidBrush(
                         Color.FromArgb(32, 36, 44)))
                     using (SolidBrush accent = new SolidBrush(
                         Color.FromArgb(0, 122, 255)))
+                    using (SolidBrush rule = new SolidBrush(
+                        Color.FromArgb(226, 232, 240)))
                     {
-                        g.DrawString("滚动截图预览", title, ink,
-                            40f, 30f);
-                        for (int i = 0; i < 32; i++)
+                        g.DrawString("滚动截图结果：直接在这里标注", title,
+                            ink, 40f, 34f);
+                        g.FillRectangle(rule, 40, 96, 680, 1);
+                        for (int i = 0; i < 34; i++)
                         {
                             g.DrawString(
-                                "第 " + (i + 1) +
-                                " 段：拨动滚轮把整页内容接成一张长图。",
-                                body, i % 6 == 0 ? accent : ink,
-                                40f, 120f + i * 68f);
+                                (i + 1) + ".  滚轮把页面滚起来，" +
+                                "浮层会把新内容接在下面，成一张长图。",
+                                body, i % 7 == 0 ? accent : ink,
+                                40f, 130f + i * 64f);
                         }
                     }
                 }
 
-                form = new LongShotForm(tall);
-                tall = null;
+                form = new ScreenshotCaptureForm();
                 form.Show();
-                form.Activate();
-                PumpMessages(1100);
+                PumpMessages(320);
+                form.DebugSelect(new Rectangle(80, 80, 760, 420));
+                form.EnterLongMode(tall);
+                tall = null;
+                // 在「长图坐标」上加一个矩形标注：导出时必须落在同一位置，
+                // 说明标注坐标系和长图是同一套（不会随滚动漂移）。
+                form.DebugAddFrame(
+                    new Rectangle(60, 150, 640, 250),
+                    Color.FromArgb(230, 40, 60));
+                PumpMessages(320);
 
-                Check(output, ref ok, "scroll preview visible",
-                    form.Visible.ToString(), "True");
-                Rectangle bounds = form.Bounds;
-                using (Bitmap shot = Capture(bounds))
+                Check(output, ref ok, "scroll preview in long mode",
+                    form.InLongMode.ToString(), "True");
+                Size size = form.LongImageSize;
+                Check(output, ref ok, "scroll preview image size",
+                    size.Width + "x" + size.Height, "760x2400");
+                output.AppendLine("viewport=" + form.CaptureArea);
+
+                using (Bitmap exported = form.DebugBuildResult())
                 {
-                    if (shot != null)
-                    {
-                        shot.Save(
-                            Path.Combine(
-                                ConfigStore.DataDirectory,
-                                "ui-scrollpreview.png"),
-                            ImageFormat.Png);
-                    }
+                    Check(output, ref ok, "scroll preview export size",
+                        exported.Width + "x" + exported.Height,
+                        size.Width + "x" + size.Height);
+                    Color stroke = exported.GetPixel(380, 151);
+                    output.AppendLine("stroke=" + stroke.R + "," +
+                        stroke.G + "," + stroke.B);
+                    Check(output, ref ok, "scroll preview annotation",
+                        (stroke.R > 150 && stroke.G < 120).ToString(),
+                        "True");
+                    // 标注框以外还是白纸。
+                    Color blank = exported.GetPixel(380, 600);
+                    Check(output, ref ok, "scroll preview keeps image",
+                        (blank.R > 240 && blank.G > 240 &&
+                            blank.B > 240).ToString(), "True");
+                }
+
+                using (Bitmap shot = new Bitmap(
+                    form.Width, form.Height))
+                {
+                    form.DrawToBitmap(
+                        shot,
+                        new Rectangle(0, 0,
+                            form.Width, form.Height));
+                    shot.Save(
+                        Path.Combine(
+                            ConfigStore.DataDirectory,
+                            "ui-scrollpreview.png"),
+                        ImageFormat.Png);
                 }
             }
             catch (Exception ex)
