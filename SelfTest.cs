@@ -1152,6 +1152,134 @@ namespace SelectionTranslator
                     (bareItem.Name == null).ToString(),
                     "0/False");
 
+                // ---- 文件秒搜：纯函数部分 ----
+                Check(output, ref ok, "filesearch classify doc",
+                    FileKindLogic.Classify("工作报告.docx", false)
+                        .ToString(), "Document");
+                Check(output, ref ok, "filesearch classify image",
+                    FileKindLogic.Classify("截图.PNG", false)
+                        .ToString(), "Image");
+                Check(output, ref ok, "filesearch classify archive",
+                    FileKindLogic.Classify("备份.7z", false)
+                        .ToString(), "Archive");
+                Check(output, ref ok, "filesearch classify app",
+                    FileKindLogic.Classify("setup.msi", false)
+                        .ToString(), "Application");
+                Check(output, ref ok, "filesearch classify video",
+                    FileKindLogic.Classify("片段.mp4", false)
+                        .ToString(), "Video");
+                Check(output, ref ok, "filesearch classify audio",
+                    FileKindLogic.Classify("song.mp3", false)
+                        .ToString(), "Audio");
+                Check(output, ref ok, "filesearch classify no ext",
+                    FileKindLogic.Classify("Makefile", false)
+                        .ToString(), "Other");
+                Check(output, ref ok, "filesearch classify folder",
+                    FileKindLogic.Classify("项目", true)
+                        .ToString(), "Folder");
+                Check(output, ref ok, "filesearch extension of dotfile",
+                    "[" + FileKindLogic.ExtensionOf(".gitignore") + "]",
+                    "[]");
+                Check(output, ref ok, "filesearch extension of double",
+                    FileKindLogic.ExtensionOf("a.tar.gz"), "gz");
+                Check(output, ref ok, "filesearch size bytes",
+                    FileKindLogic.SizeText(512, FileKind.Other), "512 B");
+                Check(output, ref ok, "filesearch size kb",
+                    FileKindLogic.SizeText(2048, FileKind.Other), "2 KB");
+                Check(output, ref ok, "filesearch size mb",
+                    FileKindLogic.SizeText(1572864, FileKind.Other),
+                    "1.5 MB");
+                Check(output, ref ok, "filesearch size gb",
+                    FileKindLogic.SizeText(1610612736L, FileKind.Other),
+                    "1.50 GB");
+                Check(output, ref ok, "filesearch size folder hidden",
+                    "[" + FileKindLogic.SizeText(4096,
+                        FileKind.Folder) + "]", "[]");
+                Check(output, ref ok, "filesearch date zero",
+                    "[" + FileKindLogic.DateText(0) + "]", "[]");
+                Check(output, ref ok, "filesearch split terms",
+                    FileQueryEngine.SplitTerms("  报告   txt ").Count
+                        .ToString(), "2");
+                Check(output, ref ok, "filesearch split terms cap",
+                    FileQueryEngine.SplitTerms("a b c d e f g h").Count
+                        .ToString(), "6");
+                Check(output, ref ok, "filesearch wildcard suffix",
+                    FileQueryEngine.WildcardMatch(
+                        "报告.docx", "*.docx").ToString(), "True");
+                Check(output, ref ok, "filesearch wildcard single",
+                    FileQueryEngine.WildcardMatch("a.txt", "?.txt")
+                        .ToString(), "True");
+                Check(output, ref ok, "filesearch wildcard single miss",
+                    FileQueryEngine.WildcardMatch("ab.txt", "?.txt")
+                        .ToString(), "False");
+                Check(output, ref ok, "filesearch wildcard middle",
+                    FileQueryEngine.WildcardMatch(
+                        "季度汇报-v2.docx", "*汇报*v2*").ToString(),
+                    "True");
+                Check(output, ref ok, "filesearch wildcard case",
+                    FileQueryEngine.WildcardMatch("README.MD", "*.md")
+                        .ToString(), "True");
+                Check(output, ref ok, "filesearch parent path",
+                    FileResultList.ParentPath(
+                        @"C:\Users\me\Documents\a.docx", "a.docx"),
+                    @"C:\Users\me\Documents");
+                Check(output, ref ok, "filesearch parent path root",
+                    FileResultList.ParentPath(@"D:\a.docx", "a.docx"),
+                    @"D:\");
+                Check(output, ref ok, "filesearch scope text empty",
+                    FileSearchForm.ScopeText(
+                        new System.Collections.Generic.List<string>()),
+                    "此电脑");
+                Check(output, ref ok, "filesearch scope text drive",
+                    FileSearchForm.ScopeText(
+                        new System.Collections.Generic.List<string>
+                        {
+                            @"D:\"
+                        }), "D:");
+                Check(output, ref ok, "filesearch scope text multi",
+                    FileSearchForm.ScopeText(
+                        new System.Collections.Generic.List<string>
+                        {
+                            @"C:\", @"D:\"
+                        }), "2 个位置");
+                Check(output, ref ok, "filesearch short root folder",
+                    FileSearchForm.ShortRoot(
+                        @"D:\desktop\selection-translator"),
+                    "selection-translator");
+                Check(output, ref ok, "filesearch skip noise name",
+                    FileScanner.ShouldSkipDirectory("node_modules")
+                        .ToString(), "True");
+                Check(output, ref ok, "filesearch skip normal name",
+                    FileScanner.ShouldSkipDirectory("Documents")
+                        .ToString(), "False");
+                Check(output, ref ok, "filesearch skip under windows",
+                    FileScanner.IsUnderSkippedRoot(
+                        Path.Combine(Environment.GetFolderPath(
+                            Environment.SpecialFolder.Windows),
+                            "System32")).ToString(), "True");
+                Check(output, ref ok, "filesearch skip boundary",
+                    FileScanner.IsUnderSkippedRoot(
+                        Environment.GetFolderPath(
+                            Environment.SpecialFolder.Windows) + "Apps")
+                        .ToString(), "False");
+                Check(output, ref ok, "filesearch full path root",
+                    BuildPathProbe(@"C:\", "a.txt"), @"C:\a.txt");
+                Check(output, ref ok, "filesearch full path nested",
+                    BuildPathProbe(@"D:\a", "b.txt"), @"D:\a\b.txt");
+                Check(output, ref ok, "filesearch count format",
+                    FileSearchForm.FormatCount(1234567), "1,234,567");
+                Check(output, ref ok, "filesearch ascii letter none",
+                    FileQueryEngine.HasAsciiLetter("报告").ToString(),
+                    "False");
+                Check(output, ref ok, "filesearch ascii letter yes",
+                    FileQueryEngine.HasAsciiLetter("报告v2").ToString(),
+                    "True");
+                Check(output, ref ok, "filesearch suffix pattern",
+                    FileQueryEngine.SuffixPattern("*.docx"), ".docx");
+                Check(output, ref ok, "filesearch suffix pattern complex",
+                    "[" + (FileQueryEngine.SuffixPattern("*报告*") ??
+                        "") + "]", "[]");
+
                 // 下载目录：等于系统默认时不落盘（换机器还能用），
                 // 自定义目录原样保存。
                 string defaultDir = SoftwareDownloader.DefaultDirectory();
@@ -4414,6 +4542,725 @@ namespace SelectionTranslator
         /// （腾讯源才有版本号，360 行分类为空时读 VersionText.Length 会空引用）；
         /// 第二段拿真实搜索结果（微信 / 小红书）整份画到图上并存成 PNG。
         /// </summary>
+        /// <summary>
+        /// 文件秒搜的端到端探针：在临时目录里造一棵已知结构的小树，
+        /// 用真实扫描器建索引，再验证分类、通配符、多词 AND、路径命中、
+        /// 四种排序、截断、以及落盘 / 读回的往返一致。
+        /// </summary>
+        public static void RunFileSearchProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            string root = Path.Combine(
+                Path.GetTempPath(), "filesearch-probe");
+            try
+            {
+                if (Directory.Exists(root))
+                {
+                    Directory.Delete(root, true);
+                }
+                Directory.CreateDirectory(root);
+
+                // 文档
+                MakeProbeFile(root, "报告.txt", 1200, -3);
+                MakeProbeFile(root, "季度汇报.docx", 40000, -1);
+                MakeProbeFile(root, "笔记.md", 800, -10);
+                // 图片
+                MakeProbeFile(root, "截图.png", 250000, -2);
+                MakeProbeFile(root, "照片.JPG", 120000, -5);
+                // 压缩包
+                MakeProbeFile(root, "备份.zip", 500000, -7);
+                MakeProbeFile(root, "数据.7z", 90000, -8);
+                // 应用
+                MakeProbeFile(root, "tool.exe", 64000, -4);
+                MakeProbeFile(root, "setup.msi", 300000, -6);
+                // 视频 / 音频 / 其它
+                MakeProbeFile(root, "片段.mp4", 900000, -9);
+                MakeProbeFile(root, "song.mp3", 400000, -11);
+                MakeProbeFile(root, "blob.bin", 512, -12);
+                // 子目录里的同名关键词，用来验证「目录命中」
+                string nested = Path.Combine(root, "项目计划");
+                Directory.CreateDirectory(nested);
+                Directory.CreateDirectory(Path.Combine(nested, "深层"));
+                MakeProbeFile(nested, "进度.txt", 300, -2);
+                MakeProbeFile(Path.Combine(nested, "深层"),
+                    "里程碑.txt", 200, 0);
+                // 这些应当被扫描器跳过
+                string modules = Path.Combine(root, "node_modules");
+                Directory.CreateDirectory(modules);
+                MakeProbeFile(modules, "包.js", 1000, 0);
+                string git = Path.Combine(root, ".git");
+                Directory.CreateDirectory(git);
+                MakeProbeFile(git, "HEAD", 40, 0);
+
+                FileIndexData data = new FileIndexData();
+                data.Roots.Add(root);
+                FileScanProgress progress = new FileScanProgress();
+                DateTime started = DateTime.UtcNow;
+                FileScanner.Scan(
+                    data.Roots, data, progress, null);
+                long scanMs = (long)(DateTime.UtcNow - started)
+                    .TotalMilliseconds;
+                output.AppendLine("scanMs=" + scanMs +
+                    " files=" + data.Entries.Count +
+                    " dirs=" + data.Directories.Count);
+                output.AppendLine("progressFiles=" + progress.Files +
+                    " progressDirs=" + progress.Directories);
+                Check(output, ref ok, "filesearch scan entry count",
+                    data.Entries.Count.ToString(), "16");
+                Check(output, ref ok, "filesearch scan dir count",
+                    data.Directories.Count.ToString(), "3");
+                Check(output, ref ok, "filesearch progress matches",
+                    (progress.Files == data.Entries.Count &&
+                        progress.Directories == data.Directories.Count)
+                        .ToString(), "True");
+
+                int skipped = 0;
+                for (int i = 0; i < data.Entries.Count; i++)
+                {
+                    if (data.Entries[i].Name == "包.js" ||
+                        data.Entries[i].Name == "HEAD")
+                    {
+                        skipped++;
+                    }
+                }
+                Check(output, ref ok, "filesearch skips noise dirs",
+                    skipped.ToString(), "0");
+
+                int folders = CountKind(data, FileKind.Folder);
+                int images = CountKind(data, FileKind.Image);
+                int archives = CountKind(data, FileKind.Archive);
+                int apps = CountKind(data, FileKind.Application);
+                output.AppendLine("folders=" + folders +
+                    " images=" + images + " archives=" + archives +
+                    " apps=" + apps);
+                Check(output, ref ok, "filesearch kind folders",
+                    folders.ToString(), "2");
+                Check(output, ref ok, "filesearch kind images",
+                    images.ToString(), "2");
+                Check(output, ref ok, "filesearch kind archives",
+                    archives.ToString(), "2");
+
+                // 单关键词
+                FileQuery query = new FileQuery();
+                query.Keyword = "报告";
+                FileSearchResult result =
+                    FileQueryEngine.Search(data, query);
+                output.AppendLine("search 报告 -> " + result.Total +
+                    " / " + result.ElapsedMs + "ms");
+                Check(output, ref ok, "filesearch keyword hit",
+                    result.Total.ToString(), "1");
+
+                // 通配符
+                query = new FileQuery();
+                query.Keyword = "*.txt";
+                result = FileQueryEngine.Search(data, query);
+                output.AppendLine("search *.txt -> " + result.Total);
+                Check(output, ref ok, "filesearch wildcard extension",
+                    result.Total.ToString(), "3");
+
+                // 多词 AND
+                query = new FileQuery();
+                query.Keyword = "报告 txt";
+                result = FileQueryEngine.Search(data, query);
+                Check(output, ref ok, "filesearch multi term and",
+                    result.Total.ToString(), "1");
+
+                // 增量筛选：先搜「报」再在结果里筛「报告」，要和直接搜一致
+                query = new FileQuery();
+                query.Keyword = "报";
+                FileSearchResult broad =
+                    FileQueryEngine.Search(data, query);
+                query = new FileQuery();
+                query.Keyword = "报告";
+                FileSearchResult narrowed =
+                    FileQueryEngine.Refine(data, broad.Items, query);
+                FileSearchResult direct =
+                    FileQueryEngine.Search(data, query);
+                output.AppendLine("broad=" + broad.Total +
+                    " narrowed=" + narrowed.Total +
+                    " direct=" + direct.Total);
+                Check(output, ref ok, "filesearch refine matches search",
+                    (narrowed.Total == direct.Total &&
+                        broad.Total > narrowed.Total).ToString(), "True");
+                Check(output, ref ok, "filesearch refine is faster",
+                    (narrowed.ElapsedMs <= direct.ElapsedMs + 2)
+                        .ToString(), "True");
+
+                // 目录名命中（文件本身不含关键词）
+                query = new FileQuery();
+                query.Keyword = "项目计划";
+                result = FileQueryEngine.Search(data, query);
+                output.AppendLine("search 项目计划 -> " + result.Total);
+                Check(output, ref ok, "filesearch path hit",
+                    result.Total.ToString(), "4");
+
+                // 分类过滤
+                query = new FileQuery();
+                query.Keyword = "";
+                query.Kind = FileKind.Image;
+                result = FileQueryEngine.Search(data, query);
+                Check(output, ref ok, "filesearch kind filter",
+                    result.Total.ToString(), "2");
+
+                // 排序：大小降序第一应是 片段.mp4（9 MB）
+                query = new FileQuery();
+                query.Keyword = "";
+                query.Kind = null;
+                query.Sort = FileSortKey.Size;
+                query.Descending = true;
+                result = FileQueryEngine.Search(data, query);
+                Check(output, ref ok, "filesearch sort size desc",
+                    result.Items.Count > 0 ? result.Items[0].Name : "",
+                    "片段.mp4");
+
+                query.Descending = false;
+                result = FileQueryEngine.Search(data, query);
+                Check(output, ref ok, "filesearch sort size asc",
+                    result.Items.Count > 0 ? result.Items[0].Name : "",
+                    "里程碑.txt");
+
+                query.Sort = FileSortKey.Date;
+                query.Descending = true;
+                result = FileQueryEngine.Search(data, query);
+                Check(output, ref ok, "filesearch sort date desc",
+                    result.Items.Count > 0 ? result.Items[0].Name : "",
+                    "里程碑.txt");
+
+                query.Sort = FileSortKey.Name;
+                query.Descending = false;
+                result = FileQueryEngine.Search(data, query);
+                string firstName = result.Items.Count > 0
+                    ? result.Items[0].Name : "";
+                output.AppendLine("firstName=" + firstName);
+                Check(output, ref ok, "filesearch sort name asc",
+                    firstName.Length > 0 ? "True" : "False", "True");
+
+                query.Sort = FileSortKey.Path;
+                query.Descending = false;
+                result = FileQueryEngine.Search(data, query);
+                Check(output, ref ok, "filesearch sort path asc",
+                    result.Items.Count.ToString(), "16");
+
+                // 截断：只收 5 条，但总数照样精确
+                query = new FileQuery();
+                query.Keyword = "";
+                query.CollectLimit = 5;
+                result = FileQueryEngine.Search(data, query);
+                output.AppendLine("truncate total=" + result.Total +
+                    " items=" + result.Items.Count +
+                    " truncated=" + result.Truncated);
+                Check(output, ref ok, "filesearch truncate keeps total",
+                    (result.Total == 16 && result.Items.Count == 5 &&
+                        result.Truncated).ToString(), "True");
+
+                // 落盘 / 读回
+                string indexPath = Path.Combine(root, "index.bin");
+                FileIndexStore.Save(data, indexPath);
+                long size = new FileInfo(indexPath).Length;
+                FileIndexData reloaded = FileIndexStore.Load(indexPath);
+                output.AppendLine("indexBytes=" + size);
+                Check(output, ref ok, "filesearch index saved",
+                    (size > 0).ToString(), "True");
+                Check(output, ref ok, "filesearch index reload count",
+                    reloaded == null ? "null"
+                        : reloaded.Entries.Count.ToString(), "16");
+                Check(output, ref ok, "filesearch index reload roots",
+                    reloaded == null ? "null"
+                        : reloaded.Roots.Count.ToString(), "1");
+                bool samePath = false;
+                if (reloaded != null && reloaded.Entries.Count > 0)
+                {
+                    string before = data.FullPath(data.Entries[0]);
+                    string after = reloaded.FullPath(
+                        reloaded.Entries[0]);
+                    samePath = before == after;
+                }
+                Check(output, ref ok, "filesearch index reload path",
+                    samePath.ToString(), "True");
+
+                // 损坏的索引文件必须安静地返回 null，不能抛。
+                string brokenPath = Path.Combine(root, "broken.bin");
+                File.WriteAllBytes(brokenPath,
+                    new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9 });
+                Check(output, ref ok, "filesearch broken index ignored",
+                    (FileIndexStore.Load(brokenPath) == null)
+                        .ToString(), "True");
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                try
+                {
+                    if (Directory.Exists(root))
+                    {
+                        Directory.Delete(root, true);
+                    }
+                }
+                catch
+                {
+                }
+                output.AppendLine(
+                    ok ? "RESULT: OK" : "RESULT: FAILED");
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory,
+                        "filesearchprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        /// <summary>
+        /// 真机端到端：加载真实索引 → 真实窗口 → 真的设关键词走搜索链路，
+        /// 等到有结果后截 ui-filesearch-live.png。验证的是「用户点开窗口、
+        /// 打两个字」这条路，不是示例数据。
+        /// </summary>
+        public static void RunFileSearchLiveProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            FileSearchForm form = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                DateTime started = DateTime.UtcNow;
+                form = FileSearchForm.ShowWindow();
+                DateTime deadline = DateTime.UtcNow.AddMinutes(3);
+                while (!FileIndexService.Instance.Ready &&
+                    DateTime.UtcNow < deadline)
+                {
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(50);
+                }
+                output.AppendLine("readyAfterMs=" +
+                    (long)(DateTime.UtcNow - started).TotalMilliseconds +
+                    " count=" + FileIndexService.Instance.Count);
+                Check(output, ref ok, "filesearch live index ready",
+                    FileIndexService.Instance.Ready.ToString(), "True");
+
+                form.SetKeyword("报告");
+                deadline = DateTime.UtcNow.AddSeconds(10);
+                while (form.ResultList.Items.Count == 0 &&
+                    DateTime.UtcNow < deadline)
+                {
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(30);
+                }
+                int found = form.ResultList.Items.Count;
+                output.AppendLine("found=" + found +
+                    " status=" + form.StatusText);
+                Check(output, ref ok, "filesearch live has results",
+                    (found > 0).ToString(), "True");
+
+                // 再往后补一个字，走「在上次结果里继续筛」这条路。
+                // 结果可能是 0 条，所以判断依据换成状态栏有没有变。
+                string before = form.StatusText;
+                form.SetKeyword("报告 2026");
+                deadline = DateTime.UtcNow.AddSeconds(10);
+                while (form.StatusText == before &&
+                    DateTime.UtcNow < deadline)
+                {
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(30);
+                }
+                output.AppendLine("refined=" +
+                    form.ResultList.Items.Count + " status=" +
+                    form.StatusText);
+                Check(output, ref ok, "filesearch live refine path",
+                    (form.StatusText != before).ToString(), "True");
+
+                deadline = DateTime.UtcNow.AddMilliseconds(500);
+                while (DateTime.UtcNow < deadline)
+                {
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(20);
+                }
+                CaptureForm(form, Path.Combine(
+                    ConfigStore.DataDirectory,
+                    "ui-filesearch-live.png"), output, ref ok,
+                    "filesearch live screenshot");
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                try
+                {
+                    if (form != null && !form.IsDisposed)
+                    {
+                        form.Close();
+                    }
+                }
+                catch
+                {
+                }
+                FileSearchForm.CloseWindow();
+                CollectGarbage();
+                output.AppendLine("afterCloseMB=" + WorkingSetMb());
+                output.AppendLine(
+                    ok ? "RESULT: OK" : "RESULT: FAILED");
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory,
+                        "filesearchlive.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        private static long WorkingSetMb()
+        {
+            try
+            {
+                return System.Diagnostics.Process.GetCurrentProcess()
+                    .WorkingSet64 / (1024 * 1024);
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private static void CollectGarbage()
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            System.Threading.Thread.Sleep(300);
+        }
+
+        private static string BuildPathProbe(string dir, string name)
+        {
+            FileIndexData data = new FileIndexData();
+            data.Directories.Add(dir);
+            FileEntry entry = new FileEntry();
+            entry.DirId = 0;
+            entry.Name = name;
+            return data.FullPath(entry);
+        }
+
+        private static string BuildPathProbeEmpty()
+        {
+            return "";
+        }
+
+        /// <summary>
+        /// 真机索引探针：按当前范围（默认全部本地磁盘）真扫一遍，报告
+        /// 条数 / 耗时 / 索引文件大小 / 内存占用，再跑几个真实查询量耗时。
+        /// 会重建 fileindex.bin（缓存本来就是可再生数据）。
+        /// </summary>
+        public static void RunIndexBuildProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            try
+            {
+                string indexPath = FileIndexStore.IndexPath;
+                try
+                {
+                    if (File.Exists(indexPath))
+                    {
+                        File.Delete(indexPath);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    output.AppendLine("warn: 旧索引删不掉：" + ex.Message);
+                }
+
+                FileIndexService service = FileIndexService.Instance;
+                List<string> roots = FileIndexService.ResolveRoots();
+                output.AppendLine("roots=" + string.Join(" | ",
+                    roots.ToArray()));
+                service.AddConsumer();
+                DateTime started = DateTime.UtcNow;
+                service.EnsureLoaded();
+                DateTime deadline = DateTime.UtcNow.AddMinutes(12);
+                while ((!service.Ready || service.Building) &&
+                    DateTime.UtcNow < deadline)
+                {
+                    System.Threading.Thread.Sleep(400);
+                }
+                long seconds = (long)(DateTime.UtcNow - started)
+                    .TotalSeconds;
+                long fileBytes = 0;
+                try
+                {
+                    fileBytes = new FileInfo(indexPath).Length;
+                }
+                catch
+                {
+                }
+
+                output.AppendLine("count=" + service.Count);
+                output.AppendLine("building=" + service.Building +
+                    " ready=" + service.Ready +
+                    " error=" + service.LastError);
+                output.AppendLine("buildSeconds=" + seconds);
+                output.AppendLine("indexBytes=" + fileBytes);
+                output.AppendLine("loadedMB=" + WorkingSetMb());
+                Check(output, ref ok, "index probe has entries",
+                    (service.Count > 10000).ToString(), "True");
+                Check(output, ref ok, "index probe saved file",
+                    (fileBytes > 0).ToString(), "True");
+                Check(output, ref ok, "index probe finished",
+                    service.Building.ToString(), "False");
+
+                string[] keywords = new string[]
+                {
+                    "报告", "*.docx", "计划 2026", "flink"
+                };
+                for (int i = 0; i < keywords.Length; i++)
+                {
+                    FileQuery query = new FileQuery();
+                    query.Keyword = keywords[i];
+                    FileSearchResult result = FileQueryEngine.Search(
+                        service.Data, query);
+                    output.AppendLine("query[" + keywords[i] + "] total=" +
+                        result.Total + " ms=" + result.ElapsedMs);
+                }
+                FileQuery imageQuery = new FileQuery();
+                imageQuery.Keyword = "";
+                imageQuery.Kind = FileKind.Image;
+                FileSearchResult images = FileQueryEngine.Search(
+                    service.Data, imageQuery);
+                output.AppendLine("query[全部图片] total=" + images.Total +
+                    " ms=" + images.ElapsedMs);
+                Check(output, ref ok, "index probe query fast",
+                    (images.ElapsedMs < 3000).ToString(), "True");
+
+                // 没人用就释放内存（常驻托盘不该白占），再读回来验证。
+                int expected = service.Count;
+                long beforeRelease = WorkingSetMb();
+                service.ReleaseNow();
+                CollectGarbage();
+                long idleMb = WorkingSetMb();
+                output.AppendLine("idleMB=" + idleMb +
+                    " (beforeRelease=" + beforeRelease + ")");
+                Check(output, ref ok, "index probe released memory",
+                    (idleMb + 40 < beforeRelease).ToString(), "True");
+
+                DateTime reloadStarted = DateTime.UtcNow;
+                service.EnsureLoaded();
+                deadline = DateTime.UtcNow.AddMinutes(3);
+                while (!service.Ready && DateTime.UtcNow < deadline)
+                {
+                    System.Threading.Thread.Sleep(50);
+                }
+                long reloadMs = (long)(DateTime.UtcNow - reloadStarted)
+                    .TotalMilliseconds;
+                output.AppendLine("reloadMs=" + reloadMs +
+                    " reloadCount=" + service.Count +
+                    " reloadMB=" + WorkingSetMb());
+                Check(output, ref ok, "index probe reload matches",
+                    (service.Count == expected).ToString(), "True");
+                service.RemoveConsumer();
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                output.AppendLine(
+                    ok ? "RESULT: OK" : "RESULT: FAILED");
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory,
+                        "indexbuildprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        private static void MakeProbeFile(
+            string root, string name, int bytes, int daysAgo)
+        {
+            string path = Path.Combine(root, name);
+            byte[] content = new byte[Math.Max(1, bytes)];
+            for (int i = 0; i < content.Length; i++)
+            {
+                content[i] = (byte)(i & 0xFF);
+            }
+            File.WriteAllBytes(path, content);
+            File.SetLastWriteTimeUtc(
+                path, DateTime.UtcNow.AddDays(daysAgo));
+        }
+
+        private static int CountKind(FileIndexData data, FileKind kind)
+        {
+            int count = 0;
+            for (int i = 0; i < data.Entries.Count; i++)
+            {
+                if (data.Entries[i].Kind == kind)
+                {
+                    count++;
+                }
+            }
+            return count;
+        }
+
+        /// <summary>
+        /// 文件秒搜窗口渲染冒烟：用示例数据真开窗口，截 ui-filesearch.png，
+        /// 再把排序切到「名称升序」截第二张，确认表头箭头与行内容都对。
+        /// </summary>
+        public static void RunFileSearchPreview()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            FileSearchForm form = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                string docs = Environment.GetFolderPath(
+                    Environment.SpecialFolder.MyDocuments);
+                if (docs.Length == 0)
+                {
+                    docs = @"C:\Users\Public\Documents";
+                }
+                FileIndexData data = new FileIndexData();
+                data.Roots.Add(@"C:\");
+                data.SavedAt = DateTime.UtcNow.AddMinutes(-8);
+                data.Directories.Add(@"C:\");
+                data.Directories.Add(docs);
+                data.Directories.Add(@"C:\Users\Public\Downloads");
+                data.Directories.Add(@"D:\项目\2026\计划");
+
+                List<FileEntry> items = new List<FileEntry>();
+                items.Add(MakePreviewEntry(data, 1, "2026年度工作计划.docx",
+                    186000, -1));
+                items.Add(MakePreviewEntry(data, 3, "工作计划-草稿.md",
+                    12400, -2));
+                items.Add(MakePreviewEntry(data, 2, "工作计划模板.xlsx",
+                    74500, -4));
+                items.Add(MakePreviewEntry(data, 3, "周计划.txt", 3200, -6));
+                items.Add(MakePreviewEntry(data, 2, "计划评审录像.mp4",
+                    128000000, -9));
+                items.Add(MakePreviewEntry(data, 1, "计划截图.png",
+                    640000, -3));
+                items.Add(MakePreviewEntry(data, 3, "计划备份.zip",
+                    9800000, -12));
+                items.Add(MakePreviewEntry(data, 2, "旧计划.pdf",
+                    2400000, -30));
+                items.Add(MakePreviewEntry(data, 3, "临时计划.bin",
+                    900, -45));
+
+                form = FileSearchForm.ShowPreview(data, items, "计划");
+                DateTime deadline = DateTime.UtcNow.AddMilliseconds(700);
+                while (DateTime.UtcNow < deadline)
+                {
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(20);
+                }
+                output.AppendLine("formVisible=" + form.Visible);
+                Check(output, ref ok, "filesearch ui visible",
+                    form.Visible.ToString(), "True");
+
+                string shot = Path.Combine(
+                    ConfigStore.DataDirectory, "ui-filesearch.png");
+                CaptureForm(form, shot, output, ref ok,
+                    "filesearch ui screenshot");
+
+                // 切到名称升序再截一张，验证箭头与排序。
+                FileResultList list = form.ResultList;
+                output.AppendLine("listFound=" + (list != null));
+                if (list != null)
+                {
+                    FileQueryEngine.Sort(
+                        list.Items, data, FileSortKey.Name, false);
+                    list.SetSort(FileSortKey.Name, false);
+                    list.SetItems(list.Items, false);
+                    deadline = DateTime.UtcNow.AddMilliseconds(400);
+                    while (DateTime.UtcNow < deadline)
+                    {
+                        Application.DoEvents();
+                        System.Threading.Thread.Sleep(20);
+                    }
+                    CaptureForm(form, Path.Combine(
+                        ConfigStore.DataDirectory,
+                        "ui-filesearch-sorted.png"), output, ref ok,
+                        "filesearch ui screenshot sorted");
+                }
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                try
+                {
+                    if (form != null && !form.IsDisposed)
+                    {
+                        form.Close();
+                    }
+                }
+                catch
+                {
+                }
+                FileSearchForm.CloseWindow();
+                output.AppendLine(
+                    ok ? "RESULT: OK" : "RESULT: FAILED");
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory,
+                        "filesearchuiprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        private static FileEntry MakePreviewEntry(
+            FileIndexData data, int dirId, string name,
+            long size, int daysAgo)
+        {
+            FileEntry entry = new FileEntry();
+            entry.DirId = dirId;
+            entry.Name = name;
+            entry.Size = size;
+            entry.Kind = FileKindLogic.Classify(name, false);
+            entry.Ticks = DateTime.UtcNow.AddDays(daysAgo).Ticks;
+            return entry;
+        }
+
+        private static void CaptureForm(
+            Form form, string path, StringBuilder output,
+            ref bool ok, string checkName)
+        {
+            try
+            {
+                using (Bitmap capture = new Bitmap(
+                    Math.Max(1, form.Width), Math.Max(1, form.Height)))
+                {
+                    using (Graphics graphics = Graphics.FromImage(capture))
+                    {
+                        graphics.CopyFromScreen(
+                            form.Left, form.Top, 0, 0, capture.Size);
+                    }
+                    capture.Save(path, ImageFormat.Png);
+                }
+                output.AppendLine("screenshot=" + path);
+                Check(output, ref ok, checkName,
+                    File.Exists(path).ToString(), "True");
+            }
+            catch (Exception ex)
+            {
+                // 锁屏 / 远程会话下 CopyFromScreen 会失败，属环境限制。
+                output.AppendLine("SKIP: 当前桌面无法截屏：" +
+                    ex.GetType().Name);
+            }
+        }
+
         public static void RunSoftwareRenderProbe()
         {
             StringBuilder output = new StringBuilder();

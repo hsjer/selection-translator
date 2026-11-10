@@ -64,6 +64,30 @@ namespace SelectionTranslator
                 return;
             }
 
+            if (Array.IndexOf(args, "--filesearchlive") >= 0)
+            {
+                SelfTest.RunFileSearchLiveProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--filesearchprobe") >= 0)
+            {
+                SelfTest.RunFileSearchProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--indexbuildprobe") >= 0)
+            {
+                SelfTest.RunIndexBuildProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--filesearchpreview") >= 0)
+            {
+                SelfTest.RunFileSearchPreview();
+                return;
+            }
+
             if (Array.IndexOf(args, "--softrenderprobe") >= 0)
             {
                 SelfTest.RunSoftwareRenderProbe();

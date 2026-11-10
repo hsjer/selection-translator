@@ -58,6 +58,7 @@ namespace SelectionTranslator
         private VoiceCaptureForm _voiceBar;
         private System.Windows.Forms.Timer _voicePollTimer;
         private System.Windows.Forms.Timer _voiceMenuDelayTimer;
+        private System.Windows.Forms.Timer _fileIndexWarmTimer;
         private bool _voiceInProgress;
         // 防止「定时器收尾」和「点浮条停止」同时进来跑两遍。
         private bool _voiceStopping;
@@ -170,6 +171,14 @@ namespace SelectionTranslator
             };
             _trayMenu.Items.Add(softwareItem);
 
+            ToolStripMenuItem fileSearchItem =
+                new ToolStripMenuItem("文件秒搜…");
+            fileSearchItem.Click += delegate
+            {
+                FileSearchForm.ShowWindow();
+            };
+            _trayMenu.Items.Add(fileSearchItem);
+
             _clipboardMenuItem = new ToolStripMenuItem(
                 "剪贴板历史…");
             _clipboardMenuItem.ShortcutKeyDisplayString =
@@ -274,6 +283,24 @@ namespace SelectionTranslator
             _voiceMenuDelayTimer = new System.Windows.Forms.Timer();
             _voiceMenuDelayTimer.Interval = 260;
             _voiceMenuDelayTimer.Tick += OnVoiceMenuDelayTick;
+
+            // 文件秒搜的索引预热：开机后缓两分钟再读盘/重建，
+            // 别和登录时的各种启动项抢磁盘；用户点开窗口时多半已就绪。
+            _fileIndexWarmTimer = new System.Windows.Forms.Timer();
+            _fileIndexWarmTimer.Interval = 120000;
+            _fileIndexWarmTimer.Tick += delegate
+            {
+                _fileIndexWarmTimer.Stop();
+                try
+                {
+                    FileIndexService.Instance.EnsureLoaded();
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("预热文件索引失败", ex);
+                }
+            };
+            _fileIndexWarmTimer.Start();
         }
 
         private bool HasCredentials()
@@ -2063,6 +2090,7 @@ namespace SelectionTranslator
             _hotkeyWindow.HotkeyPressed -= OnHotkeyPressed;
             ClipboardHistoryForm.CloseHistory();
             SoftwareDownloadForm.CloseWindow();
+            FileSearchForm.CloseWindow();
             ClipboardManager.Stop();
 
             _trayIcon.Visible = false;
@@ -2136,6 +2164,7 @@ namespace SelectionTranslator
                 _hotkeyWindow.Dispose();
                 ClipboardHistoryForm.CloseHistory();
                 SoftwareDownloadForm.CloseWindow();
+                FileSearchForm.CloseWindow();
                 ClipboardManager.Stop();
 
                 _trayIcon.Visible = false;

@@ -96,6 +96,15 @@ namespace SelectionTranslator
             TextFormatFlags.VerticalCenter |
             TextFormatFlags.SingleLine | TextFormatFlags.NoPadding;
 
+        public const TextFormatFlags RightMiddle =
+            TextFormatFlags.Right | TextFormatFlags.VerticalCenter |
+            TextFormatFlags.SingleLine | TextFormatFlags.NoPadding;
+
+        public const TextFormatFlags RightMiddleClip =
+            TextFormatFlags.Right | TextFormatFlags.VerticalCenter |
+            TextFormatFlags.SingleLine | TextFormatFlags.NoPadding |
+            TextFormatFlags.EndEllipsis;
+
         private static PointF P(float x, float y)
         {
             return new PointF(x, y);
