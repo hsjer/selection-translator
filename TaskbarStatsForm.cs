@@ -144,6 +144,11 @@ namespace SelectionTranslator
         private DateTime _lastDetailPaint = DateTime.MinValue;
         private Rectangle _barBounds = Rectangle.Empty;
         private Rectangle _detailBounds = Rectangle.Empty;
+        // 上一次把状态条顶回 topmost 层的时间，用于节流（见 TryKeepTopmost）。
+        private DateTime _lastTopmostReclaim = DateTime.MinValue;
+        // 避让后的落点锚：一旦为别人让开就钉在那儿，避免被对方的宽度
+        // 抖动拽着左右蹭（见 ComputePosition）。Empty 表示没在避让状态。
+        private Point _avoidAnchor = Point.Empty;
         private TaskbarStatsDetailForm _detailForm;
 
         public TaskbarStatsForm()
@@ -385,6 +390,54 @@ namespace SelectionTranslator
             }
         }
 
+        /// <summary>
+        /// 悬停定时器与每帧重绘共用的 Z 序维护：
+        /// 状态条必须始终可见，所以它常驻 topmost 层，**绝不主动取消置顶**
+        /// ———— 之前「被挡就 ClearTopMost 让位」的策略会把状态条压到
+        /// 全屏应用（浏览器 / Electron 应用）底下，用户看到的现象就是
+        /// 「直接不显示了」。
+        /// 现在只在一种情况下调用 SetWindowPos：真的被排在自己上方的
+        /// 可见窗口盖住（IsBarObscured 沿 Z 序链检查）。正常桌面下这个
+        /// 判据恒为 false，一次 SetWindowPos 都不发，因此不会出现
+        /// 「鼠标点一下来回跳动」；只有点击任务栏、Explorer 把
+        /// Shell_TrayWnd 提到我们之上时才会顶回来一次。
+        /// </summary>
+        private void TryKeepTopmost()
+        {
+            if (!IsHandleCreated || IsDisposed)
+            {
+                return;
+            }
+            if (_barBounds.IsEmpty)
+            {
+                // 还没画过内容，位置未知，无从判断是否被盖住。
+                return;
+            }
+            // 被持续压住时（例如某个常驻浮窗就压在条上），最多每
+            // 半秒顶一次，避免 150ms 一轮把 SetWindowPos 刷成风暴。
+            if ((DateTime.UtcNow - _lastTopmostReclaim)
+                    .TotalMilliseconds < 500)
+            {
+                return;
+            }
+            bool obscured;
+            try
+            {
+                obscured = TaskbarStats.IsBarObscured(
+                    _barBounds, Handle);
+            }
+            catch
+            {
+                // 检测失败就当作没被盖住，保持现状，不影响显示。
+                obscured = false;
+            }
+            if (obscured)
+            {
+                LayeredWindow.KeepTopMost(Handle);
+                _lastTopmostReclaim = DateTime.UtcNow;
+            }
+        }
+
         /// <summary>悬停检测：光标在状态条或详情卡片内就展开，移开即收起。</summary>
         private void OnHoverTick(object sender, EventArgs e)
         {
@@ -402,10 +455,11 @@ namespace SelectionTranslator
             // 光标在任务栏上时快速恢复 Z 序（点一下任务栏就会被 Explorer
             // 压下去），不必等下一秒的采样刷新；鼠标不在任务栏上（例如
             // 全屏游戏）就不额外抢顶层，避免打扰其它窗口。
+            // 只压在没人的区域才置顶，绝不跟挡在画面上的别人抢。
             Rectangle taskbar = GetTaskbarRect();
             if (!taskbar.IsEmpty && taskbar.Contains(cursor))
             {
-                LayeredWindow.KeepTopMost(Handle);
+                TryKeepTopmost();
             }
 
             bool keepOpen = TaskbarStats.ShouldShowDetail(
@@ -642,35 +696,111 @@ namespace SelectionTranslator
                     (int)Math.Ceiling(pctW) + rightPad;
                 // 行高留足，避免两行字被压在一起显得上下不齐。
                 int lineHeight = (int)Math.Ceiling(16 * scale);
-                int height = lineHeight * 2 +
-                    (int)Math.Round(4 * scale);
                 if (width < 1)
                 {
                     width = 1;
                 }
-                if (height < 1)
-                {
-                    height = 1;
-                }
+                // 先按「行框」给足上下空白画出来，再按实际墨迹裁一刀。
+                // DrawString 的 y 是行框顶，数字字形只占行框上部——直接
+                // 拿行框高度当位图高度、把两行分别画在 0 / lineHeight，
+                // 整块文字就整体偏上（和任务栏里别的工具并排一眼可见）。
+                // 裁到墨迹后再对称补 padding，位图中心 == 文字中心，
+                // 交给 ComputePosition 做垂直居中就是真的居中。
+                int padY = (int)Math.Ceiling(10 * scale);
+                int layoutHeight = lineHeight * 2 + padY * 2;
 
-                Bitmap bitmap = new Bitmap(
-                    width, height, PixelFormat.Format32bppArgb);
-                using (Graphics graphics = Graphics.FromImage(bitmap))
+                Bitmap layout = new Bitmap(
+                    width, layoutHeight, PixelFormat.Format32bppArgb);
+                using (Graphics graphics = Graphics.FromImage(layout))
                 {
                     graphics.Clear(Color.Transparent);
                     graphics.TextRenderingHint =
                         TextRenderingHint.AntiAliasGridFit;
                     DrawBarLine(
                         graphics, font, brush, format,
-                        firstLine, 0,
+                        firstLine, padY,
                         arrowX, speedX, labelX, pctX);
                     DrawBarLine(
                         graphics, font, brush, format,
-                        secondLine, lineHeight,
+                        secondLine, padY + lineHeight,
                         arrowX, speedX, labelX, pctX);
                 }
+                Bitmap bitmap = CropToInk(
+                    layout, (int)Math.Round(2 * scale));
+                layout.Dispose();
                 return bitmap;
             }
+        }
+
+        /// <summary>
+        /// 把位图按实际墨迹（alpha &gt; 8 的行）裁掉上下空白，再补回对称的
+        /// padding。文字位图的「行框顶」比字形顶高一截，若直接拿行框高度
+        /// 当最终尺寸，整块字就会偏上；裁到墨迹后上下留白相等，才谈得上
+        /// 垂直居中。
+        /// </summary>
+        private static Bitmap CropToInk(Bitmap source, int padding)
+        {
+            int width = source.Width;
+            int height = source.Height;
+            int top = -1;
+            int bottom = -1;
+            BitmapData data = source.LockBits(
+                new Rectangle(0, 0, width, height),
+                ImageLockMode.ReadOnly,
+                PixelFormat.Format32bppArgb);
+            try
+            {
+                int[] pixels = new int[width * height];
+                Marshal.Copy(data.Scan0, pixels, 0, pixels.Length);
+                for (int y = 0; y < height; y++)
+                {
+                    int row = y * width;
+                    bool any = false;
+                    for (int x = 0; x < width; x++)
+                    {
+                        if ((pixels[row + x] >> 24) > 8)
+                        {
+                            any = true;
+                            break;
+                        }
+                    }
+                    if (any)
+                    {
+                        if (top < 0)
+                        {
+                            top = y;
+                        }
+                        bottom = y;
+                    }
+                }
+            }
+            finally
+            {
+                source.UnlockBits(data);
+            }
+            if (top < 0 || bottom < top)
+            {
+                top = 0;
+                bottom = height - 1;
+            }
+            if (padding < 0)
+            {
+                padding = 0;
+            }
+            int inkHeight = bottom - top + 1;
+            Bitmap result = new Bitmap(
+                width, inkHeight + padding * 2,
+                PixelFormat.Format32bppArgb);
+            using (Graphics graphics = Graphics.FromImage(result))
+            {
+                graphics.Clear(Color.Transparent);
+                graphics.DrawImage(
+                    source,
+                    new Rectangle(0, padding - top, width, height),
+                    new Rectangle(0, 0, width, height),
+                    GraphicsUnit.Pixel);
+            }
+            return result;
         }
 
         /// <summary>
@@ -766,9 +896,31 @@ namespace SelectionTranslator
                     0,
                     ref blend,
                     ULW_ALPHA);
-                // 每次重绘都重新压回 topmost 顶部：点任务栏 / 托盘图标后
-                // Explorer 会把任务栏提到我们上面，文字就整块消失。
-                LayeredWindow.KeepTopMost(Handle);
+                // 每一帧重绘后维护 Z 序：状态条必须始终可见。
+                // 绝不再主动取消置顶（旧策略会把状态条压到全屏应用之下，
+                // 用户看到的是「直接不显示」）；只有真的被排在上面的
+                // 窗口盖住时才顶回来一次，正常桌面下恒不触发，
+                // 所以不会出现「点一下来回跳」。节流与悬停轮询共用。
+                if ((DateTime.UtcNow - _lastTopmostReclaim)
+                        .TotalMilliseconds >= 500)
+                {
+                    bool obscuredNow;
+                    try
+                    {
+                        obscuredNow = TaskbarStats.IsBarObscured(
+                            new Rectangle(position, bitmap.Size),
+                            Handle);
+                    }
+                    catch
+                    {
+                        obscuredNow = false;
+                    }
+                    if (obscuredNow)
+                    {
+                        LayeredWindow.KeepTopMost(Handle);
+                        _lastTopmostReclaim = DateTime.UtcNow;
+                    }
+                }
                 return position;
             }
             finally
@@ -797,8 +949,45 @@ namespace SelectionTranslator
             Size reference = new Size(
                 Math.Max(_referenceWidth, content.Width),
                 content.Height);
-            return TaskbarStats.ComputePosition(
+            Point basePos = TaskbarStats.ComputePosition(
                 taskbar, notify, reference, margin);
+            // 落位前先看一眼任务栏带上是不是被别的窗口占了：占了就自动
+            // 挪到空档，别把文字叠在别人内容上。任何异常都退回默认位置，
+            // 绝不能因为避让逻辑把状态条搞没了。
+            try
+            {
+                List<Rectangle> occupiers =
+                    TaskbarStats.FindOccupiers(taskbar, Handle);
+                // 默认位置本来是空的：回默认位置（别的工具关掉后自动归位）。
+                if (occupiers.Count == 0 ||
+                    !TaskbarStats.OverlapsAny(
+                        new Rectangle(basePos, reference), occupiers))
+                {
+                    _avoidAnchor = Point.Empty;
+                    return basePos;
+                }
+                Point avoided = TaskbarStats.AvoidOccupiers(
+                    basePos, taskbar, notify, reference, margin,
+                    occupiers);
+                // 位置锚定：让开一次之后就待在那儿。别人的小部件宽度会
+                // 随数字增减左右漂（TrafficMonitor 实测能漂 40px），若每
+                // 帧都重新求「最靠近默认位的空档」，状态条会被拽着来回
+                // 蹭。只有当当前锚点真的被压住（对方涨过来）才再让一次。
+                if (!_avoidAnchor.IsEmpty &&
+                    _avoidAnchor.Y == avoided.Y &&
+                    !TaskbarStats.OverlapsAny(
+                        new Rectangle(_avoidAnchor, reference),
+                        occupiers))
+                {
+                    return _avoidAnchor;
+                }
+                _avoidAnchor = avoided;
+                return avoided;
+            }
+            catch
+            {
+                return basePos;
+            }
         }
 
         public static Rectangle GetTaskbarRect()

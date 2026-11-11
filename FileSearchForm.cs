@@ -96,6 +96,16 @@ namespace SelectionTranslator
             get { return _status; }
         }
 
+        /// <summary>自检 / 探针用：直接切分类标签（null = 全部）。</summary>
+        internal void SelectKind(FileKind? kind)
+        {
+            _kind = kind;
+            _lastQuery = null;
+            _lastResult = null;
+            UpdateTabs();
+            RunSearchNow();
+        }
+
         public static void CloseWindow()
         {
             if (_instance != null && !_instance.IsDisposed)
@@ -406,11 +416,11 @@ namespace SelectionTranslator
                 ChooseFolder();
             };
             _scopeMenu.Items.Add(pick);
-            ToolStripMenuItem rebuild = new ToolStripMenuItem("重建索引");
+            ToolStripMenuItem rebuild = new ToolStripMenuItem("重新读取");
             rebuild.Click += delegate
             {
                 FileIndexService.Instance.Rebuild();
-                SetStatus("开始重建索引…");
+                SetStatus("开始重新读取…");
             };
             _scopeMenu.Items.Add(rebuild);
 
@@ -444,7 +454,7 @@ namespace SelectionTranslator
             }
             UpdateScopeLabel();
             FileIndexService.Instance.Rebuild();
-            SetStatus("正在按新范围重建索引…");
+            SetStatus("正在按新范围重新读取…");
             _list.SetData(null, new List<FileEntry>());
         }
 
@@ -578,7 +588,7 @@ namespace SelectionTranslator
                 return;
             }
             FileQueryEngine.Sort(
-                items, FileIndexService.Instance.Data, key, descending);
+                items, _list.Data, key, descending);
             _list.SetItems(items, true);
             Invalidate();
         }
@@ -658,7 +668,7 @@ namespace SelectionTranslator
 
         private string FullPathOf(FileEntry entry)
         {
-            if (entry == null)
+            if (!entry.IsValid)
             {
                 return "";
             }
@@ -672,7 +682,7 @@ namespace SelectionTranslator
 
         private void ShowItemMenu(FileEntry entry, Point at)
         {
-            if (entry == null)
+            if (!entry.IsValid)
             {
                 return;
             }
@@ -760,7 +770,7 @@ namespace SelectionTranslator
             if (e.KeyCode == Keys.F5)
             {
                 FileIndexService.Instance.Rebuild();
-                SetStatus("开始重建索引…");
+                SetStatus("开始重新读取…");
                 e.Handled = true;
                 return;
             }
@@ -782,7 +792,7 @@ namespace SelectionTranslator
             if (e.KeyCode == Keys.C && e.Control)
             {
                 FileEntry selected = _list.SelectedItem;
-                if (selected != null)
+                if (selected.IsValid)
                 {
                     CopyText(FullPathOf(selected));
                     e.Handled = true;
@@ -835,32 +845,81 @@ namespace SelectionTranslator
             }
             else if (service.Loading)
             {
-                subtitle = "正在载入索引…";
+                subtitle = "正在读取文件列表…";
+                subtitleColor = DarkUi.Accent;
+            }
+            else if (service.Building && service.Ready)
+            {
+                // 两种情况搜索都完全可用：一是边扫边发布的半成品，二是
+                // 命中本地缓存后后台在悄悄更新。别让用户以为还得干等。
+                subtitle = service.FromCache
+                    ? "已缓存 " + FormatCount(service.Count) +
+                        " 个文件 · 后台更新中（可以直接搜索）"
+                    : "已找到 " + FormatCount(service.Count) +
+                        " 个文件 · 扫描中（可以直接搜索）";
                 subtitleColor = DarkUi.Accent;
             }
             else if (service.Building)
             {
-                subtitle = "正在建立索引 · 已扫描 " +
+                // 没有管理员权限时 MFT 读不了卷，只能目录遍历，慢一个
+                // 数量级。这里直接标出来，免得用户以为 MFT 没生效是 bug。
+                bool slow = !MftScanner.IsElevated();
+                subtitle = (slow ? "正在扫描（未提权，较慢）· 已读 "
+                                 : "正在读取文件列表 · 已读 ") +
                     FormatCount(service.ScannedFiles) + " 个文件";
                 subtitleColor = DarkUi.Accent;
             }
             else if (service.Ready)
             {
-                subtitle = "已索引 " + FormatCount(service.Count) +
-                    " 个文件 · 更新于 " +
-                    service.IndexedAt.ToLocalTime().ToString("MM-dd HH:mm");
+                string how;
+                if (service.FromCache)
+                {
+                    // 缓存里记的是「上次扫描」的方式，不是当前这次；别拿
+                    // 当前是否提权去描述它，会写出「MFT 极速」这种误导。
+                    how = "本地缓存";
+                }
+                else if (service.Source == FileIndexSource.Mft)
+                {
+                    how = "MFT 极速";
+                }
+                else
+                {
+                    how = MftScanner.IsElevated()
+                        ? "目录扫描" : "目录扫描（未提权）";
+                }
+                string when = "";
+                if (service.IndexedAt > DateTime.MinValue)
+                {
+                    when = " · 更新于 " + service.IndexedAt
+                        .ToLocalTime().ToString("MM-dd HH:mm");
+                }
+                subtitle = (service.FromCache ? "已载入 " : "已找到 ") +
+                    FormatCount(service.Count) + " 个文件 · " + how + when;
             }
             else
             {
-                subtitle = "索引还没建好";
+                subtitle = "还没读到文件列表";
             }
             DarkUi.Text2(g, subtitle, DarkUi.FontSmall, subtitleColor,
                 new Rectangle(100, 10, ClientSize.Width - 260, 26),
                 DarkUi.LeftMiddleClip);
 
-            string footer = _status.Length > 0
-                ? _status
-                : "双击打开 · 右键更多 · 点表头排序 · F5 重建索引";
+            string footer;
+            if (_status.Length > 0)
+            {
+                footer = _status;
+            }
+            else if (!_preview && !service.Ready &&
+                service.Building && !MftScanner.IsElevated())
+            {
+                // 没提权时读得慢：明确告诉用户怎么把 MFT 打开。
+                footer = "未以管理员运行，MFT 读不了卷，只能逐个目录扫 · " +
+                    "托盘右键「以管理员身份重启（极速索引）」";
+            }
+            else
+            {
+                footer = "双击打开 · 右键更多 · 点表头排序 · F5 重新读取";
+            }
             DarkUi.Text2(g, footer, DarkUi.FontSmall,
                 _status.Length > 0 ? DarkUi.Accent : DarkUi.TextFaint,
                 new Rectangle(16, ClientSize.Height - FooterHeight + 2,
@@ -875,12 +934,16 @@ namespace SelectionTranslator
     /// </summary>
     internal sealed class FileResultList : Control
     {
-        private const int RowHeight = 26;
+        private const int RowHeight = 34;
         private const int HeadHeight = 30;
         private const int PadLeft = 14;
         private const int DateWidth = 126;
         private const int SizeWidth = 86;
         private const int ColGap = 12;
+
+        /// <summary>图片行左边的缩略图边长。</summary>
+        private const int ThumbSize = 28;
+        private const int ThumbCacheLimit = 400;
 
         private FileIndexData _data;
         private List<FileEntry> _items = new List<FileEntry>();
@@ -891,6 +954,19 @@ namespace SelectionTranslator
         private string _emptyText = "输入关键词开始搜索";
         private FileSortKey _sort = FileSortKey.Date;
         private bool _descending = true;
+
+        // 缩略图只给图片行画。缓存按完整路径存、LRU 淘汰；解码丢给线
+        // 程池，画的时候没拿到就先画占位块，解码完了再刷一次。整张原图
+        // 不留在内存里，只留 28×28 的小图。
+        private readonly Dictionary<string, Bitmap> _thumbs =
+            new Dictionary<string, Bitmap>(StringComparer.OrdinalIgnoreCase);
+        private readonly List<string> _thumbAge = new List<string>();
+        private readonly HashSet<string> _thumbPending =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _thumbFailed =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Queue<string> _thumbQueue = new Queue<string>();
+        private int _thumbWorkers;
 
         public event Action<FileEntry> ItemActivated;
         public event Action<FileEntry, Point> ItemContext;
@@ -919,6 +995,22 @@ namespace SelectionTranslator
             get { return _items; }
         }
 
+        /// <summary>自检 / 探针用：已经解码好的缩略图张数。</summary>
+        internal int ThumbCount
+        {
+            get { return _thumbs.Count; }
+        }
+
+        /// <summary>
+        /// 自检用：第 index 行右侧的空白点（只画底色，不压文字），
+        /// 用来取样验证隔行底色是否跟着主题走。
+        /// </summary>
+        internal Point RowBlankPoint(int index)
+        {
+            int top = HeadHeight + index * RowHeight - _scroll;
+            return new Point(Width - 26, top + RowHeight - 5);
+        }
+
         public FileSortKey SortKey
         {
             get { return _sort; }
@@ -937,7 +1029,7 @@ namespace SelectionTranslator
                 {
                     return _items[_selected];
                 }
-                return null;
+                return default(FileEntry);
             }
         }
 
@@ -967,8 +1059,9 @@ namespace SelectionTranslator
         /// </summary>
         public void SetItems(List<FileEntry> items, bool keepSelection)
         {
-            FileEntry previous = keepSelection ? SelectedItem : null;
-            string previousPath = previous == null || _data == null
+            FileEntry previous = keepSelection ? SelectedItem
+                : default(FileEntry);
+            string previousPath = !previous.IsValid || _data == null
                 ? "" : _data.FullPath(previous);
             _items = items ?? new List<FileEntry>();
             _contentHeight = HeadHeight + _items.Count * RowHeight + 8;
@@ -1155,6 +1248,158 @@ namespace SelectionTranslator
                 DarkUi.LeftMiddle);
         }
 
+        /// <summary>
+        /// 取缓存里的缩略图。没缓存就排进队列（同一个路径只排一次）
+        /// 并返回 null——本次先画占位块，解码完会触发重绘。
+        /// </summary>
+        private Bitmap ThumbFor(string path)
+        {
+            if (string.IsNullOrEmpty(path) || _thumbFailed.Contains(path))
+            {
+                return null;
+            }
+            Bitmap cached;
+            if (_thumbs.TryGetValue(path, out cached))
+            {
+                _thumbAge.Remove(path);
+                _thumbAge.Add(path);
+                return cached;
+            }
+            if (_thumbPending.Add(path))
+            {
+                lock (_thumbQueue)
+                {
+                    _thumbQueue.Enqueue(path);
+                }
+                if (System.Threading.Interlocked.CompareExchange(
+                    ref _thumbWorkers, 1, 0) == 0)
+                {
+                    System.Threading.ThreadPool.QueueUserWorkItem(
+                        delegate { ThumbWorker(); });
+                }
+            }
+            return null;
+        }
+
+        private void ThumbWorker()
+        {
+            while (true)
+            {
+                string path;
+                lock (_thumbQueue)
+                {
+                    if (_thumbQueue.Count == 0)
+                    {
+                        _thumbWorkers = 0;
+                        return;
+                    }
+                    path = _thumbQueue.Dequeue();
+                }
+                Bitmap ready = null;
+                try
+                {
+                    ready = LoadThumb(path);
+                }
+                catch
+                {
+                    ready = null;
+                }
+                Bitmap payload = ready;
+                string key = path;
+                try
+                {
+                    if (!IsHandleCreated || IsDisposed)
+                    {
+                        return;
+                    }
+                    BeginInvoke((MethodInvoker)delegate
+                    {
+                        _thumbPending.Remove(key);
+                        if (payload == null)
+                        {
+                            // 记一笔失败：坏图 / 没权限 / 已删除，别反复重试。
+                            _thumbFailed.Add(key);
+                            return;
+                        }
+                        StoreThumb(key, payload);
+                        Invalidate();
+                    });
+                }
+                catch
+                {
+                    if (payload != null)
+                    {
+                        payload.Dispose();
+                    }
+                    return;
+                }
+            }
+        }
+
+        private void StoreThumb(string path, Bitmap bitmap)
+        {
+            if (_thumbs.ContainsKey(path))
+            {
+                bitmap.Dispose();
+                return;
+            }
+            _thumbs[path] = bitmap;
+            _thumbAge.Add(path);
+            while (_thumbAge.Count > ThumbCacheLimit)
+            {
+                string oldest = _thumbAge[0];
+                _thumbAge.RemoveAt(0);
+                Bitmap dropped;
+                if (_thumbs.TryGetValue(oldest, out dropped))
+                {
+                    _thumbs.Remove(oldest);
+                    dropped.Dispose();
+                }
+            }
+        }
+
+        /// <summary>
+        /// 解码 + 等比缩放到 28×28（居中、四周透明）。整张原图只在
+        /// using 里活一次，出来就只有小图。太大的文件直接放弃，免得
+        /// 为了一张几亿像素的图把内存打爆。
+        /// </summary>
+        private static Bitmap LoadThumb(string path)
+        {
+            FileInfo info = new FileInfo(path);
+            if (!info.Exists || info.Length <= 0 ||
+                info.Length > 40L * 1024 * 1024)
+            {
+                return null;
+            }
+            using (FileStream stream = new FileStream(path, FileMode.Open,
+                FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (Image source = Image.FromStream(stream, false, false))
+            {
+                int w = source.Width;
+                int h = source.Height;
+                if (w <= 0 || h <= 0)
+                {
+                    return null;
+                }
+                float scale = Math.Min(
+                    (float)ThumbSize / w, (float)ThumbSize / h);
+                int tw = Math.Max(1, (int)Math.Round(w * scale));
+                int th = Math.Max(1, (int)Math.Round(h * scale));
+                Bitmap result = new Bitmap(ThumbSize, ThumbSize,
+                    System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                using (Graphics g = Graphics.FromImage(result))
+                {
+                    g.Clear(Color.Transparent);
+                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    g.SmoothingMode = SmoothingMode.HighQuality;
+                    g.DrawImage(source, new Rectangle(
+                        (ThumbSize - tw) / 2, (ThumbSize - th) / 2, tw, th));
+                }
+                return result;
+            }
+        }
+
         private void DrawRow(Graphics g, int index, int top)
         {
             FileEntry entry = _items[index];
@@ -1177,8 +1422,9 @@ namespace SelectionTranslator
             }
             else if ((index & 1) == 1)
             {
-                using (SolidBrush brush = new SolidBrush(
-                    Color.FromArgb(26, 28, 32)))
+                // 隔行底色必须跟着主题走：早先这里写死成深灰
+                // (26,28,32)，换成浅色主题后就成了白底上的黑条。
+                using (SolidBrush brush = new SolidBrush(DarkUi.Sunken))
                 {
                     g.FillRectangle(brush, row);
                 }
@@ -1187,16 +1433,45 @@ namespace SelectionTranslator
             Rectangle name, path, date, size;
             Columns(out name, out path, out date, out size);
 
-            // 分类色点，窄，不抢文字位置。
-            Rectangle dot = new Rectangle(
-                name.Left + 2, top + RowHeight / 2 - 3, 6, 6);
-            using (SolidBrush brush = new SolidBrush(KindColor(entry.Kind)))
+            // 图片行左边放真实缩略图，其他类型还是一个小色点——都不抢
+            // 文字位置。缩略图没解码好之前画占位块，位置固定不跳动。
+            bool isImage = entry.Kind == FileKind.Image;
+            int textPad;
+            if (isImage)
             {
-                g.FillEllipse(brush, dot);
+                string thumbPath = _data == null ? "" : _data.FullPath(entry);
+                Bitmap thumb = ThumbFor(thumbPath);
+                Rectangle box = new Rectangle(
+                    name.Left + 2, top + (RowHeight - ThumbSize) / 2,
+                    ThumbSize, ThumbSize);
+                if (thumb != null)
+                {
+                    g.DrawImage(thumb, box);
+                }
+                else
+                {
+                    using (GraphicsPath boxPath = DarkUi.Rounded(box, 4f))
+                    using (SolidBrush brush = new SolidBrush(DarkUi.Sunken))
+                    {
+                        g.FillPath(brush, boxPath);
+                    }
+                }
+                textPad = ThumbSize + 10;
+            }
+            else
+            {
+                // 分类色点，窄，不抢文字位置。
+                Rectangle dot = new Rectangle(
+                    name.Left + 2, top + RowHeight / 2 - 3, 6, 6);
+                using (SolidBrush brush = new SolidBrush(KindColor(entry.Kind)))
+                {
+                    g.FillEllipse(brush, dot);
+                }
+                textPad = 14;
             }
 
             Rectangle nameRect = new Rectangle(
-                name.Left + 14, top, name.Width - 14, RowHeight);
+                name.Left + textPad, top, name.Width - textPad, RowHeight);
             DarkUi.Text2(g, entry.Name,
                 entry.Kind == FileKind.Folder
                     ? DarkUi.FontStrong : DarkUi.FontSmall,
@@ -1210,16 +1485,47 @@ namespace SelectionTranslator
                 new Rectangle(path.Left, top, path.Width, RowHeight),
                 DarkUi.LeftMiddleClip);
 
-            DarkUi.Text2(g, FileKindLogic.DateText(entry.Ticks),
+            DarkUi.Text2(g, FileKindLogic.DateText(
+                    KnownTicks(entry)),
                 DarkUi.FontSmall, DarkUi.TextDim,
                 new Rectangle(date.Left, top, date.Width, RowHeight),
                 DarkUi.LeftMiddle);
 
             DarkUi.Text2(g,
-                FileKindLogic.SizeText(entry.Size, entry.Kind),
+                FileKindLogic.SizeText(KnownSize(entry), entry.Kind),
                 DarkUi.FontSmall, DarkUi.TextDim,
                 new Rectangle(size.Left, top, size.Width, RowHeight),
                 DarkUi.RightMiddle);
+        }
+
+        /// <summary>
+        /// MFT 索引里大小 / 时间是未知的；等真要画这一行时再补一次，
+        /// 用户翻到哪儿就 stat 到哪儿，不为整卷白花几百万次系统调用。
+        /// </summary>
+        private long KnownTicks(FileEntry entry)
+        {
+            if (!entry.IsValid)
+            {
+                return 0;
+            }
+            if (entry.MetaMissing && _data != null)
+            {
+                _data.EnsureMeta(entry);
+            }
+            return entry.Ticks;
+        }
+
+        private long KnownSize(FileEntry entry)
+        {
+            if (!entry.IsValid)
+            {
+                return 0;
+            }
+            if (entry.MetaMissing && _data != null)
+            {
+                _data.EnsureMeta(entry);
+            }
+            return entry.Size;
         }
 
         /// <summary>路径列只显示所在目录，文件本身名字已经在第一列了。</summary>
@@ -1285,8 +1591,7 @@ namespace SelectionTranslator
                 (double)_scroll / maxScroll * (trackHeight - thumbHeight));
             Rectangle thumb = new Rectangle(
                 Width - 7, thumbTop, 3, thumbHeight);
-            using (SolidBrush brush = new SolidBrush(
-                Color.FromArgb(80, 86, 96)))
+            using (SolidBrush brush = new SolidBrush(DarkUi.Border))
             {
                 g.FillRectangle(brush, thumb);
             }
@@ -1498,7 +1803,7 @@ namespace SelectionTranslator
             if (e.KeyCode == Keys.Enter && ItemActivated != null)
             {
                 FileEntry entry = SelectedItem;
-                if (entry != null)
+                if (entry.IsValid)
                 {
                     ItemActivated(entry);
                     e.Handled = true;

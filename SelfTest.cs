@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Text;
@@ -23,6 +24,60 @@ namespace SelectionTranslator
 
         private const uint MouseLeftDown = 0x0002;
         private const uint MouseLeftUp = 0x0004;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool SetWindowPos(
+            IntPtr hWnd, IntPtr after,
+            int x, int y, int cx, int cy, uint flags);
+
+        private static readonly IntPtr HwndTopmost = new IntPtr(-1);
+        private const uint SwpNoMoveSize = 0x0003;
+
+        /// <summary>
+        /// 真实鼠标探针的前置条件：面板必须真的压在目标点上。工作台 /
+        /// 浏览器窗口抢在最上层时，注入的鼠标消息根本不会到面板，
+        /// 会伪装成「拉伸没生效」。这里强制置顶并验证根窗口。
+        /// </summary>
+        private static bool EnsurePanelHit(
+            Form form, Point point, StringBuilder output, string label)
+        {
+            for (int i = 0; i < 8; i++)
+            {
+                // 先检查：已经压在最上层时什么都别做。无条件激活面板
+                // 会触发前台切换，偶发把面板状态搅乱（短条被展开）。
+                IntPtr root = RootWindowAt(point);
+                if (root == form.Handle)
+                {
+                    return true;
+                }
+                SetWindowPos(form.Handle, HwndTopmost,
+                    0, 0, 0, 0, SwpNoMoveSize);
+                SetForegroundWindow(form.Handle);
+                PumpMessages(120);
+            }
+            IntPtr last = RootWindowAt(point);
+            output.AppendLine(label + " 前置失败: target=" + point +
+                " root=" + last + " panel=" + form.Handle +
+                " panelBounds=" + form.Bounds +
+                " fg=" + WindowClass(GetForegroundWindow()));
+            return false;
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr WindowFromPoint(
+            NativeMethods.POINT point);
+
+        private static IntPtr RootWindowAt(Point p)
+        {
+            IntPtr hit = WindowFromPoint(
+                new NativeMethods.POINT(p.X, p.Y));
+            if (hit == IntPtr.Zero)
+            {
+                return IntPtr.Zero;
+            }
+            IntPtr root = GetAncestor(hit, 2);
+            return root == IntPtr.Zero ? hit : root;
+        }
 
         public static void Run()
         {
@@ -357,6 +412,151 @@ namespace SelectionTranslator
                     (statsFallback.X > 0).ToString(), "True");
                 Check(output, ref ok, "stats text opaque",
                     TaskbarStatsForm.TextColor().A.ToString(), "255");
+
+                // 状态条垂直居中：位图必须按「实际墨迹」定高，上下留白
+                // 相等。早期版本把 DrawString 的行框高度直接当位图高度，
+                // 数字字形只占行框上部，整块字就整体偏上，和任务栏里别的
+                // 小工具并排时一眼能看出没居中。
+                using (Bitmap bar = TaskbarStatsForm.RenderBitmap(
+                    "0.02 MB/s", "0.03 MB/s", 31, 89, 1f))
+                {
+                    int inkTop = -1;
+                    int inkBottom = -1;
+                    for (int y = 0; y < bar.Height; y++)
+                    {
+                        bool any = false;
+                        for (int x = 0; x < bar.Width; x++)
+                        {
+                            if (bar.GetPixel(x, y).A > 8)
+                            {
+                                any = true;
+                                break;
+                            }
+                        }
+                        if (any)
+                        {
+                            if (inkTop < 0)
+                            {
+                                inkTop = y;
+                            }
+                            inkBottom = y;
+                        }
+                    }
+                    int topGap = inkTop;
+                    int bottomGap = bar.Height - 1 - inkBottom;
+                    Check(output, ref ok, "status bar ink found",
+                        (inkTop >= 0).ToString(), "True");
+                    Check(output, ref ok, "status bar vertically centered",
+                        Math.Abs(topGap - bottomGap).ToString(), "0");
+                }
+
+                // ===== 占用避让：状态条落位前先看任务栏带有没有被别的
+                // 窗口占了，占了就自动挪到空档，别叠在别人内容上。 =====
+                Rectangle avoidTaskbar =
+                    new Rectangle(0, 1040, 1920, 40);
+                Rectangle avoidTray =
+                    new Rectangle(1600, 1040, 320, 40);
+                Size avoidContent = new Size(150, 32);
+                int avoidMargin = 8;
+                Point avoidBase = TaskbarStats.ComputePosition(
+                    avoidTaskbar, avoidTray, avoidContent, avoidMargin);
+                Check(output, ref ok, "avoid baseline x",
+                    avoidBase.X.ToString(), "1442");
+
+                // 没有占用 → 保持默认位置（紧贴托盘左侧）。
+                Point noOcc = TaskbarStats.AvoidOccupiers(
+                    avoidBase, avoidTaskbar, avoidTray,
+                    avoidContent, avoidMargin,
+                    new List<Rectangle>());
+                Check(output, ref ok, "avoid no-occupier keeps base",
+                    noOcc.X.ToString(), "1442");
+
+                // 默认位置被一个窗口盖住 → 自动左移到它的左边空档。
+                Point oneOcc = TaskbarStats.AvoidOccupiers(
+                    avoidBase, avoidTaskbar, avoidTray,
+                    avoidContent, avoidMargin,
+                    new List<Rectangle>
+                    {
+                        new Rectangle(1400, 1040, 150, 40)
+                    });
+                Check(output, ref ok, "avoid single occupier relocates",
+                    oneOcc.X.ToString(), "1250");
+                Check(output, ref ok,
+                    "avoid single occupier no overlap",
+                    (!oneOcc.Equals(avoidBase)).ToString(), "True");
+
+                // 整段可用带都被占满 → 没空档，退回默认位置。
+                Point fullOcc = TaskbarStats.AvoidOccupiers(
+                    avoidBase, avoidTaskbar, avoidTray,
+                    avoidContent, avoidMargin,
+                    new List<Rectangle>
+                    {
+                        new Rectangle(4, 1040, 1588, 40)
+                    });
+                Check(output, ref ok, "avoid full span falls back",
+                    fullOcc.X.ToString(), "1442");
+
+                // 两个窗口中间留了空档 → 落到空档右侧（贴着下一个占用体）。
+                Point gapOcc = TaskbarStats.AvoidOccupiers(
+                    avoidBase, avoidTaskbar, avoidTray,
+                    avoidContent, avoidMargin,
+                    new List<Rectangle>
+                    {
+                        new Rectangle(4, 1040, 600, 40),
+                        new Rectangle(900, 1040, 600, 40)
+                    });
+                Check(output, ref ok, "avoid gap slot",
+                    gapOcc.X.ToString(), "750");
+
+                // 竖直任务栏走不了水平区间算法 → 不挪动，保持默认。
+                Rectangle verticalTaskbar =
+                    new Rectangle(1040, 0, 40, 1920);
+                Point verticalBase = new Point(20, 1000);
+                Point verticalOcc = TaskbarStats.AvoidOccupiers(
+                    verticalBase, verticalTaskbar, Rectangle.Empty,
+                    avoidContent, avoidMargin,
+                    new List<Rectangle>
+                    {
+                        new Rectangle(1040, 800, 40, 400)
+                    });
+                Check(output, ref ok, "avoid vertical taskbar stays",
+                    (verticalOcc.X == 20 && verticalOcc.Y == 1000)
+                        .ToString(), "True");
+
+                // FindOccupiers 冒烟：真实任务栏下能跑通、不把系统组件
+                // 算进来、返回的矩形都落在任务栏带内。
+                try
+                {
+                    Rectangle realTaskbar =
+                        TaskbarStatsForm.GetTaskbarRect();
+                    List<Rectangle> occ =
+                        TaskbarStats.FindOccupiers(
+                            realTaskbar, IntPtr.Zero);
+                    bool allInside = true;
+                    if (occ != null)
+                    {
+                        foreach (Rectangle r in occ)
+                        {
+                            if (!realTaskbar.Contains(r))
+                            {
+                                allInside = false;
+                                break;
+                            }
+                        }
+                    }
+                    Check(output, ref ok,
+                        "find occupiers no throw",
+                        (occ != null).ToString(), "True");
+                    Check(output, ref ok,
+                        "find occupiers inside taskbar",
+                        allInside.ToString(), "True");
+                }
+                catch (Exception ex)
+                {
+                    Check(output, ref ok, "find occupiers no throw",
+                        "False (" + ex.GetType().Name + ")", "True");
+                }
+
                 using (Bitmap statsBitmap =
                     TaskbarStatsForm.RenderBitmap(
                         "6.60 KB/s", "5.04 KB/s", 28, 62, 1f))
@@ -2655,8 +2855,13 @@ namespace SelectionTranslator
             StringBuilder output, ref bool ok)
         {
             // ---- 文件秒搜快捷键 ----
+            // 默认不能是 Ctrl+F：全局热键会把它从所有程序手里抢走
+            // （任务管理器点搜索框、浏览器查找都会弹文件秒搜）。
             Check(output, ref ok, "filesearch hotkey default",
-                new AppConfig().HotkeyFileSearch, "Ctrl+F");
+                new AppConfig().HotkeyFileSearch, "Ctrl+Alt+F");
+            Check(output, ref ok, "filesearch hotkey not bare Ctrl+F",
+                new AppConfig().HotkeyFileSearch == "Ctrl+F"
+                    ? "bad" : "ok", "ok");
             Check(output, ref ok, "filesearch hotkey old config",
                 ConfigStore.HasFileSearchHotkeySetting(
                     "{\"AppId\":\"x\"}").ToString(), "False");
@@ -2673,8 +2878,11 @@ namespace SelectionTranslator
             Check(output, ref ok, "filesearch hotkey main key",
                 parsed ? key.ToString() : "-", "F");
             Check(output, ref ok, "filesearch hotkey ctrl bit",
-                parsed ? mods.ToString() : "-",
-                NativeMethods.MOD_CONTROL.ToString());
+                (parsed ? (mods & NativeMethods.MOD_CONTROL) : 0)
+                    .ToString(), NativeMethods.MOD_CONTROL.ToString());
+            Check(output, ref ok, "filesearch hotkey alt bit",
+                (parsed ? (mods & NativeMethods.MOD_ALT) : 0).ToString(),
+                NativeMethods.MOD_ALT.ToString());
 
             // ---- 灰度换算 ----
             using (Bitmap white = new Bitmap(4, 4))
@@ -3474,6 +3682,1843 @@ namespace SelectionTranslator
             }
         }
 
+        /// <summary>
+        /// 桌面管理探针：在临时目录造几类文件，验证列表加载、视图切换、
+        /// 透明度设置，以及「重新分类」只分类不搬家（文件原位不动、
+        /// 不创建分类文件夹）。最后清理临时目录。输出 desktopmgrprobe.txt。
+        /// </summary>
+        public static void RunDesktopMgrProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            DesktopManagerForm form = null;
+            string temp = null;
+            AppConfig backup = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                // 探针里的收起 / 展开 / 拉伸会一路 SavePanelState，跑完
+                // 必须把用户的真实配置原样恢复，别把探针几何写进 config。
+                backup = ConfigStore.Load();
+
+                temp = Path.Combine(
+                    Path.GetTempPath(),
+                    "st-desktopmgr-" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(temp);
+                File.WriteAllText(Path.Combine(temp, "报告.docx"), "doc");
+                File.WriteAllText(Path.Combine(temp, "截图.png"), "img");
+                File.WriteAllText(Path.Combine(temp, "电影.mp4"), "vid");
+                File.WriteAllText(Path.Combine(temp, "压缩包.zip"), "zip");
+                File.WriteAllText(Path.Combine(temp, "杂项.dat"), "other");
+
+                form = new DesktopManagerForm();
+                form.LoadFromPath(temp);
+
+                Check(output, ref ok, "桌面管理条目数",
+                    form.TotalItemCount.ToString(), "5");
+                Check(output, ref ok, "默认视图=列表",
+                    form.ViewMode.ToString(),
+                    DesktopManagerForm.ViewModeKind.List.ToString());
+
+                form.ToggleView();
+                Check(output, ref ok, "切换后=图标",
+                    form.ViewMode.ToString(),
+                    DesktopManagerForm.ViewModeKind.Icon.ToString());
+                form.ToggleView();
+                Check(output, ref ok, "切回=列表",
+                    form.ViewMode.ToString(),
+                    DesktopManagerForm.ViewModeKind.List.ToString());
+
+                form.SetOpacityForTest(0.5);
+                Check(output, ref ok, "透明度=50%",
+                    ((int)Math.Round(form.CurrentOpacity * 100)).ToString(),
+                    "50");
+
+                int classified = form.Organize(temp);
+                Check(output, ref ok, "分类计数", classified.ToString(), "5");
+                // 新版「重新分类」只做展示层分类：绝不移动文件、绝不建文件夹。
+                Check(output, ref ok, "整理后顶层文件数不变",
+                    Directory.GetFiles(temp).Length.ToString(), "5");
+                Check(output, ref ok, "不创建分类文件夹",
+                    (Directory.Exists(Path.Combine(temp, "文档")) ||
+                     Directory.Exists(Path.Combine(temp, "图片")) ||
+                     Directory.Exists(Path.Combine(temp, "视频")) ||
+                     Directory.Exists(Path.Combine(temp, "压缩")) ||
+                     Directory.Exists(Path.Combine(temp, "其它")))
+                        .ToString(),
+                    "False");
+                Check(output, ref ok, "文件留在原位",
+                    File.Exists(Path.Combine(temp, "报告.docx")).ToString(),
+                    "True");
+
+                // 分类完页签仍按扩展名分别汇总。
+                Check(output, ref ok, "分类后全部条目数",
+                    form.TotalItemCount.ToString(), "5");
+                Check(output, ref ok, "默认页签=文档",
+                    form.ActiveCategory, "文档");
+                // 「全部」聚合页签已去掉：6 格都是实打实的分类。
+                Check(output, ref ok, "页签数=6",
+                    DesktopManagerForm.Categories.Length.ToString(), "6");
+                Check(output, ref ok, "已去掉全部页签",
+                    (Array.IndexOf(
+                        DesktopManagerForm.Categories, "全部") < 0)
+                        .ToString(), "True");
+                form.SelectCategory("文档");
+                Check(output, ref ok, "页签文档=1",
+                    form.ItemCount.ToString(), "1");
+                form.SelectCategory("图片");
+                Check(output, ref ok, "页签图片=1",
+                    form.ItemCount.ToString(), "1");
+                form.SelectCategory("视频");
+                Check(output, ref ok, "页签视频=1",
+                    form.ItemCount.ToString(), "1");
+                form.SelectCategory("压缩");
+                Check(output, ref ok, "页签压缩=1",
+                    form.ItemCount.ToString(), "1");
+                form.SelectCategory("其它");
+                Check(output, ref ok, "页签其它=1",
+                    form.ItemCount.ToString(), "1");
+                // 分类文件夹本身不算「目录」页签的条目。
+                Check(output, ref ok, "页签目录=0",
+                    form.CountForCategory("目录").ToString(), "0");
+                form.SelectCategory("其它");
+                Check(output, ref ok, "切回其它=1",
+                    form.ItemCount.ToString(), "1");
+                Check(output, ref ok, "页签计数文档=1",
+                    form.CountForCategory("文档").ToString(), "1");
+
+                // 渲染冒烟：真的显示一次，确认自绘列表不抛 GDI+ 异常。
+                // 悬停展开改由下面的 HoverTickForTest 手动驱动，避免真实
+                // 光标位置把「收起 / 展开」断言搅乱。
+                form.SuspendHoverExpandForTest();
+                form.Show();
+                PumpMessages(160);
+
+                // 收起 / 展开：收起后只剩一条短横条，展开回到竖长形。
+                // 先把形状重置成默认：真实配置里可能残留探针 / 用户拖过
+                // 的尺寸，这组断言要的是出厂形状。
+                form.ResetSizesForTest();
+                form.OverridePointerForTest(false);
+                form.SetCollapsed(false);
+                int expandedHeight = form.Height;
+                int expandedRight = form.ScreenLocation.X + form.Width;
+                Check(output, ref ok, "展开是竖长形",
+                    (form.Height > form.Width).ToString(), "True");
+                Check(output, ref ok, "展开宽度=400",
+                    form.Width.ToString(), "400");
+                form.SetCollapsed(true);
+                Check(output, ref ok, "收起高度=标题栏",
+                    form.Height.ToString(), "44");
+                Check(output, ref ok, "收起是短条",
+                    (form.Width < 240).ToString(), "True");
+                Check(output, ref ok, "收起右边缘不动",
+                    (form.ScreenLocation.X + form.Width).ToString(),
+                    expandedRight.ToString());
+                Check(output, ref ok, "收起状态",
+                    form.Collapsed.ToString(), "True");
+                form.SetCollapsed(false);
+                Check(output, ref ok, "展开高度还原",
+                    form.Height.ToString(), expandedHeight.ToString());
+                Check(output, ref ok, "展开状态",
+                    form.Collapsed.ToString(), "False");
+
+                // 悬停自动展开：停够 180ms 才展开；手动收起时鼠标还压在
+                // 条上，必须先离开一次才能再次触发，否则会「收了又弹」。
+                form.SetCollapsed(true);
+                form.HoverTickForTest();          // 鼠标不在 → 解除压制
+                form.OverridePointerForTest(true);
+                form.HoverTickForTest();          // 60ms
+                form.HoverTickForTest();          // 120ms
+                Check(output, ref ok, "悬停未满 180ms 不展开",
+                    form.Collapsed.ToString(), "True");
+                form.HoverTickForTest();          // 180ms
+                Check(output, ref ok, "悬停 180ms 自动展开",
+                    form.Collapsed.ToString(), "False");
+                form.SetCollapsed(true);
+                for (int i = 0; i < 6; i++)
+                {
+                    form.HoverTickForTest();
+                }
+                Check(output, ref ok, "刚收起时鼠标未离开不弹开",
+                    form.Collapsed.ToString(), "True");
+                form.OverridePointerForTest(false);
+                form.HoverTickForTest();
+                form.OverridePointerForTest(true);
+                form.HoverTickForTest();
+                form.HoverTickForTest();
+                form.HoverTickForTest();
+                Check(output, ref ok, "鼠标离开再回来可展开",
+                    form.Collapsed.ToString(), "False");
+
+                // 展开态：鼠标离开面板 400ms 自动收起成短条；中途回来
+                // 计时清零，不然路过面板边缘都会被误收。
+                form.OverridePointerForTest(false);
+                form.HoverTickForTest();          // 60ms
+                form.HoverTickForTest();          // 120ms
+                form.HoverTickForTest();          // 180ms
+                Check(output, ref ok, "展开态离开未满 400ms 不收起",
+                    form.Collapsed.ToString(), "False");
+                form.OverridePointerForTest(true);
+                form.HoverTickForTest();          // 回来，计时清零
+                form.OverridePointerForTest(false);
+                form.HoverTickForTest();          // 60ms
+                form.HoverTickForTest();          // 120ms
+                Check(output, ref ok, "离开中断回来后重新计时",
+                    form.Collapsed.ToString(), "False");
+                for (int i = 0; i < 5; i++)
+                {
+                    form.HoverTickForTest();      // 180 / 240 / 300 / 360 / 420ms
+                }
+                Check(output, ref ok, "展开态离开 400ms 自动收起",
+                    form.Collapsed.ToString(), "True");
+                // 后面的拉伸几何断言要展开态。
+                form.OverridePointerForTest(true);
+                form.HoverTickForTest();          // 60
+                form.HoverTickForTest();          // 120
+                form.HoverTickForTest();          // 180 → 展开
+                Check(output, ref ok, "自动收起后可再悬停展开",
+                    form.Collapsed.ToString(), "False");
+
+                // 边框拉伸命中：展开只认左边框（宽度）/ 上边框（高度）
+                // / 左上角，右边框和下边框一律不响应，这样系统 sizing
+                // 循环里「下边框不动」才成立。
+                form.OverridePointerForTest(false);
+                Check(output, ref ok, "展开左边框可拉宽",
+                    form.ResizeHitForTest(2, 100).ToString(), "10");
+                Check(output, ref ok, "展开上边框可拉高",
+                    form.ResizeHitForTest(100, 2).ToString(), "12");
+                Check(output, ref ok, "展开左上角可双向拉",
+                    form.ResizeHitForTest(2, 2).ToString(), "13");
+                Check(output, ref ok, "展开右边框不响应",
+                    form.ResizeHitForTest(
+                        form.Width - 2, 100).ToString(), "0");
+                Check(output, ref ok, "展开下边框不响应",
+                    form.ResizeHitForTest(
+                        100, form.Height - 2).ToString(), "0");
+                Check(output, ref ok, "面板中央不拉伸",
+                    form.ResizeHitForTest(
+                        form.Width / 2, form.Height / 2).ToString(), "0");
+                Check(output, ref ok, "老配置尺寸 0 回落默认",
+                    DesktopManagerForm.ClampSizeForTest(
+                        0, 300, 1600, 400).ToString(), "400");
+                Check(output, ref ok, "合法尺寸不被改",
+                    DesktopManagerForm.ClampSizeForTest(
+                        520, 300, 1600, 400).ToString(), "520");
+
+                // 真实拉伸几何：上边框往上拉变高、下边缘不动、列表
+                // 当场多显示；往下拉变矮、列表少显示。左边框拉伸时
+                // 右边缘不动。
+                int h0 = form.Height;
+                int bottom0 = form.ScreenLocation.Y + form.Height;
+                int right0 = form.ScreenLocation.X + form.Width;
+                int list0 = form.ListHeightForTest;
+                form.SimulateResizeDragForTest(12, 0, -120);
+                Check(output, ref ok, "上边框往上拉变高",
+                    (form.Height > h0).ToString(), "True");
+                Check(output, ref ok, "上边框拉动时下边缘不动",
+                    (form.ScreenLocation.Y + form.Height).ToString(),
+                    bottom0.ToString());
+                Check(output, ref ok, "往上拉列表实时显示更多",
+                    (form.ListHeightForTest > list0).ToString(),
+                    "True");
+                int tall = form.Height;
+                int listTall = form.ListHeightForTest;
+                form.SimulateResizeDragForTest(12, 0, 200);
+                Check(output, ref ok, "上边框往下拉变矮",
+                    (form.Height < tall).ToString(), "True");
+                Check(output, ref ok, "往下拉列表实时显示更少",
+                    (form.ListHeightForTest < listTall).ToString(),
+                    "True");
+                int w0 = form.Width;
+                form.SimulateResizeDragForTest(10, -80, 0);
+                Check(output, ref ok, "左边框往左拉变宽",
+                    (form.Width > w0).ToString(), "True");
+                Check(output, ref ok, "左边框拉动时右边缘不动",
+                    (form.ScreenLocation.X + form.Width).ToString(),
+                    right0.ToString());
+
+                // 拉高时文件列表当场跟着变高（不是松手才生效）。
+                int listBefore = form.ListHeightForTest;
+                form.SetBounds(form.Left, form.Top, 520, 700);
+                Check(output, ref ok, "拉高时列表实时变高",
+                    (form.ListHeightForTest > listBefore).ToString(),
+                    "True");
+                form.EndResizeForTest();
+                Check(output, ref ok, "拉伸后记住展开宽度",
+                    form.ExpandedWidthForTest.ToString(), "520");
+                Check(output, ref ok, "拉伸后记住展开高度",
+                    form.ExpandedHeightForTest.ToString(), "700");
+
+                // 收起短条：左右边框都能改长度，高度锁死；边框区不
+                // 触发悬停展开，否则停在右边框上想拖就先被展开了。
+                form.SetCollapsed(true);
+                Check(output, ref ok, "收起右边框可改长度",
+                    form.ResizeHitForTest(
+                        form.Width - 2, 20).ToString(), "11");
+                Check(output, ref ok, "收起左边框可改长度",
+                    form.ResizeHitForTest(2, 20).ToString(), "10");
+                Check(output, ref ok, "收起上边框锁死",
+                    form.ResizeHitForTest(100, 2).ToString(), "0");
+                Check(output, ref ok, "边框不算悬停区域",
+                    form.IsHoverAreaForTest(
+                        form.Width - 2, 20).ToString(), "False");
+                Check(output, ref ok, "短条中央算悬停区域",
+                    form.IsHoverAreaForTest(
+                        form.Width / 2, 20).ToString(), "True");
+                form.SetBounds(form.Left, form.Top, 280, 44);
+                form.EndResizeForTest();
+                Check(output, ref ok, "短条长度可自定义并记住",
+                    form.CollapsedWidthForTest.ToString(), "280");
+
+                // 还原默认形状，别把后面的锁定 / 拖动断言搅乱。
+                form.SetBounds(form.Left, form.Top, 210, 44);
+                form.EndResizeForTest();
+                form.SetCollapsed(false);
+                form.SetBounds(form.Left, form.Top, 400, 620);
+                form.EndResizeForTest();
+
+                // 锁定位置：解锁时拖标题栏能挪，锁定后拖不动。
+                form.SetLocked(false);
+                Point beforeLock = form.Location;
+                form.BeginDragForTest();
+                form.MoveDragForTest(60, 40);
+                Check(output, ref ok, "解锁后标题栏可拖动",
+                    (form.Location != beforeLock).ToString(), "True");
+                form.SetLocked(true);
+                Point lockedAt = form.Location;
+                form.BeginDragForTest();
+                form.MoveDragForTest(-40, -25);
+                Check(output, ref ok, "锁定后拖不动",
+                    (form.Location == lockedAt).ToString(), "True");
+                Check(output, ref ok, "锁定状态可读",
+                    form.Locked.ToString(), "True");
+                form.SetLocked(false);
+                Check(output, ref ok, "解锁恢复可拖",
+                    form.Locked.ToString(), "False");
+
+                // 界面配色：浅色底必须自动转深色文字，两种主题都要保证
+                // 正文对比度足够（WCAG AA 大字标准 3:1，这里按 7:1 卡）。
+                UiTheme.Configure(
+                    Color.FromArgb(246, 247, 250),
+                    UiTheme.DefaultAccent, false);
+                Check(output, ref ok, "浅色主题判定",
+                    UiTheme.IsLight.ToString(), "True");
+                Check(output, ref ok, "浅色正文对比度>=7",
+                    (UiTheme.Contrast(UiTheme.Text, UiTheme.Window) >= 7)
+                        .ToString(), "True");
+                Check(output, ref ok, "浅色正文为深色",
+                    (UiTheme.Text.R < 80).ToString(), "True");
+
+                UiTheme.Configure(
+                    Color.FromArgb(22, 23, 26),
+                    UiTheme.DefaultAccent, false);
+                Check(output, ref ok, "深色主题判定",
+                    UiTheme.IsLight.ToString(), "False");
+                Check(output, ref ok, "深色正文对比度>=7",
+                    (UiTheme.Contrast(UiTheme.Text, UiTheme.Window) >= 7)
+                        .ToString(), "True");
+                Check(output, ref ok, "深色正文为浅色",
+                    (UiTheme.Text.R > 180).ToString(), "True");
+
+                // 强调色跟随：换了强调色，派生色必须跟着变。
+                UiTheme.Configure(
+                    UiTheme.DefaultBase,
+                    Color.FromArgb(224, 149, 74), false);
+                Check(output, ref ok, "强调色生效",
+                    UiTheme.Accent.ToArgb()
+                        .Equals(Color.FromArgb(224, 149, 74).ToArgb())
+                        .ToString(), "True");
+                Check(output, ref ok, "强调柔色区别于底色",
+                    (UiTheme.AccentSoft.ToArgb() !=
+                        UiTheme.Window.ToArgb()).ToString(), "True");
+
+                // 已打开窗口的「创建时一次性赋值」颜色要能跟着主题平移。
+                using (Panel probePanel = new Panel())
+                {
+                    probePanel.BackColor = UiTheme.DefaultBase;
+                    UiTheme.Configure(
+                        Color.FromArgb(246, 247, 250),
+                        UiTheme.DefaultAccent, false);
+                    UiTheme.Restyle(probePanel);
+                    Check(output, ref ok, "旧窗口底色跟随主题",
+                        (probePanel.BackColor.ToArgb() ==
+                            UiTheme.Window.ToArgb()).ToString(), "True");
+                }
+
+                UiTheme.Configure(
+                    UiTheme.DefaultBase, UiTheme.DefaultAccent, false);
+
+                // 真桌面加载耗时（只读，不动任何文件）。图标是后台补的，
+                // 所以这里的数字就是「打开面板到看见列表」的等待时间。
+                string desktop = Environment.GetFolderPath(
+                    Environment.SpecialFolder.DesktopDirectory);
+                if (Directory.Exists(desktop))
+                {
+                    System.Diagnostics.Stopwatch watch =
+                        System.Diagnostics.Stopwatch.StartNew();
+                    DesktopManagerForm real = new DesktopManagerForm();
+                    real.LoadFromPath(desktop);
+                    watch.Stop();
+                    output.AppendLine(string.Format(
+                        "真实桌面加载: {0} 项, {1} ms",
+                        real.TotalItemCount, watch.ElapsedMilliseconds));
+                    real.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                if (form != null && !form.IsDisposed)
+                {
+                    form.Close();
+                }
+                if (temp != null && Directory.Exists(temp))
+                {
+                    try
+                    {
+                        Directory.Delete(temp, true);
+                    }
+                    catch
+                    {
+                    }
+                }
+                try
+                {
+                    if (backup != null)
+                    {
+                        ConfigStore.Save(backup);
+                    }
+                }
+                catch
+                {
+                }
+                output.AppendLine(ok ? "RESULT: OK" : "RESULT: FAILED");
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory, "desktopmgrprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SetWindowDisplayAffinity(
+            IntPtr hWnd, uint affinity);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+        private static extern bool GetWindowDisplayAffinity(
+            IntPtr hWnd, out uint affinity);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr GetShellWindow();
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(
+            IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        private const int WmMouseActivate = 0x0021;
+        private const int MaNoActivate = 3;
+        private const int GwlExStyle = -20;
+        private const int WsExTopMost = 0x00000008;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr GetTopWindow(IntPtr hWnd);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr GetWindow(IntPtr hWnd, uint cmd);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool MoveWindow(
+            IntPtr hWnd, int x, int y, int width, int height, bool repaint);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool IsWindow(IntPtr hWnd);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
+        private struct RECT
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr GetDC(IntPtr hWnd);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+        [System.Runtime.InteropServices.DllImport("gdi32.dll")]
+        private static extern uint GetPixel(IntPtr hDC, int x, int y);
+
+        /// <summary>读屏幕上某一点的像素（诊断窗口到底有没有画出来）。</summary>
+        private static string ScreenPixel(int x, int y)
+        {
+            IntPtr dc = GetDC(IntPtr.Zero);
+            if (dc == IntPtr.Zero)
+            {
+                return "-";
+            }
+            try
+            {
+                uint value = GetPixel(dc, x, y);
+                if (value == 0xFFFFFFFF)
+                {
+                    return "err";
+                }
+                return ((value & 0xFF)).ToString() + "," +
+                    ((value >> 8) & 0xFF).ToString() + "," +
+                    ((value >> 16) & 0xFF).ToString();
+            }
+            finally
+            {
+                ReleaseDC(IntPtr.Zero, dc);
+            }
+        }
+
+        private static string WindowClass(IntPtr hWnd)
+        {
+            if (hWnd == IntPtr.Zero)
+            {
+                return "(null)";
+            }
+            StringBuilder sb = new StringBuilder(128);
+            GetClassName(hWnd, sb, sb.Capacity);
+            return sb.ToString();
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern void keybd_event(
+            byte virtualKey, byte scanCode, uint flags, IntPtr extraInfo);
+
+        private const byte VkLWin = 0x5B;
+        private const byte VkD = 0x44;
+        private const uint KeyEventKeyUp = 0x0002;
+
+        /// <summary>按一次 Win+D（显示桌面 / 还原）。</summary>
+        private static void ToggleShowDesktop()
+        {
+            keybd_event(VkLWin, 0, 0, IntPtr.Zero);
+            keybd_event(VkD, 0, 0, IntPtr.Zero);
+            PumpMessages(60);
+            keybd_event(VkD, 0, KeyEventKeyUp, IntPtr.Zero);
+            keybd_event(VkLWin, 0, KeyEventKeyUp, IntPtr.Zero);
+        }
+
+        private const uint GwHwndNext = 2;
+        private const uint GaRoot = 2;
+
+        /// <summary>窗口在系统 z-order 里的序号（0 最靠上）。找不到返回 -1。</summary>
+        private static int ZOrderIndex(IntPtr hWnd)
+        {
+            int total;
+            return ZOrderIndex(hWnd, out total);
+        }
+
+        private static int ZOrderIndex(IntPtr hWnd, out int total)
+        {
+            total = 0;
+            if (hWnd == IntPtr.Zero)
+            {
+                return -1;
+            }
+            IntPtr current = GetTopWindow(IntPtr.Zero);
+            int index = 0;
+            while (current != IntPtr.Zero && index < 4000)
+            {
+                if (current == hWnd)
+                {
+                    total = index;
+                    return index;
+                }
+                current = GetWindow(current, GwHwndNext);
+                index++;
+            }
+            total = index;
+            return -1;
+        }
+
+        /// <summary>整屏截图存到数据目录。</summary>
+        private static void CaptureDesktopShot(string name)
+        {
+            Rectangle bounds = Screen.PrimaryScreen.Bounds;
+            using (Bitmap shot = new Bitmap(bounds.Width, bounds.Height))
+            {
+                using (Graphics graphics = Graphics.FromImage(shot))
+                {
+                    graphics.CopyFromScreen(
+                        bounds.X, bounds.Y, 0, 0, bounds.Size);
+                }
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                shot.Save(Path.Combine(ConfigStore.DataDirectory, name),
+                    System.Drawing.Imaging.ImageFormat.Png);
+            }
+        }
+
+        /// <summary>
+        /// 常驻面板必须像桌面小部件：
+        ///   · 别的程序在前台时，它压在应用窗口下面、不是 topmost（否则
+        ///     就会盖在浏览器上面，用户抱怨过）；
+        ///   · 桌面在前台（Win+D / 关掉最后一个窗口）时，它浮到最前，
+        ///     保证回到桌面一定看得见；
+        ///   · 点它不会激活自己，也就不会顶到别人头上去；
+        ///   · 关掉应用窗口不会把它带走。
+        /// 输出 desktoppin.txt 与 ui-desktoppin-*.png。
+        /// </summary>
+        /// <summary>
+        /// 真实鼠标拖边框的端到端探针：验证 WinForms 消息链路（特别是被
+        /// 文件列表 / 滚动条盖住的左边框）、下边缘不动、列表当场变高，
+        /// 以及收起后拖短条右边框改长度。输出 resizeprobe.txt。
+        /// </summary>
+        public static void RunResizeProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool pass = true;
+            DesktopManagerForm form = null;
+            Point originalCursor = Cursor.Position;
+            AppConfig backup = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                UiTheme.Configure(
+                    UiTheme.DefaultBase, UiTheme.DefaultAccent, false);
+                backup = ConfigStore.Load();
+
+                form = new DesktopManagerForm();
+                form.LoadFromPath(Environment.GetFolderPath(
+                    Environment.SpecialFolder.DesktopDirectory));
+                form.StartPosition = FormStartPosition.Manual;
+                form.Location = new Point(120, 240);
+                // 实拍期间别让层级跟随把面板压到底下，也别让悬停展开
+                // 在拖边框时插一脚。
+                form.SuspendHoverExpandForTest();
+                form.SuspendZOrderForTest();
+                form.Show();
+                form.SetCollapsed(false);
+                // RestorePanelState / ApplyAnchoredSize 会按配置摆位置，
+                // 实拍探针要一个固定的起点，所以在 Show 之后再定一次。
+                form.Location = new Point(120, 240);
+                form.Size = new Size(400, 620);
+                // 冷启动时浏览器 / 工作台常会抢一次前台，刚 Show 完注入的
+                // 鼠标消息可能被它吃掉。先置顶 + 激活 + 等 DWM 排稳，再拖。
+                SetWindowPos(form.Handle, HwndTopmost,
+                    0, 0, 0, 0, SwpNoMoveSize);
+                SetForegroundWindow(form.Handle);
+                PumpMessages(500);
+
+                // 上边框往上拉 120px：下边缘不动、文件列表当场变高。
+                Point o = form.ScreenLocation;
+                Point topStart = new Point(o.X + 140, o.Y + 2);
+                bool topReady = EnsurePanelHit(
+                    form, topStart, output, "topDrag");
+                output.AppendLine("diag: handle=" + form.Handle +
+                    " rootAtStart=" + RootWindowAt(topStart) +
+                    " fg=" + WindowClass(GetForegroundWindow()) +
+                    " topmost=" + IsTopMost(form.Handle) +
+                    " bounds=" + form.Bounds + " visible=" + form.Visible +
+                    " ready=" + topReady);
+                o = form.ScreenLocation;
+                int h0 = form.Height;
+                int bottom0 = o.Y + h0;
+                int list0 = form.ListHeightForTest;
+                DragMouse(new Point(o.X + 140, o.Y + 2),
+                    new Point(o.X + 140, o.Y - 118));
+                PumpMessages(250);
+                // 完全没变化时重试一次：注入消息被别的进程抢走是环境
+                // 噪声（同一轮左边框 / 短条都成功），不是拉伸失效。
+                if (form.Height <= h0 + 60)
+                {
+                    output.AppendLine("topDrag 重试：首次按下消息未送达");
+                    EnsurePanelHit(form, topStart, output, "topDrag-retry");
+                    o = form.ScreenLocation;
+                    DragMouse(new Point(o.X + 140, o.Y + 2),
+                        new Point(o.X + 140, o.Y - 118));
+                    PumpMessages(250);
+                }
+                output.AppendLine("topDrag: h=" + h0 + "->" + form.Height +
+                    " bottom=" + bottom0 + "->" +
+                    (form.ScreenLocation.Y + form.Height) +
+                    " list=" + list0 + "->" + form.ListHeightForTest);
+                Check(output, ref pass, "真的能拖上边框变高",
+                    (form.Height > h0 + 60).ToString(), "True");
+                Check(output, ref pass, "拖上边框时下边缘不动",
+                    (form.ScreenLocation.Y + form.Height).ToString(),
+                    bottom0.ToString());
+                Check(output, ref pass, "拖动中列表真的变高",
+                    (form.ListHeightForTest > list0).ToString(), "True");
+
+                // 左边框这一列被列表 / 滚动条盖着，消息必须转发回窗体。
+                // 先把层级稳住，再重新取一次坐标：上一步拉高过面板，
+                // 置顶等待期间位置也可能被系统调整，旧坐标会打偏 6px 边框。
+                EnsurePanelHit(form,
+                    new Point(form.ScreenLocation.X + 140,
+                        form.ScreenLocation.Y + 200),
+                    output, "leftDrag");
+                o = form.ScreenLocation;
+                Point leftStart = new Point(o.X + 2, o.Y + 220);
+                DesktopManagerForm.ForwardDownCountForTest = 0;
+                DesktopManagerForm.ForwardHitCountForTest = 0;
+                DesktopManagerForm.ForwardMoveCountForTest = 0;
+                DesktopManagerForm.ForwardUpCountForTest = 0;
+                EnsurePanelHit(form, leftStart, output, "leftDrag");
+                // 所有基准值都在最后一次定位之后取，避免和拖拽起点错位。
+                o = form.ScreenLocation;
+                int w0 = form.Width;
+                int right0 = o.X + w0;
+                leftStart = new Point(o.X + 2, o.Y + 220);
+                output.AppendLine("leftDiag: origin=" + o +
+                    " bounds=" + form.Bounds +
+                    " rootAtLeft=" + RootWindowAt(leftStart) +
+                    " formHandle=" + form.Handle +
+                    " hit=" + form.ResizeHitAtScreenForTest(leftStart) +
+                    " child=" + form.ChildAtScreenForTest(leftStart));
+                DragMouse(leftStart,
+                    new Point(o.X - 78, o.Y + 220));
+                PumpMessages(250);
+                output.AppendLine("forward: down=" +
+                    DesktopManagerForm.ForwardDownCountForTest +
+                    " hit=" + DesktopManagerForm.ForwardHitCountForTest +
+                    " move=" + DesktopManagerForm.ForwardMoveCountForTest +
+                    " up=" + DesktopManagerForm.ForwardUpCountForTest +
+                    " resizing=" + form.IsResizingForTest);
+                output.AppendLine("leftDrag: w=" + w0 + "->" + form.Width +
+                    " right=" + right0 + "->" +
+                    (form.ScreenLocation.X + form.Width));
+                Check(output, ref pass, "列表区左边框也能拖宽",
+                    (form.Width > w0 + 40).ToString(), "True");
+                Check(output, ref pass, "拖左边框时右边缘不动",
+                    (form.ScreenLocation.X + form.Width).ToString(),
+                    right0.ToString());
+
+                // 实拍「上边框拉高 + 左边框拉宽」之后的形态：文件列表
+                // 区域肉眼可见地变大，正好核对用户要的实时变化。
+                EnsurePanelHit(form,
+                    new Point(form.ScreenLocation.X + 200,
+                        form.ScreenLocation.Y + 300),
+                    output, "resized-shot");
+                PumpMessages(150);
+                CaptureFormRegion(form, "ui-panel-resized.png", output);
+
+                // 收起后拖短条右边框改长度。
+                form.SetCollapsed(true);
+                PumpMessages(200);
+                EnsurePanelHit(form,
+                    new Point(form.ScreenLocation.X + 100,
+                        form.ScreenLocation.Y + 20),
+                    output, "barDrag");
+                o = form.ScreenLocation;
+                int cw0 = form.Width;
+                Point barStart = new Point(o.X + cw0 - 2, o.Y + 20);
+                EnsurePanelHit(form, barStart, output, "barDrag");
+                o = form.ScreenLocation;
+                cw0 = form.Width;
+                barStart = new Point(o.X + cw0 - 2, o.Y + 20);
+                output.AppendLine("barDiag: collapsed=" + form.Collapsed +
+                    " origin=" + o + " width=" + cw0 +
+                    " hit=" + form.ResizeHitAtScreenForTest(barStart) +
+                    " root=" + RootWindowAt(barStart));
+                Check(output, ref pass, "收起状态保持",
+                    form.Collapsed.ToString(), "True");
+                DragMouse(barStart,
+                    new Point(o.X + cw0 + 58, o.Y + 20));
+                PumpMessages(250);
+                output.AppendLine("barDrag: w=" + cw0 + "->" + form.Width);
+                Check(output, ref pass, "短条右边框能改长度",
+                    (form.Width > cw0 + 30).ToString(), "True");
+                Check(output, ref pass, "短条长度已记住",
+                    (form.CollapsedWidthForTest > cw0).ToString(), "True");
+            }
+            catch (Exception ex)
+            {
+                pass = false;
+                output.AppendLine("EXCEPTION: " + ex);
+            }
+            finally
+            {
+                SetCursorPos(originalCursor.X, originalCursor.Y);
+                try
+                {
+                    if (form != null && !form.IsDisposed)
+                    {
+                        form.SetResident(false);
+                        form.Close();
+                        form.Dispose();
+                    }
+                }
+                catch
+                {
+                }
+                try
+                {
+                    if (backup != null)
+                    {
+                        ConfigStore.Save(backup);
+                    }
+                }
+                catch
+                {
+                }
+                output.AppendLine(pass ? "RESULT: OK" : "RESULT: FAILED");
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                File.WriteAllText(
+                    Path.Combine(ConfigStore.DataDirectory,
+                        "resizeprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = pass ? 0 : 1;
+            }
+        }
+
+        private static void DragMouse(Point from, Point to)
+        {
+            SetCursorPos(from.X, from.Y);
+            PumpMessages(80);
+            mouse_event(MouseLeftDown, 0, 0, 0, IntPtr.Zero);
+            PumpMessages(80);
+            SetCursorPos(to.X, to.Y);
+            PumpMessages(120);
+            mouse_event(MouseLeftUp, 0, 0, 0, IntPtr.Zero);
+            PumpMessages(120);
+        }
+
+        public static void RunDesktopPin()
+        {
+            StringBuilder output = new StringBuilder();
+            bool pass = true;
+            DesktopManagerForm form = null;
+            Form overlay = null;
+            AppConfig backup = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                UiTheme.Configure(
+                    UiTheme.DefaultBase, UiTheme.DefaultAccent, false);
+                backup = ConfigStore.Load();
+
+                form = new DesktopManagerForm();
+                // 这个探针专门测 z-order：真实光标若恰好压在面板上，
+                // 悬停自动展开会改尺寸 / 层级，把断言搅乱。只停悬停计时，
+                // 层级跟随计时器必须照常跑。
+                form.SuspendHoverExpandForTest();
+                form.LoadFromPath(Environment.GetFolderPath(
+                    Environment.SpecialFolder.DesktopDirectory));
+                form.StartPosition = FormStartPosition.Manual;
+                form.SetBounds(120, 140, 640, 320);
+                form.SetResident(true);
+                form.Show();
+                PumpMessages(700);
+
+                Check(output, ref pass, "常驻标记仍在",
+                    form.Resident.ToString(), "True");
+                Check(output, ref pass, "面板不是置顶窗口",
+                    (IsTopMost(form.Handle) == false).ToString(), "True");
+                output.AppendLine("exStyle=0x" +
+                    GetWindowLong(form.Handle, GwlExStyle).ToString("X8"));
+
+                // 点面板不该激活它（否则 Windows 会把它提到最前）。
+                IntPtr activate = SendMessage(
+                    form.Handle, WmMouseActivate, IntPtr.Zero, IntPtr.Zero);
+                Check(output, ref pass, "点面板不激活自己",
+                    activate.ToString(), MaNoActivate.ToString());
+
+                // 拿一个普通窗口当「别的应用的窗口」，盖在面板位置上。
+                overlay = new Form();
+                overlay.StartPosition = FormStartPosition.Manual;
+                overlay.SetBounds(100, 120, 700, 420);
+                overlay.Text = "应用窗口（探针）";
+                overlay.Show();
+                overlay.Activate();
+                PumpMessages(900);
+                CaptureDesktopShot("ui-desktoppin-covered.png");
+
+                int overlayOrder = ZOrderIndex(overlay.Handle);
+                int panelOrder = ZOrderIndex(form.Handle);
+                output.AppendLine("应用在前台: overlay=" + overlayOrder +
+                    " panel=" + panelOrder + " topmost=" +
+                    IsTopMost(form.Handle));
+                Check(output, ref pass, "应用在前台时面板在它下面",
+                    (panelOrder > overlayOrder && overlayOrder >= 0).ToString(),
+                    "True");
+                Check(output, ref pass, "应用在前台时面板不置顶",
+                    IsTopMost(form.Handle).ToString(), "False");
+
+                // 把前台切到桌面，模拟「显示桌面 / 关掉最后一个窗口」。
+                // 直接 SetForegroundWindow(Progman) 会被前台锁定拒掉，
+                // 点屏幕空白也不保险（那个位置可能正有窗口），用 Win+D。
+                for (int i = 0; i < 2; i++)
+                {
+                    ToggleShowDesktop();
+                    PumpMessages(1200);
+                    if (WindowClass(GetForegroundWindow()) == "Progman")
+                    {
+                        break;
+                    }
+                }
+                // 面板自己 400ms 一拍才检查前台并浮上来，固定等 600ms 会
+                // 赶不上 tick 的时机；轮询等它真正置顶（至多 2.4s）。
+                for (int i = 0;
+                    i < 12 && !IsTopMost(form.Handle); i++)
+                {
+                    PumpMessages(200);
+                }
+                output.AppendLine("foreground now=" +
+                    WindowClass(GetForegroundWindow()));
+                output.AppendLine("桌面在前台: topmost=" +
+                    IsTopMost(form.Handle) + " state=" + form.WindowState);
+                Check(output, ref pass, "桌面在前台时面板浮到最前",
+                    IsTopMost(form.Handle).ToString(), "True");
+                Check(output, ref pass, "桌面在前台时面板没被最小化",
+                    form.WindowState.ToString(), "Normal");
+                CaptureDesktopShot("ui-desktoppin-desktop.png");
+                CaptureFormRegion(form, "ui-desktoppin-region.png", output);
+
+                // 再切回应用：面板必须立刻让开。
+                overlay.Activate();
+                // 面板 400ms 一拍才检查前台并让位，轮询等它真的让开
+                // （至多 3s），固定等待赶不上 tick 时机就会误报。
+                bool yielded = false;
+                for (int i = 0; i < 15; i++)
+                {
+                    PumpMessages(200);
+                    if (ZOrderIndex(form.Handle) >
+                        ZOrderIndex(overlay.Handle))
+                    {
+                        yielded = true;
+                        break;
+                    }
+                }
+                int again = ZOrderIndex(form.Handle);
+                output.AppendLine("切回应用: panel=" + again +
+                    " overlay=" + ZOrderIndex(overlay.Handle) +
+                    " topmost=" + IsTopMost(form.Handle));
+                Check(output, ref pass, "切回应用后面板让位",
+                    yielded.ToString(), "True");
+                Check(output, ref pass, "切回应用后面板取消置顶",
+                    IsTopMost(form.Handle).ToString(), "False");
+
+                // 从托盘打开（前台还是应用窗口）：先浮起来让人看见，
+                // 鼠标一离开面板就回到桌面层，不能一直挡着别人。
+                form.RaiseForUser();
+                PumpMessages(300);
+                Check(output, ref pass, "托盘打开时先浮到最前",
+                    IsTopMost(form.Handle).ToString(), "True");
+                // 鼠标进到面板上：只要还在上面就一直陪着。
+                SetCursorPos(300, 300);
+                PumpMessages(900);
+                Check(output, ref pass, "鼠标在面板上时保持最前",
+                    IsTopMost(form.Handle).ToString(), "True");
+                // 鼠标移开：立刻回到桌面层，不挡别人。
+                SetCursorPos(10, 1000);
+                for (int i = 0;
+                    i < 12 && IsTopMost(form.Handle); i++)
+                {
+                    PumpMessages(200);
+                }
+                Check(output, ref pass, "鼠标移开后回到桌面层",
+                    IsTopMost(form.Handle).ToString(), "False");
+
+                overlay.Close();
+                overlay.Dispose();
+                overlay = null;
+                PumpMessages(700);
+                Check(output, ref pass, "关掉应用窗口后面板还在",
+                    (IsWindow(form.Handle) && form.Visible).ToString(),
+                    "True");
+            }
+            catch (Exception ex)
+            {
+                pass = false;
+                output.AppendLine("EXCEPTION: " + ex);
+            }
+            finally
+            {
+                try
+                {
+                    if (overlay != null && !overlay.IsDisposed)
+                    {
+                        overlay.Close();
+                        overlay.Dispose();
+                    }
+                }
+                catch
+                {
+                }
+                try
+                {
+                    if (form != null && !form.IsDisposed)
+                    {
+                        form.SetResident(false);
+                        form.Close();
+                        form.Dispose();
+                    }
+                }
+                catch
+                {
+                }
+                try
+                {
+                    // 探针不能把用户的常驻开关和位置改掉。
+                    if (backup != null)
+                    {
+                        ConfigStore.Save(backup);
+                    }
+                }
+                catch
+                {
+                }
+                output.AppendLine(pass ? "RESULT: OK" : "RESULT: FAILED");
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory, "desktoppin.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = pass ? 0 : 1;
+            }
+        }
+
+        /// <summary>窗口是不是 topmost（WS_EX_TOPMOST）。</summary>
+        private static bool IsTopMost(IntPtr hWnd)
+        {
+            return (GetWindowLong(hWnd, GwlExStyle) & WsExTopMost) != 0;
+        }
+
+        /// <summary>
+        /// 桌面整理面板实拍：常驻展开 / 收起 / 浅色三张图，用于人工核对
+        /// 外观（只读桌面，不写任何配置）。输出 ui-panel-*.png。
+        /// </summary>
+        public static void RunDesktopPanelLive()
+        {
+            StringBuilder output = new StringBuilder();
+            bool pass = true;
+            DesktopManagerForm form = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                UiTheme.Configure(
+                    UiTheme.DefaultBase, UiTheme.DefaultAccent, false);
+
+                form = new DesktopManagerForm();
+                string desktop = Environment.GetFolderPath(
+                    Environment.SpecialFolder.DesktopDirectory);
+                form.LoadFromPath(desktop);
+                form.StartPosition = FormStartPosition.Manual;
+                form.Location = new Point(60, 60);
+                form.Show();
+                form.SetCollapsed(false);
+                // 等图标后台补齐再拍，否则拍到的是只有文字的半成品。
+                // 固定等 1.8s 在机器忙的时候会不够（实测只补到 70/161），
+                // 改成最多轮询 6s，齐了就立刻继续。
+                for (int i = 0;
+                    i < 60 && form.LoadedIconCount < form.TotalItemCount; i++)
+                {
+                    PumpMessages(100);
+                }
+                PumpMessages(200);
+                output.AppendLine("icons=" + form.LoadedIconCount +
+                    "/" + form.TotalItemCount +
+                    ", thumbs=" + form.ThumbnailCount);
+                Check(output, ref pass, "图标全部补齐",
+                    form.LoadedIconCount.ToString(),
+                    form.TotalItemCount.ToString());
+                Check(output, ref pass, "图标有可见像素",
+                    (form.VisibleIconCount > 0).ToString(), "True");
+                // 图片格里必须是真的缩略图，不是统一的「图片」类型图标。
+                Check(output, ref pass, "图片有真缩略图",
+                    (form.ThumbnailCount > 0).ToString(), "True");
+                // 拍照落在「图片」页签 + 图标视图上：截图里才能看到缩略图
+                // 效果（用户抱怨的就是「图片全是同一个图标」）。
+                form.SelectCategory("图片");
+                form.ViewMode = DesktopManagerForm.ViewModeKind.Icon;
+                // 置顶 + 不透明再拍：面板平时是半透明小部件，背后窗口会
+                // 透过来，截出来看不清自己长什么样。层级跟随计时器会把
+                // 置顶撤掉，实拍期间先停掉它。
+                form.SuspendZOrderForTest();
+                form.TopMost = true;
+                form.SetOpacityForTest(1.0);
+                form.Activate();
+                PumpMessages(250);
+                CaptureFormRegion(form, "ui-panel-expanded.png", output);
+
+                form.SetCollapsed(true);
+                PumpMessages(400);
+                CaptureFormRegion(form, "ui-panel-collapsed.png", output);
+
+                form.SetCollapsed(false);
+                UiTheme.Configure(
+                    Color.FromArgb(246, 247, 250),
+                    Color.FromArgb(214, 122, 60),
+                    true);
+                PumpMessages(500);
+                CaptureFormRegion(form, "ui-panel-light.png", output);
+
+                UiTheme.Configure(
+                    UiTheme.DefaultBase, UiTheme.DefaultAccent, true);
+                PumpMessages(200);
+            }
+            catch (Exception ex)
+            {
+                pass = false;
+                output.AppendLine("EXCEPTION: " + ex);
+            }
+            finally
+            {
+                if (form != null && !form.IsDisposed)
+                {
+                    form.Close();
+                }
+                output.AppendLine(pass ? "RESULT: OK" : "RESULT: FAILED");
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory, "panellive.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = pass ? 0 : 1;
+            }
+        }
+
+        /// <summary>
+        /// 托盘菜单「勾选项点完不收起」的端到端探针：真的弹一条菜单，用
+        /// 鼠标事件去点勾选类条目，确认菜单没关、勾选状态变了；最后点一个
+        /// 普通条目，确认菜单照常收起。逻辑与 TrayApplicationContext 里
+        /// 的 OnTrayMenuClosing 完全一致。输出 menuprobe.txt。
+        /// </summary>
+        public static void RunMenuKeepOpenProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            StringBuilder closeLog = new StringBuilder();
+            bool ok = true;
+            ContextMenuStrip menu = null;
+            Form host = null;
+            Point original = Cursor.Position;
+            try
+            {
+                Application.EnableVisualStyles();
+                UiTheme.Configure(
+                    UiTheme.DefaultBase, UiTheme.DefaultAccent, false);
+
+                // 先让本进程自己的窗口成为前台：前台是别的程序时，注入
+                // 的第一下点击常被系统拿去「激活」，勾选状态就丢了。
+                host = new Form();
+                host.StartPosition = FormStartPosition.Manual;
+                host.SetBounds(-4000, -4000, 200, 120);
+                host.Show();
+                host.Activate();
+                PumpMessages(300);
+
+                bool keepOpen = false;
+                menu = new ContextMenuStrip();
+                menu.ShowImageMargin = false;
+                menu.Font = DarkUi.FontBody;
+
+                ToolStripMenuItem a = new ToolStripMenuItem("开关 A");
+                a.CheckOnClick = true;
+                a.MouseDown += delegate { keepOpen = true; };
+                menu.Items.Add(a);
+
+                ToolStripMenuItem b = new ToolStripMenuItem("开关 B");
+                b.CheckOnClick = true;
+                b.MouseDown += delegate { keepOpen = true; };
+                menu.Items.Add(b);
+
+                ToolStripMenuItem action = new ToolStripMenuItem("普通动作项");
+                action.Click += delegate { };
+                menu.Items.Add(action);
+
+                menu.Closing += delegate(
+                    object s, ToolStripDropDownClosingEventArgs e)
+                {
+                    closeLog.Append("[" + e.CloseReason + "/keep=" +
+                        keepOpen + "]");
+                    if (keepOpen && e.CloseReason ==
+                        ToolStripDropDownCloseReason.ItemClicked)
+                    {
+                        keepOpen = false;
+                        e.Cancel = true;
+                        closeLog.Append("(cancel)");
+                        return;
+                    }
+                    keepOpen = false;
+                };
+
+                menu.Show(new Point(420, 420));
+                PumpMessages(200);
+                // 桌面上如果还有别的窗口在前台，弹出的菜单可能没有被
+                // 激活，第一次注入的点击会被拿去「激活」而丢掉勾选。
+                // 先主动把焦点给菜单，注入的点击就都算命令了。
+                menu.Focus();
+                PumpMessages(200);
+                Check(output, ref ok, "菜单已弹出",
+                    menu.Visible.ToString(), "True");
+
+                ClickMenuItem(menu, a);
+                PumpMessages(350);
+                Check(output, ref ok, "第一项已勾选",
+                    a.Checked.ToString(), "True");
+                Check(output, ref ok, "勾选后菜单仍展开",
+                    menu.Visible.ToString(), "True");
+
+                ClickMenuItem(menu, b);
+                PumpMessages(350);
+                Check(output, ref ok, "第二项已勾选",
+                    b.Checked.ToString(), "True");
+                Check(output, ref ok, "连点第二项菜单仍展开",
+                    menu.Visible.ToString(), "True");
+
+                ClickMenuItem(menu, a);
+                PumpMessages(350);
+                Check(output, ref ok, "再次点击取消勾选",
+                    a.Checked.ToString(), "False");
+                Check(output, ref ok, "取消勾选后菜单仍展开",
+                    menu.Visible.ToString(), "True");
+
+                ClickMenuItem(menu, action);
+                PumpMessages(500);
+                Check(output, ref ok, "普通项点完菜单收起",
+                    menu.Visible.ToString(), "False");
+            }
+            catch (Exception ex)
+            {
+                ok = false;
+                output.AppendLine("EXCEPTION: " + ex);
+            }
+            finally
+            {
+                if (menu != null)
+                {
+                    menu.Close();
+                    menu.Dispose();
+                }
+                if (host != null)
+                {
+                    host.Close();
+                    host.Dispose();
+                }
+                output.AppendLine("closing log: " + closeLog);
+                SetCursorPos(original.X, original.Y);
+                output.AppendLine(ok ? "RESULT: OK" : "RESULT: FAILED");
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory, "menuprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        /// <summary>用真实鼠标事件点菜单里的某一项（屏幕坐标）。</summary>
+        private static void ClickMenuItem(
+            ContextMenuStrip menu, ToolStripItem item)
+        {
+            Rectangle r = menu.RectangleToScreen(item.Bounds);
+            SetCursorPos(r.Left + r.Width / 2, r.Top + r.Height / 2);
+            PumpMessages(80);
+            mouse_event(MouseLeftDown, 0, 0, 0, IntPtr.Zero);
+            PumpMessages(40);
+            mouse_event(MouseLeftUp, 0, 0, 0, IntPtr.Zero);
+        }
+
+        /// <summary>整屏实拍（诊断常驻面板是否真的显示在桌面上）。</summary>
+        public static void RunScreenShot()
+        {
+            try
+            {
+                Application.EnableVisualStyles();
+                Rectangle bounds = Screen.PrimaryScreen.Bounds;
+                using (Bitmap shot = new Bitmap(bounds.Width, bounds.Height))
+                {
+                    using (Graphics graphics = Graphics.FromImage(shot))
+                    {
+                        graphics.CopyFromScreen(
+                            bounds.X, bounds.Y, 0, 0, bounds.Size);
+                    }
+                    shot.Save(
+                        Path.Combine(
+                            ConfigStore.DataDirectory, "screen-now.png"),
+                        ImageFormat.Png);
+                }
+
+                // 顺便把属于本程序（任意进程）的顶层窗口列出来，验证
+                // 常驻面板真的建出来了、位置和尺寸对不对。
+                StringBuilder windows = new StringBuilder();
+                EnumWindows(delegate(IntPtr hWnd, IntPtr lParam)
+                {
+                    string line = DescribeWin(hWnd, bounds);
+                    if (line != null &&
+                        line.IndexOf("工具侠", StringComparison.Ordinal) >= 0)
+                    {
+                        windows.AppendLine(line);
+                    }
+                    return true;
+                }, IntPtr.Zero);
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory, "screen.txt"),
+                    windows.ToString(), Encoding.UTF8);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("整屏截图失败", ex);
+                Environment.ExitCode = 1;
+            }
+        }
+
+        /// <summary>界面外观窗口实拍（深色 / 浅色各一张），只预览不写配置。</summary>
+        public static void RunAppearanceLive()
+        {
+            StringBuilder output = new StringBuilder();
+            bool pass = true;
+            AppearanceForm form = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                UiTheme.Configure(
+                    UiTheme.DefaultBase, UiTheme.DefaultAccent, false);
+                form = new AppearanceForm();
+                form.StartPosition = FormStartPosition.Manual;
+                form.Location = new Point(80, 80);
+                form.Show();
+                PumpMessages(500);
+                CaptureFormRegion(form, "ui-appearance-dark.png", output);
+
+                UiTheme.Configure(
+                    Color.FromArgb(246, 247, 250),
+                    Color.FromArgb(214, 122, 60),
+                    true);
+                PumpMessages(400);
+                CaptureFormRegion(form, "ui-appearance-light.png", output);
+
+                UiTheme.Configure(
+                    UiTheme.DefaultBase, UiTheme.DefaultAccent, true);
+                PumpMessages(200);
+            }
+            catch (Exception ex)
+            {
+                pass = false;
+                output.AppendLine("EXCEPTION: " + ex);
+            }
+            finally
+            {
+                if (form != null && !form.IsDisposed)
+                {
+                    form.Close();
+                }
+                output.AppendLine(pass ? "RESULT: OK" : "RESULT: FAILED");
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory, "appearancelive.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = pass ? 0 : 1;
+            }
+        }
+
+        /// <summary>手动翻译窗口实拍（验证语言选择那一行排得下），只预览不写配置。</summary>
+        public static void RunTranslatePreview()
+        {
+            StringBuilder output = new StringBuilder();
+            bool pass = true;
+            TranslationForm form = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                AppConfig config = new AppConfig();
+                form = new TranslationForm(
+                    config, "", new Point(0, 0), null, true);
+                form.StartPosition = FormStartPosition.Manual;
+                form.Location = new Point(80, 80);
+                form.TopMost = true;
+                form.Show();
+                form.Activate();
+                form.BringToFront();
+                PumpMessages(600);
+                output.AppendLine("from=" + form.DescribeLanguageRow());
+                CaptureFormRegion(form, "ui-translate.png", output);
+            }
+            catch (Exception ex)
+            {
+                pass = false;
+                output.AppendLine("EXCEPTION: " + ex);
+            }
+            finally
+            {
+                if (form != null && !form.IsDisposed)
+                {
+                    form.Close();
+                }
+                output.AppendLine(pass ? "RESULT: OK" : "RESULT: FAILED");
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory, "translatepreview.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = pass ? 0 : 1;
+            }
+        }
+
+        /// <summary>
+        /// NTFS MFT 索引探针：能不能读、多少条、多快、和目录扫描的
+        /// 结果是否一致（抽查几类路径），以及 stat 回填是否可用。
+        /// </summary>
+        public static void RunMftProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool pass = true;
+            try
+            {
+                List<string> roots = FileIndexService.ResolveRoots();
+                output.AppendLine("roots=" + string.Join(" | ",
+                    roots.ToArray()));
+                List<string> volumes = new List<string>();
+                for (int i = 0; i < roots.Count; i++)
+                {
+                    string root = Path.GetPathRoot(roots[i]);
+                    if (!string.IsNullOrEmpty(root) &&
+                        !volumes.Contains(root.ToUpperInvariant()))
+                    {
+                        volumes.Add(root.ToUpperInvariant());
+                    }
+                }
+                for (int i = 0; i < volumes.Count; i++)
+                {
+                    output.AppendLine("volume " + volumes[i] +
+                        " ntfs=" + MftScanner.IsVolumeNtfs(volumes[i]) +
+                        " readable=" + MftScanner.CanRead(volumes[i]));
+                }
+                output.AppendLine("availability=[" +
+                    MftScanner.DescribeAvailability(roots) + "]");
+                output.AppendLine("elevated=" +
+                    TrayApplicationContext.IsElevated());
+
+                FileIndexData data = new FileIndexData();
+                data.Roots = roots;
+                FileScanProgress progress = new FileScanProgress();
+                MftScanner.DebugRaw = new List<string>();
+                string detail;
+                Stopwatch watch = Stopwatch.StartNew();
+                bool ok = MftScanner.TryScan(
+                    roots, data, progress, null, out detail);
+                watch.Stop();
+                output.AppendLine("mft used=" + ok + " detail=[" + detail +
+                    "]");
+                Check(output, ref pass, "MFT 可用", ok.ToString(), "True");
+                long mftMs = watch.ElapsedMilliseconds;
+                output.AppendLine("mft entries=" + data.Entries.Count +
+                    " dirs=" + data.Directories.Count +
+                    " ms=" + mftMs);
+                if (MftScanner.DebugRaw != null)
+                {
+                    for (int i = 0; i < MftScanner.DebugRaw.Count; i++)
+                    {
+                        output.AppendLine("raw[" + i + "] " +
+                            MftScanner.DebugRaw[i]);
+                    }
+                }
+                Check(output, ref pass, "MFT 有条目",
+                    (data.Entries.Count > 1000).ToString(), "True");
+                output.AppendLine("mft detail=" + MftScanner.LastStats);
+                Check(output, ref pass, "MFT 路径可拼",
+                    SampleHasFullPath(data).ToString(), "True");
+
+                // 抽查：随机取 3 条，看拼出来的路径是否真实存在。
+                int checkedCount = 0;
+                int existsCount = 0;
+                Random random = new Random(20261111);
+                for (int i = 0; i < data.Entries.Count && checkedCount < 5; i +=
+                    Math.Max(1, data.Entries.Count / 5))
+                {
+                    FileEntry entry = new FileEntry(data, i);
+                    string full = data.FullPath(entry);
+                    bool exists = !string.IsNullOrEmpty(full) &&
+                        (File.Exists(full) || Directory.Exists(full));
+                    output.AppendLine("sample[" + checkedCount + "] " +
+                        full + " exists=" + exists);
+                    if (exists)
+                    {
+                        existsCount++;
+                    }
+                    checkedCount++;
+                }
+                Check(output, ref pass, "抽查路径存在",
+                    existsCount.ToString(), checkedCount.ToString());
+
+                // stat 回填：取第一条文件，补齐后应有真实大小/时间。
+                FileEntry firstFile = default(FileEntry);
+                for (int i = 0; i < data.Entries.Count; i++)
+                {
+                    if (data.Entries.Kind(i) != FileKind.Folder)
+                    {
+                        firstFile = new FileEntry(data, i);
+                        break;
+                    }
+                }
+                if (firstFile.IsValid)
+                {
+                    bool wasMissing = firstFile.MetaMissing;
+                    data.EnsureMeta(firstFile);
+                    output.AppendLine("meta missing=" + wasMissing +
+                        " -> size=" + firstFile.Size +
+                        " ticks=" + firstFile.Ticks);
+                    Check(output, ref pass, "回填后大小有效",
+                        (firstFile.MetaMissing == false &&
+                         firstFile.Size >= 0).ToString(), "True");
+                    Check(output, ref pass, "回填后时间有效",
+                        (firstFile.Ticks > 0).ToString(), "True");
+                }
+
+                // 与目录扫描比对：同样的根，条目数量级应相当（MFT 会多出
+                // 被跳过目录之外的隐藏项，允许 0.5x~3x 的差异）。
+                FileIndexData walked = new FileIndexData();
+                FileScanProgress p2 = new FileScanProgress();
+                Stopwatch w2 = Stopwatch.StartNew();
+                FileScanner.Scan(roots, walked, p2, null);
+                w2.Stop();
+                output.AppendLine("walk entries=" + walked.Entries.Count +
+                    " ms=" + w2.ElapsedMilliseconds);
+                double ratio = walked.Entries.Count == 0 ? 0 :
+                    (double)data.Entries.Count / walked.Entries.Count;
+                output.AppendLine("ratio=" + ratio.ToString("0.00"));
+                Check(output, ref pass, "MFT 比目录扫描快",
+                    (mftMs < w2.ElapsedMilliseconds).ToString(), "True");
+                Check(output, ref pass, "条目数量级一致",
+                    (ratio > 0.5 && ratio < 3.0).ToString(), "True");
+            }
+            catch (Exception ex)
+            {
+                pass = false;
+                output.AppendLine("EXCEPTION: " + ex);
+            }
+            finally
+            {
+                output.AppendLine(pass ? "RESULT: OK" : "RESULT: FAILED");
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                File.WriteAllText(
+                    Path.Combine(ConfigStore.DataDirectory, "mftprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = pass ? 0 : 1;
+            }
+        }
+
+        /// <summary>
+        /// MFT 路径拼装的结构探针：不需要管理员权限。用手造的记录表验证
+        /// 「只有目录留完整路径、文件靠父目录归属」这套改动没有把文件弄丢、
+        /// 也没有串到错误的父目录上。真卷只有管理员能读，这是普通权限下
+        /// 唯一能自动盯住这块的手段。
+        /// </summary>
+        public static void RunMftEmitProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            try
+            {
+                List<string> roots = new List<string>();
+                roots.Add("Q:\\");
+                FileIndexData data = new FileIndexData();
+                data.Roots = roots;
+                //   0 卷根          1 docs(目录)        2 报告.docx
+                //                   3 node_modules(目录) 4 evil.js
+                //                   5 readme.txt（直接挂卷根）
+                long[] frn = new long[] { 5, 10, 11, 12, 13, 14 };
+                long[] parent = new long[] { 5, 5, 10, 5, 12, 5 };
+                byte[] flags = new byte[] { 1, 1, 0, 1, 0, 0 };
+                string[] names = new string[]
+                {
+                    "", "docs", "报告.docx", "node_modules", "evil.js",
+                    "readme.txt"
+                };
+                MftScanner.Emit("Q:", roots, data, new FileScanProgress(),
+                    null, frn, parent, flags, names, frn.Length);
+
+                output.AppendLine("entries=" + data.Entries.Count +
+                    " dirs=" + data.Directories.Count);
+                for (int i = 0; i < data.Entries.Count; i++)
+                {
+                    output.AppendLine("  [" + i + "] " +
+                        data.FullPath(i));
+                }
+                for (int i = 0; i < data.Directories.Count; i++)
+                {
+                    output.AppendLine("  dir[" + i + "] " +
+                        data.Directories[i]);
+                }
+                output.AppendLine("stats=" + MftScanner.LastStats);
+
+                // 目录本身也是一条条目（docs），所以是 1 个目录 + 2 个文件。
+                Check(output, ref ok, "mft emit 条目数",
+                    data.Entries.Count.ToString(), "3");
+                bool hasDoc = false;
+                bool hasReadme = false;
+                bool hasEvil = false;
+                for (int i = 0; i < data.Entries.Count; i++)
+                {
+                    string full = data.FullPath(i);
+                    if (full == "Q:\\docs\\报告.docx")
+                    {
+                        hasDoc = true;
+                    }
+                    if (full == "Q:\\readme.txt")
+                    {
+                        hasReadme = true;
+                    }
+                    if (full.EndsWith("evil.js",
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        hasEvil = true;
+                    }
+                }
+                Check(output, ref ok, "mft emit 子目录文件路径",
+                    hasDoc.ToString(), "True");
+                Check(output, ref ok, "mft emit 卷根文件路径",
+                    hasReadme.ToString(), "True");
+                Check(output, ref ok, "mft emit 剪枝目录里的文件不要",
+                    hasEvil.ToString(), "False");
+            }
+            catch (Exception ex)
+            {
+                ok = false;
+                output.AppendLine("EXCEPTION: " + ex);
+            }
+            finally
+            {
+                output.AppendLine(ok ? "RESULT: OK" : "RESULT: FAILED");
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                File.WriteAllText(
+                    Path.Combine(ConfigStore.DataDirectory,
+                        "mftemitprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        private static bool SampleHasFullPath(FileIndexData data)
+        {
+            int hits = 0;
+            int total = 0;
+            for (int i = 0; i < data.Entries.Count; i += 977)
+            {
+                total++;
+                string full = data.FullPath(i);
+                // 合格标准：拿得到绝对路径（"C:\..."），且至少有一层目录。
+                if (!string.IsNullOrEmpty(full) && full.Length > 4 &&
+                    full[1] == ':' && full[2] == '\\' &&
+                    full.IndexOf('\\', 3) > 3)
+                {
+                    hits++;
+                }
+            }
+            return total > 0 && hits >= total * 9 / 10;
+        }
+
+        /// <summary>
+        /// 文件秒搜「图片」分类实拍：真实索引 → 切到图片 → 等缩略图解码，
+        /// 深色 / 浅色各拍一张，并取样奇数行底色，锁住「浅色主题下隔行
+        /// 还是黑条」这个回归。
+        /// </summary>
+        public static void RunSearchThumbLive()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            FileSearchForm form = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                form = FileSearchForm.ShowWindow();
+                DateTime deadline = DateTime.UtcNow.AddMinutes(3);
+                while (!FileIndexService.Instance.Ready &&
+                    DateTime.UtcNow < deadline)
+                {
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(50);
+                }
+                form.TopMost = true;
+                form.Activate();
+                form.SelectKind(FileKind.Image);
+                deadline = DateTime.UtcNow.AddSeconds(25);
+                while (form.ResultList.Items.Count == 0 &&
+                    DateTime.UtcNow < deadline)
+                {
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(60);
+                }
+                int images = form.ResultList.Items.Count;
+                output.AppendLine("images=" + images);
+                Check(output, ref ok, "图片分类有结果",
+                    (images > 0).ToString(), "True");
+                if (images == 0)
+                {
+                    return;
+                }
+
+                // 缩略图是后台解码的，等它补齐屏幕这批（连续两轮不再增长
+                // 就认为这屏好了，不等到整卷）。
+                deadline = DateTime.UtcNow.AddSeconds(15);
+                int stable = 0;
+                int last = -1;
+                while (DateTime.UtcNow < deadline)
+                {
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(80);
+                    int now = form.ResultList.ThumbCount;
+                    if (now == last)
+                    {
+                        stable++;
+                        if (stable >= 4 && now >= 8)
+                        {
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        stable = 0;
+                    }
+                    last = now;
+                }
+                int thumbs = form.ResultList.ThumbCount;
+                output.AppendLine("thumbs=" + thumbs);
+                Check(output, ref ok, "缩略图已解码",
+                    (thumbs >= 8).ToString(), "True");
+
+                Point probe = form.ResultList.RowBlankPoint(1);
+                Point onScreen = form.ResultList.PointToScreen(probe);
+
+                Color darkZebra = Color.Empty;
+                Bitmap shot = CaptureFormToBitmap(
+                    form, "ui-search-thumbs.png", output);
+                if (shot != null)
+                {
+                    int x = onScreen.X - form.Bounds.X;
+                    int y = onScreen.Y - form.Bounds.Y;
+                    if (x >= 0 && y >= 0 && x < shot.Width && y < shot.Height)
+                    {
+                        darkZebra = shot.GetPixel(x, y);
+                    }
+                    shot.Dispose();
+                }
+
+                // 换成浅色主题，同样的位置再取一次。
+                UiTheme.Configure(
+                    Color.FromArgb(246, 247, 250),
+                    Color.FromArgb(82, 145, 255), true);
+                PumpMessages(500);
+                output.AppendLine("theme light=" + UiTheme.IsLight);
+
+                Color lightZebra = Color.Empty;
+                shot = CaptureFormToBitmap(
+                    form, "ui-search-thumbs-light.png", output);
+                if (shot != null)
+                {
+                    int x = onScreen.X - form.Bounds.X;
+                    int y = onScreen.Y - form.Bounds.Y;
+                    if (x >= 0 && y >= 0 && x < shot.Width && y < shot.Height)
+                    {
+                        lightZebra = shot.GetPixel(x, y);
+                    }
+                    shot.Dispose();
+                }
+
+                output.AppendLine("zebra dark=" + darkZebra +
+                    " light=" + lightZebra);
+                // 深色主题下这一格本来就该是暗的（不能是纯背景色，说明
+                // 隔行底色确实画出来了）。
+                int darkBright = (darkZebra.R + darkZebra.G + darkZebra.B) / 3;
+                Check(output, ref ok, "深色隔行有色差",
+                    (darkBright < 120).ToString(), "True");
+                // 浅色主题下必须是亮的，绝不能还是深灰 / 黑。
+                int lightBright =
+                    (lightZebra.R + lightZebra.G + lightZebra.B) / 3;
+                Check(output, ref ok, "浅色隔行不是黑条",
+                    (lightBright > 180).ToString(), "True");
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION " + ex);
+                ok = false;
+            }
+            finally
+            {
+                if (form != null && !form.IsDisposed)
+                {
+                    form.Close();
+                }
+                output.AppendLine("RESULT: " + (ok ? "OK" : "FAILED"));
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                File.WriteAllText(
+                    Path.Combine(ConfigStore.DataDirectory,
+                        "searchthumblive.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        private static Bitmap CaptureFormToBitmap(
+            Form form, string fileName, StringBuilder output)
+        {
+            Rectangle bounds = form.Bounds;
+            if (bounds.Width <= 0 || bounds.Height <= 0)
+            {
+                output.AppendLine(fileName + " skipped (empty bounds)");
+                return null;
+            }
+            Bitmap shot = new Bitmap(bounds.Width, bounds.Height);
+            using (Graphics graphics = Graphics.FromImage(shot))
+            {
+                graphics.CopyFromScreen(
+                    bounds.X, bounds.Y, 0, 0,
+                    new Size(bounds.Width, bounds.Height));
+            }
+            try
+            {
+                shot.Save(
+                    Path.Combine(ConfigStore.DataDirectory, fileName),
+                    ImageFormat.Png);
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("save " + fileName + " failed: " + ex.Message);
+            }
+            output.AppendLine(fileName + " " + bounds);
+            return shot;
+        }
+
+        private static void CaptureFormRegion(
+            Form form, string fileName, StringBuilder output)
+        {
+            Rectangle bounds = form.Bounds;
+            if (bounds.Width <= 0 || bounds.Height <= 0)
+            {
+                output.AppendLine(fileName + " skipped (empty bounds)");
+                return;
+            }
+            using (Bitmap shot = new Bitmap(bounds.Width, bounds.Height))
+            {
+                using (Graphics graphics = Graphics.FromImage(shot))
+                {
+                    graphics.CopyFromScreen(
+                        bounds.X, bounds.Y, 0, 0,
+                        new Size(bounds.Width, bounds.Height));
+                }
+                shot.Save(
+                    Path.Combine(ConfigStore.DataDirectory, fileName),
+                    ImageFormat.Png);
+            }
+            output.AppendLine(fileName + " " + bounds);
+        }
+
         /// <summary>长截图预览窗口的渲染冒烟 + 截图 ui-scrollpreview.png。</summary>
         public static void RunScrollShotPreview()
         {
@@ -4076,6 +6121,122 @@ namespace SelectionTranslator
         }
 
         /// <summary>
+        /// 面板底板透明度实拍：把底板设成 50%，确认透出来的是桌面，
+        /// 同时窗体本身（文件名、图标、文字）仍然是不透明的。
+        /// 输出 ui-panel-transparent.png。
+        /// </summary>
+        public static void RunPanelOpacityProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool pass = true;
+            DesktopManagerForm form = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                UiTheme.Configure(
+                    UiTheme.DefaultBase, UiTheme.DefaultAccent, false);
+
+                form = new DesktopManagerForm();
+                form.LoadFromPath(Environment.GetFolderPath(
+                    Environment.SpecialFolder.DesktopDirectory));
+                form.StartPosition = FormStartPosition.Manual;
+                form.Location = new Point(80, 80);
+                form.Show();
+                form.SetCollapsed(false);
+                for (int i = 0;
+                    i < 40 && form.LoadedIconCount < form.TotalItemCount; i++)
+                {
+                    PumpMessages(100);
+                }
+                // 实拍期间停掉层级跟随并置顶，否则会把后面的应用窗口
+                // 拍进 ui-panel-transparent.png。
+                form.SuspendZOrderForTest();
+                form.TopMost = true;
+                form.SetOpacityForTest(0.5);
+                PumpMessages(400);
+
+                // 整窗不能透明：否则文件名会跟着糊掉，用户要的正是
+                // 「面板底可以透，文件不能透」。
+                Check(output, ref pass, "窗体本身仍然不透明",
+                    (form.Opacity == 1.0).ToString(), "True");
+                Check(output, ref pass, "底板抓到桌面背景",
+                    form.HasDesktopBackdrop.ToString(), "True");
+                Check(output, ref pass, "透明度读回 50%",
+                    ((int)Math.Round(
+                        form.CurrentOpacity * 100.0)).ToString(), "50");
+
+                // 反复重做底板不能把自己也抓进去：抓屏时面板被排除，
+                // 抓到的应该始终是「桌面那一层」，颜色不该越叠越暗。
+                Color first = form.SampleBackdropForTest(600, 300);
+                for (int i = 0; i < 3; i++)
+                {
+                    form.RefreshBackdropForTest();
+                    PumpMessages(120);
+                }
+                Color again = form.SampleBackdropForTest(600, 300);
+                int drift = Math.Abs(first.R - again.R) +
+                    Math.Abs(first.G - again.G) +
+                    Math.Abs(first.B - again.B);
+                output.AppendLine("backdrop=" + first + " -> " + again +
+                    " drift=" + drift);
+                Check(output, ref pass, "底板反复重建不自我叠加",
+                    (drift <= 24).ToString(), "True");
+
+                // 拖动时每帧都重抓底板会卡（实测一次抓屏 + DWM 同步 ~70ms），
+                // 所以拖动期间只平移旧底板。这里模拟 10 帧拖动。
+                form.BeginDragForTest();
+                Stopwatch move = Stopwatch.StartNew();
+                for (int i = 0; i < 10; i++)
+                {
+                    form.Left = 80 + i * 4;
+                    PumpMessages(10);
+                }
+                move.Stop();
+                output.AppendLine("drag10=" +
+                    move.ElapsedMilliseconds + "ms (拖动中不重抓)");
+                Check(output, ref pass, "拖动中不卡顿",
+                    (move.ElapsedMilliseconds < 500).ToString(), "True");
+
+                // 松手后补一张准的底板，这一次要花抓屏的时间但不影响拖动。
+                Stopwatch settle = Stopwatch.StartNew();
+                form.MoveDragForTest(0, 0);
+                PumpMessages(80);
+                settle.Stop();
+                output.AppendLine("settle=" +
+                    settle.ElapsedMilliseconds + "ms (松手补抓)");
+                Check(output, ref pass, "松手补抓底板完成",
+                    form.HasDesktopBackdrop.ToString(), "True");
+
+                // 拖动 / 松手补抓之后再把面板提到最前拍：同层级的其它
+                // 置顶窗口（比如编辑器）不然会盖住实拍区域。
+                form.TopMost = true;
+                form.Activate();
+                PumpMessages(200);
+                CaptureFormRegion(
+                    form, "ui-panel-transparent.png", output);
+            }
+            catch (Exception ex)
+            {
+                pass = false;
+                output.AppendLine("EXCEPTION: " + ex);
+            }
+            finally
+            {
+                if (form != null && !form.IsDisposed)
+                {
+                    form.Close();
+                }
+                output.AppendLine(pass ? "RESULT: OK" : "RESULT: FAILED");
+                Directory.CreateDirectory(ConfigStore.DataDirectory);
+                File.WriteAllText(
+                    Path.Combine(
+                        ConfigStore.DataDirectory, "opacityprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = pass ? 0 : 1;
+            }
+        }
+
+        /// <summary>
         /// 把状态条真的贴到任务栏上，截一张任务栏右侧局部屏，
         /// 用来肉眼确认位置、透明度和文字清晰度。
         /// </summary>
@@ -4099,7 +6260,10 @@ namespace SelectionTranslator
 
                     Rectangle taskbar =
                         TaskbarStatsForm.GetTaskbarRect();
-                    int width = Math.Min(560, taskbar.Width);
+                    // 拍宽一点：状态条被别的工具挤到托盘左侧较远处时，
+                    // 只拍 560px 会拍不到自己。760px 足够同时看到
+                    // 「状态条 + 旁边的第三方小部件」的相对位置。
+                    int width = Math.Min(760, taskbar.Width);
                     int height = Math.Max(1, taskbar.Height);
                     int x = Math.Max(0, taskbar.Right - width);
                     int y = Math.Max(0, taskbar.Top);
@@ -4309,6 +6473,509 @@ namespace SelectionTranslator
                 Encoding.UTF8);
             Environment.ExitCode = pass ? 0 : 1;
         }
+
+        /// <summary>
+        /// 占用避让端到端验证：启动记事本当作「别的显示」，把它挪到状态条
+        /// 默认落点上去，再确认 FindOccupiers 能扫到它、AvoidOccupiers 会把
+        /// 状态条挪到不重叠的空档。结果写到 taskbaravoidprobe.txt。
+        /// </summary>
+        public static void RunTaskbarAvoidProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool pass = true;
+            Rectangle taskbar = TaskbarStatsForm.GetTaskbarRect();
+            Rectangle tray = TaskbarStatsForm.GetTrayNotifyRect();
+            Size content = new Size(150, 32);
+            int margin = 8;
+            Point basePos = TaskbarStats.ComputePosition(
+                taskbar, tray, content, margin);
+            output.AppendLine("taskbar=" + taskbar);
+            output.AppendLine("tray=" + tray);
+            output.AppendLine("base=" + basePos);
+
+            System.Diagnostics.Process occ = null;
+            try
+            {
+                // 用本程序的第二个进程当「别的应用」：--occupant 会在指定
+                // 位置开一个小窗口。对 FindOccupiers 来说它是货真价实的
+                // 外部进程（按 PID 排除自身），比 Win11 的 UWP notepad
+                // （复用已有实例、新进程拿不到窗口句柄）可靠得多。
+                string exePath = System.Reflection.Assembly
+                    .GetExecutingAssembly().Location;
+                string occArgs = "--occupant " +
+                    (basePos.X - 10) + " " + (basePos.Y - 4) + " " +
+                    (content.Width + 20) + " " + (content.Height + 8) +
+                    " 20";
+                occ = System.Diagnostics.Process.Start(
+                    new System.Diagnostics.ProcessStartInfo(
+                        exePath, occArgs));
+                output.AppendLine("exe=" + exePath);
+                output.AppendLine("args=" + occArgs +
+                    " pid=" + (occ == null ? -1 : occ.Id));
+                IntPtr hwnd = IntPtr.Zero;
+                for (int i = 0; i < 60; i++)
+                {
+                    if (occ == null || occ.HasExited)
+                    {
+                        output.AppendLine(
+                            "occupant exited early, code=" +
+                            (occ == null ? "null" :
+                                occ.ExitCode.ToString()));
+                        break;
+                    }
+                    occ.Refresh();
+                    hwnd = occ.MainWindowHandle;
+                    if (hwnd != IntPtr.Zero)
+                    {
+                        break;
+                    }
+                    System.Threading.Thread.Sleep(50);
+                }
+                if (hwnd == IntPtr.Zero)
+                {
+                    pass = false;
+                    output.AppendLine(
+                        "FAIL: occupant window not found");
+                }
+                else
+                {
+                    output.AppendLine("occupant=" + hwnd);
+                    System.Threading.Thread.Sleep(250);
+
+                    List<Rectangle> occRects =
+                        TaskbarStats.FindOccupiers(taskbar, IntPtr.Zero);
+                    bool detected = false;
+                    foreach (Rectangle r in occRects)
+                    {
+                        if (r.IntersectsWith(
+                            new Rectangle(basePos, content)))
+                        {
+                            detected = true;
+                            break;
+                        }
+                    }
+                    output.AppendLine("occupiers=" + occRects.Count +
+                        " detected=" + detected);
+                    if (!detected)
+                    {
+                        pass = false;
+                        output.AppendLine(
+                            "FAIL: occupant not detected as occupier");
+                    }
+                    // 新增：矩形级「被谁挡住」检测。状态条默认落点矩形在
+                    // 占位窗口下必须被判定成「被挡住」，移动/隐藏后必须恢复
+                    // 干净。这是新版 Z 序（占用感知置顶）的唯一判据。
+                    Rectangle barSlot = new Rectangle(basePos, content);
+                    bool coveredWhenOccupied =
+                        TaskbarStats.IsBarOverlapped(
+                            barSlot, IntPtr.Zero);
+                    output.AppendLine(
+                        "barSlotOverlapped=" + coveredWhenOccupied);
+                    if (!coveredWhenOccupied)
+                    {
+                        pass = false;
+                        output.AppendLine(
+                            "FAIL: bar slot not seen as covered");
+                    }
+                    Point relocated = TaskbarStats.AvoidOccupiers(
+                        basePos, taskbar, tray, content, margin, occRects);
+                    Rectangle safeSlot = new Rectangle(relocated, content);
+                    bool coveredAfterRelocate =
+                        TaskbarStats.IsBarOverlapped(
+                            safeSlot, IntPtr.Zero);
+                    output.AppendLine(
+                        "barSlotRelocatedOverlapped=" +
+                        coveredAfterRelocate);
+                    if (coveredAfterRelocate)
+                    {
+                        pass = false;
+                        output.AppendLine(
+                            "FAIL: relocated slot still covered");
+                    }
+                    bool noOverlap = true;
+                    foreach (Rectangle r in occRects)
+                    {
+                        if (new Rectangle(relocated, content)
+                            .IntersectsWith(r))
+                        {
+                            noOverlap = false;
+                            break;
+                        }
+                    }
+                    output.AppendLine("relocated=" + relocated +
+                        " noOverlap=" + noOverlap);
+                    if (detected)
+                    {
+                        if (!noOverlap)
+                        {
+                            pass = false;
+                            output.AppendLine(
+                                "FAIL: relocated still overlaps occupier");
+                        }
+                        if (relocated.X >= basePos.X)
+                        {
+                            pass = false;
+                            output.AppendLine(
+                                "FAIL: not relocated left of default");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                pass = false;
+                output.AppendLine("EXCEPTION: " + ex);
+            }
+            finally
+            {
+                if (occ != null && !occ.HasExited)
+                {
+                    try { occ.Kill(); }
+                    catch { }
+                }
+            }
+
+            output.AppendLine(
+                pass ? "RESULT: OK" : "RESULT: FAILED");
+            Directory.CreateDirectory(ConfigStore.DataDirectory);
+            File.WriteAllText(
+                Path.Combine(
+                    ConfigStore.DataDirectory,
+                    "taskbaravoidprobe.txt"),
+                output.ToString(),
+                Encoding.UTF8);
+            Environment.ExitCode = pass ? 0 : 1;
+        }
+
+        /// <summary>
+        /// --barzprobe：起一个真正的 TaskbarStatsForm，等几秒采样之后
+        /// 把它当前屏幕上的矩形、是不是还带 WS_EX_TOPMOST、以及所有
+        /// 与这个矩形交叠的别的窗口（进程名 / class / rect）全部写出来。
+        /// 专用于排查「状态条突然不显示 / 被谁按在下面」。
+        /// </summary>
+        public static void RunBarZProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool pass = true;
+            try
+            {
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                TaskbarStatsForm form = new TaskbarStatsForm();
+                form.Show();
+
+                // 等采样定时器跑几帧，把状态条贴出来。
+                Application.DoEvents();
+                for (int i = 0; i < 30; i++)
+                {
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(200);
+                    if (!form.BarBounds.IsEmpty)
+                    {
+                        break;
+                    }
+                }
+
+                Rectangle bar = form.BarBounds;
+                output.AppendLine("barRect=" + bar);
+                output.AppendLine("formHandle=" + form.Handle);
+                int style = GetWindowLong(form.Handle, GWL_EXSTYLE);
+                bool topmost =
+                    (style & (int)WS_EX_TOPMOST) != 0;
+                output.AppendLine("exStyle=0x" +
+                    style.ToString("X8") +
+                    " topmost=" + topmost);
+
+                bool overlapped = TaskbarStats.IsBarOverlapped(
+                    bar, form.Handle);
+                output.AppendLine(
+                    "barOverlapped=" + overlapped);
+                // Z 序意义上的「真被盖住」：只看排在自己上面的窗口。
+                // 这才是决定要不要 SetWindowPos 的判据。
+                bool obscured = TaskbarStats.IsBarObscured(
+                    bar, form.Handle);
+                output.AppendLine("barObscured=" + obscured);
+                string above =
+                    TaskbarStats.DescribeZOrderAbove(form.Handle);
+                output.AppendLine("zOrderAbove=" +
+                    (string.IsNullOrEmpty(above) ? "NONE" :
+                        "\r\n" + above));
+                string details = TaskbarStats.DescribeBarOverlaps(
+                    bar, form.Handle);
+                if (string.IsNullOrEmpty(details))
+                {
+                    output.AppendLine("overlapDetails=NO_WINDOW");
+                }
+                else
+                {
+                    output.AppendLine("overlapDetails=" + details);
+                }
+
+                // 关键回归断言：状态条不能和任务栏带上任何别的工具
+                // （含 TrafficMonitor 这类嵌进任务栏的子窗口）叠在一起。
+                Rectangle taskbarRect = TaskbarStatsForm.GetTaskbarRect();
+                System.Collections.Generic.List<Rectangle> occupiers =
+                    TaskbarStats.FindOccupiers(
+                        taskbarRect, form.Handle);
+                bool clearsOthers = !TaskbarStats.OverlapsAny(
+                    bar, occupiers);
+                output.AppendLine("barClearsOthers=" + clearsOthers +
+                    " (occupiers=" + occupiers.Count + ")");
+                for (int i = 0; i < occupiers.Count; i++)
+                {
+                    output.AppendLine("  occ=" + occupiers[i]);
+                }
+                if (!clearsOthers)
+                {
+                    pass = false;
+                }
+
+                // 顺带把整条任务栏带里被扫到的所有窗外列出来。
+                System.Collections.Generic.List<string> band =
+                    TaskbarStats.ListBandWindows();
+                output.AppendLine("bandWindows=" + band.Count);
+                for (int i = 0; i < band.Count; i++)
+                {
+                    output.AppendLine("  " + band[i]);
+                }
+
+                form.Dispose();
+            }
+            catch (Exception ex)
+            {
+                pass = false;
+                output.AppendLine("EXCEPTION: " + ex);
+            }
+            output.AppendLine(pass ? "RESULT: OK" : "RESULT: FAILED");
+            Directory.CreateDirectory(ConfigStore.DataDirectory);
+            File.WriteAllText(
+                Path.Combine(
+                    ConfigStore.DataDirectory, "barzprobe.txt"),
+                output.ToString(), Encoding.UTF8);
+            Environment.ExitCode = pass ? 0 : 1;
+        }
+
+        private const int GWL_EXSTYLE = -20;
+        private const int WS_EX_TOPMOST = 0x0008;
+        private const int WS_EX_LAYERED = 0x00080000;
+
+        private delegate bool WinScanEnumProc(IntPtr hWnd, IntPtr lParam);
+
+        [System.Runtime.InteropServices.StructLayout(
+            System.Runtime.InteropServices.LayoutKind.Sequential)]
+        private struct WinScanRect
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool EnumWindows(
+            WinScanEnumProc callback, IntPtr lParam);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool EnumChildWindows(
+            IntPtr parent, WinScanEnumProc callback, IntPtr lParam);
+
+        [System.Runtime.InteropServices.DllImport(
+            "user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+        private static extern IntPtr FindWindow(
+            string className, string windowName);
+
+        [System.Runtime.InteropServices.DllImport(
+            "user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+        private static extern int GetClassName(
+            IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [System.Runtime.InteropServices.DllImport(
+            "user32.dll", EntryPoint = "GetWindowRect")]
+        private static extern bool NativeWinScanRect(
+            IntPtr hWnd, out WinScanRect rect);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(
+            IntPtr hWnd, out uint pid);
+
+        /// <summary>单个窗口的说明行；不在扫描区内的返回 null。</summary>
+        private static string DescribeWin(IntPtr hWnd, Rectangle area)
+        {
+            WinScanRect raw;
+            if (!NativeWinScanRect(hWnd, out raw))
+            {
+                return null;
+            }
+            Rectangle rect = Rectangle.FromLTRB(
+                raw.Left, raw.Top, raw.Right, raw.Bottom);
+            if (rect.Width <= 0 || rect.Height <= 0 ||
+                !rect.IntersectsWith(area))
+            {
+                return null;
+            }
+            uint pid;
+            GetWindowThreadProcessId(hWnd, out pid);
+            string proc = "?";
+            try
+            {
+                using (System.Diagnostics.Process p =
+                    System.Diagnostics.Process.GetProcessById((int)pid))
+                {
+                    proc = p.ProcessName;
+                }
+            }
+            catch
+            {
+            }
+            StringBuilder cls = new StringBuilder(256);
+            GetClassName(hWnd, cls, cls.Capacity);
+            int ex = GetWindowLong(hWnd, GWL_EXSTYLE);
+            return string.Format(
+                "hwnd=0x{0:X} vis={1} proc={2} class={3} rect={4} " +
+                "ex=0x{5:X8} topmost={6} layered={7} pid={8}",
+                hWnd.ToInt64(),
+                IsWindowVisible(hWnd) ? 1 : 0,
+                proc,
+                cls,
+                rect,
+                ex,
+                (ex & WS_EX_TOPMOST) != 0 ? 1 : 0,
+                (ex & WS_EX_LAYERED) != 0 ? 1 : 0,
+                pid);
+        }
+
+        /// <summary>
+        /// --winscan：把任务栏带里「所有」窗口列出来（顶层 + 任务栏的子
+        /// 窗口）。第三方流量 / 硬件监控小工具常把自己嵌成 Shell_TrayWnd
+        /// 的子窗口，或做成很矮的浮条——普通 EnumWindows 扫描既看不到
+        /// 子窗口，也过不了「半带高」门槛，于是状态条落位时完全没把它
+        /// 当回事，直接叠在它上面。本探针专门把这类窗口挖出来。
+        /// </summary>
+        public static void RunWinScan()
+        {
+            StringBuilder output = new StringBuilder();
+            try
+            {
+                Rectangle taskbar = TaskbarStatsForm.GetTaskbarRect();
+                output.AppendLine("taskbar=" + taskbar);
+                Rectangle area = Rectangle.FromLTRB(
+                    taskbar.Left - 40,
+                    taskbar.Top - 60,
+                    taskbar.Right,
+                    taskbar.Bottom);
+
+                output.AppendLine("scanArea=" + area);
+                output.AppendLine("--- topLevel ---");
+                int count = 0;
+                EnumWindows(delegate(IntPtr hWnd, IntPtr lParam)
+                {
+                    string line = DescribeWin(hWnd, area);
+                    if (line != null)
+                    {
+                        output.AppendLine(line);
+                        count++;
+                    }
+                    return true;
+                }, IntPtr.Zero);
+                output.AppendLine("topLevelCount=" + count);
+
+                string[] parents = new string[]
+                {
+                    "Shell_TrayWnd", "Shell_SecondaryTrayWnd"
+                };
+                for (int i = 0; i < parents.Length; i++)
+                {
+                    IntPtr parent = FindWindow(parents[i], null);
+                    output.AppendLine("--- children of " + parents[i] +
+                        " hwnd=0x" + parent.ToInt64().ToString("X") +
+                        " ---");
+                    int childCount = 0;
+                    if (parent != IntPtr.Zero)
+                    {
+                        EnumChildWindows(
+                            parent,
+                            delegate(IntPtr hWnd, IntPtr lParam)
+                            {
+                                string line = DescribeWin(hWnd, area);
+                                if (line != null)
+                                {
+                                    output.AppendLine(line);
+                                    childCount++;
+                                }
+                                return true;
+                            },
+                            IntPtr.Zero);
+                    }
+                    output.AppendLine("childCount=" + childCount);
+                }
+
+                // 顺便把现在避让逻辑实际认到的「占用者」打印出来对照。
+                Rectangle tray = TaskbarStatsForm.GetTrayNotifyRect();
+                output.AppendLine("trayNotify=" + tray);
+                System.Collections.Generic.List<Rectangle> occupiers =
+                    TaskbarStats.FindOccupiers(taskbar, IntPtr.Zero);
+                output.AppendLine("occupiers=" + occupiers.Count);
+                for (int i = 0; i < occupiers.Count; i++)
+                {
+                    output.AppendLine("  occ=" + occupiers[i]);
+                }
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+            }
+            Directory.CreateDirectory(ConfigStore.DataDirectory);
+            File.WriteAllText(
+                Path.Combine(
+                    ConfigStore.DataDirectory, "winscan.txt"),
+                output.ToString(), Encoding.UTF8);
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+        /// <summary>
+        /// --occupant：在指定屏幕位置开一个小窗口，几秒后自动退出。
+        /// 专供 --taskbaravoidprobe 当「别的应用」用。参数：x y w h 秒。
+        /// </summary>
+        internal static void RunOccupantWindow(string[] args)
+        {
+            int idx = Array.IndexOf(args, "--occupant");
+            int x = 0, y = 0, w = 200, h = 40, seconds = 10;
+            try
+            {
+                if (args.Length > idx + 1) { x = int.Parse(args[idx + 1]); }
+                if (args.Length > idx + 2) { y = int.Parse(args[idx + 2]); }
+                if (args.Length > idx + 3) { w = int.Parse(args[idx + 3]); }
+                if (args.Length > idx + 4) { h = int.Parse(args[idx + 4]); }
+                if (args.Length > idx + 5) { seconds = int.Parse(args[idx + 5]); }
+            }
+            catch
+            {
+            }
+            Application.EnableVisualStyles();
+            using (Form f = new Form())
+            {
+                // 不能设 ShowInTaskbar=false：WS_EX_TOOLWINDOW 的窗口
+                // 会被 MainWindowHandle 挑掉，探针就抓不到句柄了。
+                f.FormBorderStyle = FormBorderStyle.None;
+                f.StartPosition = FormStartPosition.Manual;
+                f.TopMost = true;
+                f.Bounds = new Rectangle(x, y, w, h);
+                using (System.Windows.Forms.Timer t =
+                    new System.Windows.Forms.Timer())
+                {
+                    t.Interval = Math.Max(1, seconds) * 1000;
+                    t.Tick += delegate { f.Close(); };
+                    t.Start();
+                    Application.Run(f);
+                }
+            }
+        }
+
 
         /// <summary>
         /// 端到端复现用户报的录入流程：点一下输入框 → 按住 Ctrl →
@@ -5571,8 +8238,8 @@ namespace SelectionTranslator
                 int skipped = 0;
                 for (int i = 0; i < data.Entries.Count; i++)
                 {
-                    if (data.Entries[i].Name == "包.js" ||
-                        data.Entries[i].Name == "HEAD")
+                    if (data.Entries.Name(i) == "包.js" ||
+                        data.Entries.Name(i) == "HEAD")
                     {
                         skipped++;
                     }
@@ -5707,38 +8374,15 @@ namespace SelectionTranslator
                     (result.Total == 16 && result.Items.Count == 5 &&
                         result.Truncated).ToString(), "True");
 
-                // 落盘 / 读回
-                string indexPath = Path.Combine(root, "index.bin");
-                FileIndexStore.Save(data, indexPath);
-                long size = new FileInfo(indexPath).Length;
-                FileIndexData reloaded = FileIndexStore.Load(indexPath);
-                output.AppendLine("indexBytes=" + size);
-                Check(output, ref ok, "filesearch index saved",
-                    (size > 0).ToString(), "True");
-                Check(output, ref ok, "filesearch index reload count",
-                    reloaded == null ? "null"
-                        : reloaded.Entries.Count.ToString(), "16");
-                Check(output, ref ok, "filesearch index reload roots",
-                    reloaded == null ? "null"
-                        : reloaded.Roots.Count.ToString(), "1");
-                bool samePath = false;
-                if (reloaded != null && reloaded.Entries.Count > 0)
-                {
-                    string before = data.FullPath(data.Entries[0]);
-                    string after = reloaded.FullPath(
-                        reloaded.Entries[0]);
-                    samePath = before == after;
-                }
-                Check(output, ref ok, "filesearch index reload path",
-                    samePath.ToString(), "True");
-
-                // 损坏的索引文件必须安静地返回 null，不能抛。
-                string brokenPath = Path.Combine(root, "broken.bin");
-                File.WriteAllBytes(brokenPath,
-                    new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9 });
-                Check(output, ref ok, "filesearch broken index ignored",
-                    (FileIndexStore.Load(brokenPath) == null)
-                        .ToString(), "True");
+                // 自建索引已整条移除：不再落盘，路径完全靠内存里的
+                // 目录表拼出来（就是搜索结果里「所在目录」那一列）。
+                Check(output, ref ok, "filesearch no index file written",
+                    File.Exists(Path.Combine(root, "index.bin")).ToString(),
+                    "False");
+                string joined = data.FullPath(0);
+                Check(output, ref ok, "filesearch path from memory",
+                    (joined.Length > data.Roots[0].Length).ToString(),
+                    "True");
             }
             catch (Exception ex)
             {
@@ -5869,6 +8513,156 @@ namespace SelectionTranslator
             }
         }
 
+        /// <summary>
+        /// 本地缓存往返探针：临时文件，不碰用户真实缓存。断言 Save/Load 后
+        /// 条数、名字、路径、大小、分类、标记、时间戳完全一致；范围不符 /
+        /// 文件损坏都安静返回 null；读回后查询结果一致。最后用真实缓存跑
+        /// 一次 EnsureLoaded，验证命中路径真的秒开且不再重新扫描。
+        /// </summary>
+        public static void RunCacheProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            string tempDir = Path.Combine(Path.GetTempPath(),
+                "st-cacheprobe-" +
+                Guid.NewGuid().ToString("N").Substring(0, 8));
+            try
+            {
+                Directory.CreateDirectory(tempDir);
+                string cachePath = Path.Combine(tempDir, "list.cache");
+                List<string> roots = new List<string>();
+                roots.Add("Q:\\docs");
+
+                FileIndexData data = new FileIndexData();
+                data.Roots = roots;
+                data.Directories.Add("Q:\\docs");
+                data.Directories.Add("Q:\\docs\\中文 目录");
+                data.Source = FileIndexSource.Mft;
+                data.SavedAt = new DateTime(2026, 11, 11, 6, 30, 0,
+                    DateTimeKind.Utc);
+                data.Entries.Add(0, "报告 2026.docx", 12345L,
+                    new DateTime(2026, 1, 2).Ticks,
+                    FileKind.Document, false);
+                data.Entries.Add(1, "截图.png", 999L,
+                    new DateTime(2026, 2, 3).Ticks,
+                    FileKind.Image, true);
+                data.Entries.Add(1, "归档.zip", 0L, 0L,
+                    FileKind.Archive, false);
+
+                bool saved = FileIndexCache.Save(data, cachePath);
+                long bytes = File.Exists(cachePath)
+                    ? new FileInfo(cachePath).Length : 0;
+                output.AppendLine("saved=" + saved + " bytes=" + bytes);
+                Check(output, ref ok, "cache save file",
+                    (saved && bytes > 0).ToString(), "True");
+
+                FileIndexData back = FileIndexCache.Load(roots, cachePath);
+                Check(output, ref ok, "cache load not null",
+                    (back != null).ToString(), "True");
+                if (back != null)
+                {
+                    Check(output, ref ok, "cache entry count",
+                        back.Entries.Count.ToString(), "3");
+                    Check(output, ref ok, "cache directory count",
+                        back.Directories.Count.ToString(), "2");
+                    Check(output, ref ok, "cache timestamps",
+                        (back.SavedAt == data.SavedAt).ToString(), "True");
+                    Check(output, ref ok, "cache source",
+                        back.Source.ToString(), "Mft");
+                    Check(output, ref ok, "cache marked from cache",
+                        back.FromCache.ToString(), "True");
+                    Check(output, ref ok, "cache chinese name",
+                        back.Entries.Name(1), "截图.png");
+                    Check(output, ref ok, "cache full path",
+                        back.FullPath(1),
+                        "Q:\\docs\\中文 目录\\截图.png");
+                    Check(output, ref ok, "cache size",
+                        back.Entries.Size(1).ToString(), "999");
+                    Check(output, ref ok, "cache kind",
+                        back.Entries.Kind(2).ToString(), "Archive");
+                    Check(output, ref ok, "cache meta missing flag",
+                        back.Entries.MetaMissing(1).ToString(), "True");
+                    Check(output, ref ok, "cache roots",
+                        string.Join("|", back.Roots.ToArray()),
+                        "Q:\\docs");
+
+                    FileQuery q = new FileQuery();
+                    q.Keyword = "报告";
+                    FileSearchResult r1 = FileQueryEngine.Search(data, q);
+                    FileSearchResult r2 = FileQueryEngine.Search(back, q);
+                    Check(output, ref ok, "cache query same total",
+                        r2.Total.ToString(), r1.Total.ToString());
+                }
+
+                List<string> otherRoots = new List<string>();
+                otherRoots.Add("Q:\\other");
+                Check(output, ref ok, "cache wrong scope ignored",
+                    (FileIndexCache.Load(otherRoots, cachePath) == null)
+                        .ToString(), "True");
+
+                string broken = Path.Combine(tempDir, "broken.cache");
+                File.WriteAllBytes(broken,
+                    new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9 });
+                Check(output, ref ok, "cache broken file ignored",
+                    (FileIndexCache.Load(roots, broken) == null)
+                        .ToString(), "True");
+
+                long realBytes = FileIndexCache.SizeBytes();
+                output.AppendLine("realCacheBytes=" + realBytes);
+                if (realBytes > 0)
+                {
+                    FileIndexService service = FileIndexService.Instance;
+                    service.AddConsumer();
+                    DateTime started = DateTime.UtcNow;
+                    service.EnsureLoaded();
+                    DateTime deadline = DateTime.UtcNow.AddMinutes(3);
+                    // 只等「有数据可搜」：缓存超期时后台还会重扫一遍，
+                    // 但那不该算在「打开窗口要等多久」里。
+                    while (!service.Ready && DateTime.UtcNow < deadline)
+                    {
+                        Thread.Sleep(50);
+                    }
+                    long readyMs = (long)(DateTime.UtcNow - started)
+                        .TotalMilliseconds;
+                    output.AppendLine("cacheHitReadyMs=" + readyMs +
+                        " count=" + service.Count);
+                    Check(output, ref ok, "cache hit from cache",
+                        service.FromCache.ToString(), "True");
+                    Check(output, ref ok, "cache hit fast",
+                        (readyMs < 8000).ToString(), "True");
+                    service.RemoveConsumer();
+                }
+                else
+                {
+                    output.AppendLine(
+                        "cache hit path: SKIP (还没有真实缓存)");
+                }
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                try
+                {
+                    if (Directory.Exists(tempDir))
+                    {
+                        Directory.Delete(tempDir, true);
+                    }
+                }
+                catch
+                {
+                }
+                output.AppendLine(ok ? "RESULT: OK" : "RESULT: FAILED");
+                File.WriteAllText(Path.Combine(
+                    ConfigStore.DataDirectory, "cacheprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
         private static long WorkingSetMb()
         {
             try
@@ -5894,10 +8688,9 @@ namespace SelectionTranslator
         {
             FileIndexData data = new FileIndexData();
             data.Directories.Add(dir);
-            FileEntry entry = new FileEntry();
-            entry.DirId = 0;
-            entry.Name = name;
-            return data.FullPath(entry);
+            data.Entries.Add(0, name, 0, 0, FileKindLogic.Classify(name, false),
+                false);
+            return data.FullPath(new FileEntry(data, 0));
         }
 
         private static string BuildPathProbeEmpty()
@@ -5906,9 +8699,9 @@ namespace SelectionTranslator
         }
 
         /// <summary>
-        /// 真机索引探针：按当前范围（默认全部本地磁盘）真扫一遍，报告
-        /// 条数 / 耗时 / 索引文件大小 / 内存占用，再跑几个真实查询量耗时。
-        /// 会重建 fileindex.bin（缓存本来就是可再生数据）。
+        /// 真机读盘探针：按当前范围现场读一遍（MFT 优先，没权限退目录
+        /// 扫描），报告条数 / 耗时 / 内存占用与几个真实查询的耗时。
+        /// 不落盘、不留缓存——这就是「自建索引已移除」之后的真实链路。
         /// </summary>
         public static void RunIndexBuildProbe()
         {
@@ -5916,56 +8709,61 @@ namespace SelectionTranslator
             bool ok = true;
             try
             {
-                string indexPath = FileIndexStore.IndexPath;
-                try
-                {
-                    if (File.Exists(indexPath))
-                    {
-                        File.Delete(indexPath);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    output.AppendLine("warn: 旧索引删不掉：" + ex.Message);
-                }
-
                 FileIndexService service = FileIndexService.Instance;
                 List<string> roots = FileIndexService.ResolveRoots();
                 output.AppendLine("roots=" + string.Join(" | ",
                     roots.ToArray()));
+                // 强制现场扫一遍（不命中缓存），顺便验证扫完会写回本地缓存。
+                FileIndexCache.Delete();
                 service.AddConsumer();
+                double beforePrivate = MemPrivateMb();
                 DateTime started = DateTime.UtcNow;
                 service.EnsureLoaded();
                 DateTime deadline = DateTime.UtcNow.AddMinutes(12);
+                long firstReadyMs = -1;
+                int firstReadyCount = 0;
                 while ((!service.Ready || service.Building) &&
                     DateTime.UtcNow < deadline)
                 {
-                    System.Threading.Thread.Sleep(400);
+                    Thread.Sleep(50);
+                    if (firstReadyMs < 0 && service.Ready)
+                    {
+                        firstReadyMs = (long)
+                            (DateTime.UtcNow - started).TotalMilliseconds;
+                        firstReadyCount = service.Count;
+                    }
                 }
                 long seconds = (long)(DateTime.UtcNow - started)
                     .TotalSeconds;
-                long fileBytes = 0;
-                try
-                {
-                    fileBytes = new FileInfo(indexPath).Length;
-                }
-                catch
-                {
-                }
-
+                double afterPrivate = MemPrivateMb();
                 output.AppendLine("count=" + service.Count);
+                output.AppendLine("source=" + service.Source);
                 output.AppendLine("building=" + service.Building +
                     " ready=" + service.Ready +
                     " error=" + service.LastError);
                 output.AppendLine("buildSeconds=" + seconds);
-                output.AppendLine("indexBytes=" + fileBytes);
-                output.AppendLine("loadedMB=" + WorkingSetMb());
+                output.AppendLine("firstResultMs=" + firstReadyMs +
+                    " firstResultCount=" + firstReadyCount);
+                output.AppendLine("privateMB=" + afterPrivate.ToString("F1") +
+                    " (+" + (afterPrivate - beforePrivate).ToString("F1") + ")");
+                output.AppendLine("perEntryBytes=" + (service.Count > 0
+                    ? (long)Math.Round(
+                        (afterPrivate - beforePrivate) * 1048576.0 /
+                        service.Count)
+                    : 0));
                 Check(output, ref ok, "index probe has entries",
                     (service.Count > 10000).ToString(), "True");
-                Check(output, ref ok, "index probe saved file",
-                    (fileBytes > 0).ToString(), "True");
                 Check(output, ref ok, "index probe finished",
                     service.Building.ToString(), "False");
+                long cacheBytes = FileIndexCache.SizeBytes();
+                output.AppendLine("cacheBytes=" + cacheBytes);
+                Check(output, ref ok, "index probe writes cache file",
+                    (cacheBytes > 0).ToString(), "True");
+                Check(output, ref ok, "index probe no legacy index",
+                    File.Exists(Path.Combine(
+                        ConfigStore.DataDirectory, "fileindex.bin"))
+                        .ToString(),
+                    "False");
 
                 string[] keywords = new string[]
                 {
@@ -5990,32 +8788,15 @@ namespace SelectionTranslator
                 Check(output, ref ok, "index probe query fast",
                     (images.ElapsedMs < 3000).ToString(), "True");
 
-                // 没人用就释放内存（常驻托盘不该白占），再读回来验证。
-                int expected = service.Count;
+                // 没人用就释放内存（常驻托盘不该白占）。
                 long beforeRelease = WorkingSetMb();
+                service.RemoveConsumer();
                 service.ReleaseNow();
-                CollectGarbage();
                 long idleMb = WorkingSetMb();
                 output.AppendLine("idleMB=" + idleMb +
                     " (beforeRelease=" + beforeRelease + ")");
                 Check(output, ref ok, "index probe released memory",
                     (idleMb + 40 < beforeRelease).ToString(), "True");
-
-                DateTime reloadStarted = DateTime.UtcNow;
-                service.EnsureLoaded();
-                deadline = DateTime.UtcNow.AddMinutes(3);
-                while (!service.Ready && DateTime.UtcNow < deadline)
-                {
-                    System.Threading.Thread.Sleep(50);
-                }
-                long reloadMs = (long)(DateTime.UtcNow - reloadStarted)
-                    .TotalMilliseconds;
-                output.AppendLine("reloadMs=" + reloadMs +
-                    " reloadCount=" + service.Count +
-                    " reloadMB=" + WorkingSetMb());
-                Check(output, ref ok, "index probe reload matches",
-                    (service.Count == expected).ToString(), "True");
-                service.RemoveConsumer();
             }
             catch (Exception ex)
             {
@@ -6032,6 +8813,340 @@ namespace SelectionTranslator
                         "indexbuildprobe.txt"),
                     output.ToString(), Encoding.UTF8);
                 Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern uint GetGuiResources(
+            IntPtr hProcess, uint uiFlags);
+
+        /// <summary>强制回收后的存活托管堆（MB）。</summary>
+        private static double MemManagedMb()
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            return GC.GetTotalMemory(false) / 1048576.0;
+        }
+
+        /// <summary>不回收直接读堆大小（MB）——反映「水位」，也就是
+        /// 任务管理器里看到的那种没回落的状态。</summary>
+        private static double MemHeapMb()
+        {
+            return GC.GetTotalMemory(false) / 1048576.0;
+        }
+
+        /// <summary>进程私有提交（MB），任务管理器「内存」列的口径接近它。</summary>
+        private static double MemPrivateMb()
+        {
+            using (Process p = Process.GetCurrentProcess())
+            {
+                p.Refresh();
+                return p.PrivateMemorySize64 / 1048576.0;
+            }
+        }
+
+        /// <summary>
+        /// 工作集（任务管理器里用户真正看到的那个数字）。私有字节是
+        /// CLR 已提交的堆段，GC 回收后仍会保留着不还给系统，拿它当
+        /// 「有没有还回去」的判据会误报；工作集才是实机体感。
+        /// </summary>
+        private static double MemWorkingSetMb()
+        {
+            using (Process p = Process.GetCurrentProcess())
+            {
+                p.Refresh();
+                return p.WorkingSet64 / 1048576.0;
+            }
+        }
+
+        private static string MemHandleCounts()
+        {
+            using (Process p = Process.GetCurrentProcess())
+            {
+                IntPtr h = p.Handle;
+                uint gdi = GetGuiResources(h, 0);
+                uint user = GetGuiResources(h, 1);
+                return "GDI=" + gdi + " USER=" + user;
+            }
+        }
+
+        /// <summary>
+        /// 内存归因探针：按功能逐项加载，报告每一步真实吃掉的托管堆。
+        /// 用来回答「工具侠为什么占几百兆、到底是哪一块在吃」。
+        /// 只读：会读索引缓存、构造面板和剪贴板视图，不动任何用户文件。
+        /// </summary>
+        public static void RunMemoryProbe()
+        {
+            StringBuilder output = new StringBuilder();
+            bool ok = true;
+            DesktopManagerForm panel = null;
+            try
+            {
+                Application.EnableVisualStyles();
+                UiTheme.Configure(
+                    UiTheme.DefaultBase, UiTheme.DefaultAccent, false);
+
+                double baseManaged = MemManagedMb();
+                double basePrivate = MemPrivateMb();
+                output.AppendLine("[内存归因]");
+                output.AppendLine("stage0 进程基线           托管=" +
+                    baseManaged.ToString("F1") + "MB 私有=" +
+                    basePrivate.ToString("F1") + "MB " + MemHandleCounts());
+
+                // ---- 0b. 本地缓存状态（只读报告，不判失败） ----
+                long cacheBytes = FileIndexCache.SizeBytes();
+                output.AppendLine(
+                    "stage0b 本地缓存文件        " +
+                    (cacheBytes > 0
+                        ? (cacheBytes / 1048576.0).ToString("F1") +
+                            "MB（命中可秒开）"
+                        : "不存在（首次打开会现场扫描）"));
+
+                // ---- 1. 文件秒搜的全盘索引 ----
+                FileIndexService service = FileIndexService.Instance;
+                service.AddConsumer();
+                double beforeManaged = MemManagedMb();
+                double beforePrivate = MemPrivateMb();
+                DateTime started = DateTime.UtcNow;
+                service.EnsureLoaded();
+                DateTime deadline = DateTime.UtcNow.AddMinutes(4);
+                while ((!service.Ready || service.Building) &&
+                    DateTime.UtcNow < deadline)
+                {
+                    Thread.Sleep(150);
+                }
+                // 读盘/建索引的临时分配要等 GC 回收后才算「净占用」，
+                // 同时记一下没回收时的水位（真实运行中看到的就是它）。
+                Thread.Sleep(400);
+                double peakHeap = MemHeapMb();
+                double indexManaged = MemManagedMb();
+                double indexPrivate = MemPrivateMb();
+                double indexWorkingSet = MemWorkingSetMb();
+                long loadSeconds = (long)
+                    (DateTime.UtcNow - started).TotalSeconds;
+                int count = service.Count;
+                int dirCount = service.Data == null
+                    ? 0 : service.Data.Directories.Count;
+                long perEntryBytes = count > 0
+                    ? (long)Math.Round(
+                        (indexManaged - beforeManaged) * 1048576.0 / count)
+                    : 0;
+                long indexFileBytes = FileIndexCache.SizeBytes();
+                output.AppendLine(
+                    "stage1 文件秒搜·索引       条目=" + count.ToString("N0") +
+                    " 目录=" + dirCount.ToString("N0") +
+                    " 来源=" + service.Source +
+                    " 本地缓存=" +
+                    (indexFileBytes / 1048576.0).ToString("F1") + "MB" +
+                    " 耗时=" + loadSeconds + "s");
+                output.AppendLine(
+                    "       托管=" + indexManaged.ToString("F1") + "MB (+" +
+                    (indexManaged - beforeManaged).ToString("F1") + ")" +
+                    " 私有=" + indexPrivate.ToString("F1") + "MB (+" +
+                    (indexPrivate - beforePrivate).ToString("F1") + ")" +
+                    " 工作集=" + indexWorkingSet.ToString("F1") + "MB" +
+                    " 每条≈" + perEntryBytes + "B" +
+                    " 未回收水位=" + peakHeap.ToString("F1") + "MB");
+                Check(output, ref ok, "内存探针·索引已就绪",
+                    service.Ready.ToString(), "True");
+
+                // ---- 2. 桌面整理面板（含缩略图） ----
+                double panelBefore = MemManagedMb();
+                panel = new DesktopManagerForm();
+                panel.LoadFromPath(Environment.GetFolderPath(
+                    Environment.SpecialFolder.DesktopDirectory));
+                for (int i = 0;
+                    i < 60 && panel.LoadedIconCount < panel.TotalItemCount; i++)
+                {
+                    PumpMessages(100);
+                }
+                PumpMessages(200);
+                double panelAfter = MemManagedMb();
+                output.AppendLine(
+                    "stage2 桌面整理面板        条目=" + panel.TotalItemCount +
+                    " 缩略图=" + panel.ThumbnailCount +
+                    " 已载图标=" + panel.LoadedIconCount);
+                output.AppendLine(
+                    "       托管=" + panelAfter.ToString("F1") + "MB (+" +
+                    (panelAfter - panelBefore).ToString("F1") + ")" +
+                    " 私有=" + MemPrivateMb().ToString("F1") + "MB " +
+                    MemHandleCounts());
+
+                // ---- 3. 剪贴板历史 ----
+                double clipBefore = MemManagedMb();
+                ClipboardStore store = ClipboardStore.Load();
+                int imageItems = 0;
+                for (int i = 0; i < store.Items.Count; i++)
+                {
+                    ClipboardItem item = store.Items[i];
+                    if (item != null &&
+                        item.Kind == (int)ClipboardItemKind.Image)
+                    {
+                        imageItems++;
+                    }
+                }
+                double clipAfter = MemManagedMb();
+                output.AppendLine(
+                    "stage3 剪贴板历史          条目=" + store.Items.Count +
+                    " 图片=" + imageItems);
+                output.AppendLine(
+                    "       托管=" + clipAfter.ToString("F1") + "MB (+" +
+                    (clipAfter - clipBefore).ToString("F1") + ")" +
+                    " 私有=" + MemPrivateMb().ToString("F1") + "MB");
+
+                // ---- 4. 关掉面板 + 释放索引，看内存能不能真的还回去 ----
+                if (panel != null)
+                {
+                    panel.Close();
+                    panel.Dispose();
+                    panel = null;
+                }
+                PumpMessages(300);
+                service.RemoveConsumer();
+                service.ReleaseNow();
+                // 这里不再额外手动 GC：DropData 自己会完整回收 + 压 LOH。
+                double idleManaged = MemHeapMb();
+                double idlePrivate = MemPrivateMb();
+                double idleWorkingSet = MemWorkingSetMb();
+                output.AppendLine(
+                    "stage4 关面板+放索引       托管=" +
+                    idleManaged.ToString("F1") + "MB (比峰值少 " +
+                    (indexManaged - idleManaged).ToString("F1") + ")" +
+                    " 私有=" + idlePrivate.ToString("F1") + "MB (比峰值少 " +
+                    (indexPrivate - idlePrivate).ToString("F1") + ")" +
+                    " 工作集=" + idleWorkingSet.ToString("F1") + "MB" +
+                    " " + MemHandleCounts());
+                output.AppendLine(
+                    "       注：探针没有再手动 GC，数字是 DropData 自己回收的结果。");
+                output.AppendLine(
+                    "       私有提交字节会留一小段 CLR 堆段不还给系统；任务管理器看的是工作集。");
+
+                // 结论：谁的净占用最大。
+                double indexCost = indexManaged - beforeManaged;
+                double panelCost = panelAfter - panelBefore;
+                double clipCost = clipAfter - clipBefore;
+                output.AppendLine("[结论] 索引 " + indexCost.ToString("F1") +
+                    "MB / 面板 " + panelCost.ToString("F1") +
+                    "MB / 剪贴板 " + clipCost.ToString("F1") + "MB");
+                // 判据改看托管堆 + 工作集：私有提交字节是 CLR 保留的堆段，
+                // 对象回收后 CLR 也不 decommit，拿它判断会误报（改造前索引
+                // 两百多兆时看不出问题，压到 73B/条后差值就不够了）。
+                Check(output, ref ok, "内存探针·托管堆能还回去",
+                    (idleManaged + 20 < indexManaged).ToString(), "True");
+                Check(output, ref ok, "内存探针·工作集能还回去",
+                    (idleWorkingSet + 40 < indexWorkingSet).ToString(),
+                    "True");
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+                ok = false;
+            }
+            finally
+            {
+                if (panel != null)
+                {
+                    try
+                    {
+                        panel.Close();
+                        panel.Dispose();
+                    }
+                    catch
+                    {
+                    }
+                }
+                output.AppendLine(
+                    ok ? "RESULT: OK" : "RESULT: FAILED");
+                File.WriteAllText(
+                    Path.Combine(ConfigStore.DataDirectory, "memprobe.txt"),
+                    output.ToString(), Encoding.UTF8);
+                Environment.ExitCode = ok ? 0 : 1;
+            }
+        }
+
+        /// <summary>
+        /// 静置内存探针：按真实方式把托盘程序跑起来（等同开机自启），
+        /// 每 15 秒记一次内存，满 4 分钟自己退出。用来验证「放着不动
+        /// 到底占多少」——这是用户真正会在任务管理器里看到的数字。
+        /// </summary>
+        public static void RunMemorySoak()
+        {
+            StringBuilder output = new StringBuilder();
+            output.AppendLine("[静置内存] 模拟开机自启，每 15 秒采一次");
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Application.SetUnhandledExceptionMode(
+                UnhandledExceptionMode.CatchException);
+
+            TrayApplicationContext context = new TrayApplicationContext();
+            string path = Path.Combine(
+                ConfigStore.DataDirectory, "memorysoak.txt");
+            // 用后台线程采样并直接落盘：不依赖消息循环，探针无论被谁
+            // 掐掉，已经采到的数字都留得住。
+            Thread sampler = new Thread(delegate()
+            {
+                DateTime started = DateTime.UtcNow;
+                try
+                {
+                    while (true)
+                    {
+                        Thread.Sleep(15000);
+                        double seconds =
+                            (DateTime.UtcNow - started).TotalSeconds;
+                        lock (output)
+                        {
+                            output.AppendLine(
+                                "t=" + ((long)seconds).ToString()
+                                    .PadLeft(3) + "s 私有=" +
+                                MemPrivateMb().ToString("F1").PadLeft(6) +
+                                "MB 托管=" +
+                                MemHeapMb().ToString("F1").PadLeft(6) +
+                                "MB " + MemHandleCounts());
+                            File.WriteAllText(
+                                path, output.ToString(), Encoding.UTF8);
+                        }
+                        if (seconds >= 240)
+                        {
+                            output.AppendLine("RESULT: OK");
+                            File.WriteAllText(
+                                path, output.ToString(), Encoding.UTF8);
+                            Environment.Exit(0);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    try
+                    {
+                        output.AppendLine("EXCEPTION: " + ex.Message);
+                        File.WriteAllText(
+                            path, output.ToString(), Encoding.UTF8);
+                    }
+                    catch
+                    {
+                    }
+                }
+            });
+            sampler.IsBackground = true;
+            sampler.Start();
+            try
+            {
+                Application.Run(context);
+            }
+            catch (Exception ex)
+            {
+                output.AppendLine("EXCEPTION: " + ex);
+            }
+            finally
+            {
+                try
+                {
+                    context.Dispose();
+                }
+                catch
+                {
+                }
             }
         }
 
@@ -6054,7 +9169,7 @@ namespace SelectionTranslator
             int count = 0;
             for (int i = 0; i < data.Entries.Count; i++)
             {
-                if (data.Entries[i].Kind == kind)
+                if (data.Entries.Kind(i) == kind)
                 {
                     count++;
                 }
@@ -6177,13 +9292,10 @@ namespace SelectionTranslator
             FileIndexData data, int dirId, string name,
             long size, int daysAgo)
         {
-            FileEntry entry = new FileEntry();
-            entry.DirId = dirId;
-            entry.Name = name;
-            entry.Size = size;
-            entry.Kind = FileKindLogic.Classify(name, false);
-            entry.Ticks = DateTime.UtcNow.AddDays(daysAgo).Ticks;
-            return entry;
+            data.Entries.Add(dirId, name, size,
+                DateTime.UtcNow.AddDays(daysAgo).Ticks,
+                FileKindLogic.Classify(name, false), false);
+            return new FileEntry(data, data.Entries.Count - 1);
         }
 
         private static void CaptureForm(
@@ -6660,7 +9772,7 @@ namespace SelectionTranslator
                     Check(output, ref ok,
                         "settings filesearch hotkey shown",
                         hotkeyBox == null ? "" : hotkeyBox.Text,
-                        "Ctrl+F");
+                        AppConfig.DefaultFileSearchHotkey);
                     bool overlapsDownload = downloadGroup != null &&
                         searchGroup.Bounds.IntersectsWith(
                             downloadGroup.Bounds);

@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -51,7 +52,12 @@ namespace SelectionTranslator
         private ToolStripMenuItem _closePinsItem;
         private ToolStripMenuItem _shellMenuItem;
         private ToolStripMenuItem _statsMenuItem;
+        private ToolStripMenuItem _desktopResidentItem;
+        private ToolStripMenuItem _desktopLockItem;
         private TaskbarStatsForm _statsForm;
+        // 托盘菜单里的勾选项点一下就整条菜单收起，想连勾两项得重新右键。
+        // 这里标记「刚点的是勾选项」，Closing 时取消这一次收起。
+        private bool _keepMenuOpen;
         // 防止热键在浮层显示期间重复触发、嵌套打开第二个截图会话。
         private bool _captureInProgress;
 
@@ -60,7 +66,6 @@ namespace SelectionTranslator
         private VoiceCaptureForm _voiceBar;
         private System.Windows.Forms.Timer _voicePollTimer;
         private System.Windows.Forms.Timer _voiceMenuDelayTimer;
-        private System.Windows.Forms.Timer _fileIndexWarmTimer;
         private bool _voiceInProgress;
         // 防止「定时器收尾」和「点浮条停止」同时进来跑两遍。
         private bool _voiceStopping;
@@ -89,6 +94,10 @@ namespace SelectionTranslator
             _config = ConfigStore.Load();
             _config.StartWithWindows = StartupManager.IsEnabled();
 
+            // 先套用用户选好的界面配色：托盘菜单、之后弹出的每个窗口
+            // 都从这里取色，晚一步就会闪一下默认深色。
+            UiTheme.ConfigureFromConfig(_config);
+
             // 老版本把启动项写在 SelectionTranslator 这个名字下，
             // 被启动管理工具禁用过、或程序换过目录时这里一次性纠正。
             if (_config.StartWithWindows)
@@ -104,6 +113,11 @@ namespace SelectionTranslator
             _trayIcon.Visible = true;
             _trayIcon.ContextMenuStrip = _trayMenu;
             _trayIcon.DoubleClick += OnTrayDoubleClick;
+            _trayMenu.Closing += OnTrayMenuClosing;
+            // 面板自己的右键菜单也能改常驻 / 锁定，改完把内存里这份配置
+            // 同步回来——否则下次保存配置会把它写回旧值，出现「取消常驻
+            // 了重启又冒出来」。
+            DesktopManagerForm.StateChanged += SyncPanelStateFromStore;
 
             // 每次展开菜单都回读一次注册表，保证勾选状态和系统里真实一致
             // （用户可能在别处用注册表工具改过）。
@@ -124,6 +138,21 @@ namespace SelectionTranslator
                 {
                     _doubleCtrlMenuItem.Checked =
                         _config.EnableDoubleCtrlHotkey;
+                }
+                if (_desktopResidentItem != null &&
+                    !_desktopResidentItem.IsDisposed)
+                {
+                    _desktopResidentItem.Checked =
+                        DesktopManagerForm.ResidentEnabled;
+                }
+                if (_desktopLockItem != null &&
+                    !_desktopLockItem.IsDisposed)
+                {
+                    _desktopLockItem.Checked =
+                        DesktopManagerForm.LockEnabled;
+                    // 面板没开的时候锁没有意义，置灰但仍显示勾选状态。
+                    _desktopLockItem.Enabled =
+                        DesktopManagerForm.ResidentEnabled;
                 }
             };
 
@@ -183,6 +212,51 @@ namespace SelectionTranslator
             };
             _trayMenu.Items.Add(_fileSearchMenuItem);
 
+            ToolStripMenuItem desktopItem =
+                new ToolStripMenuItem("桌面整理…");
+            desktopItem.Click += delegate
+            {
+                DesktopManagerForm.ShowWindow();
+            };
+            _trayMenu.Items.Add(desktopItem);
+
+            // 这个勾 = 桌面助手的总开关：勾上就常驻桌面，取消就是整个功能
+            // 不启动（面板销毁、下次开机也不出现）。
+            _desktopResidentItem = new ToolStripMenuItem(
+                "桌面助手常驻桌面");
+            _desktopResidentItem.CheckOnClick = true;
+            _desktopResidentItem.Checked = _config.DesktopPanelResident;
+            _desktopResidentItem.Click += OnDesktopResidentClicked;
+            KeepOpenOnClick(_desktopResidentItem);
+            _trayMenu.Items.Add(_desktopResidentItem);
+
+            _desktopLockItem = new ToolStripMenuItem(
+                "锁定面板位置（拖不动）");
+            _desktopLockItem.CheckOnClick = true;
+            _desktopLockItem.Checked = _config.DesktopPanelLocked;
+            _desktopLockItem.Click += OnDesktopLockClicked;
+            KeepOpenOnClick(_desktopLockItem);
+            _trayMenu.Items.Add(_desktopLockItem);
+
+            ToolStripMenuItem appearanceItem =
+                new ToolStripMenuItem("界面颜色…");
+            appearanceItem.Click += delegate
+            {
+                AppearanceForm.ShowWindow();
+            };
+            _trayMenu.Items.Add(appearanceItem);
+
+            // MFT 索引要读卷句柄，只有提权进程做得到。这里给一个显式入口，
+            // 而不是把整个程序写成 requireAdministrator——那样每次开机
+            // 自启都要先过一遍 UAC。
+            if (!IsElevated())
+            {
+                ToolStripMenuItem elevateItem = new ToolStripMenuItem(
+                    "以管理员身份重启（极速索引）");
+                elevateItem.Click += delegate { RestartElevated(); };
+                _trayMenu.Items.Add(elevateItem);
+            }
+
             _clipboardMenuItem = new ToolStripMenuItem(
                 "剪贴板历史…");
             _clipboardMenuItem.ShortcutKeyDisplayString =
@@ -197,6 +271,7 @@ namespace SelectionTranslator
             _shellMenuItem = new ToolStripMenuItem(
                 "图片右键菜单 / 打开方式：" + AppInfo.Name);
             _shellMenuItem.Click += OnShellMenuClicked;
+            KeepOpenOnClick(_shellMenuItem);
             _trayMenu.Items.Add(_shellMenuItem);
             SyncShellMenu();
 
@@ -211,12 +286,14 @@ namespace SelectionTranslator
             _startupItem.CheckOnClick = true;
             _startupItem.Checked = _config.StartWithWindows;
             _startupItem.Click += OnStartupClicked;
+            KeepOpenOnClick(_startupItem);
             _trayMenu.Items.Add(_startupItem);
 
             _statsMenuItem = new ToolStripMenuItem("任务栏状态显示");
             _statsMenuItem.CheckOnClick = true;
             _statsMenuItem.Checked = _config.ShowTaskbarStats;
             _statsMenuItem.Click += OnStatsClicked;
+            KeepOpenOnClick(_statsMenuItem);
             _trayMenu.Items.Add(_statsMenuItem);
 
             _doubleCtrlMenuItem = new ToolStripMenuItem(
@@ -225,6 +302,7 @@ namespace SelectionTranslator
             _doubleCtrlMenuItem.Checked =
                 _config.EnableDoubleCtrlHotkey;
             _doubleCtrlMenuItem.Click += OnDoubleCtrlMenuClicked;
+            KeepOpenOnClick(_doubleCtrlMenuItem);
             _trayMenu.Items.Add(_doubleCtrlMenuItem);
 
             _closePinsItem = new ToolStripMenuItem("关闭所有桌面贴图");
@@ -288,23 +366,9 @@ namespace SelectionTranslator
             _voiceMenuDelayTimer.Interval = 260;
             _voiceMenuDelayTimer.Tick += OnVoiceMenuDelayTick;
 
-            // 文件秒搜的索引预热：开机后缓两分钟再读盘/重建，
-            // 别和登录时的各种启动项抢磁盘；用户点开窗口时多半已就绪。
-            _fileIndexWarmTimer = new System.Windows.Forms.Timer();
-            _fileIndexWarmTimer.Interval = 120000;
-            _fileIndexWarmTimer.Tick += delegate
-            {
-                _fileIndexWarmTimer.Stop();
-                try
-                {
-                    FileIndexService.Instance.EnsureLoaded();
-                }
-                catch (Exception ex)
-                {
-                    Log.Error("预热文件索引失败", ex);
-                }
-            };
-            _fileIndexWarmTimer.Start();
+            // 文件秒搜不再有落盘索引，也就没有「开机预热」这一步：
+            // 打开搜索窗口时才现场读一遍（MFT 优先），关掉就释放。
+            // 托盘常驻期间与文件搜索相关的内存占用为 0。
         }
 
         private bool HasCredentials()
@@ -627,6 +691,26 @@ namespace SelectionTranslator
 
             NotifyHotkeyFailures();
             ApplyTaskbarStats();
+            ApplyDesktopPanel();
+        }
+
+        /// <summary>
+        /// 开机把「桌面整理」面板放回桌面（用户勾了常驻才显示）。
+        /// </summary>
+        private void ApplyDesktopPanel()
+        {
+            if (!_config.DesktopPanelResident)
+            {
+                return;
+            }
+            try
+            {
+                DesktopManagerForm.ShowResidentPanel();
+            }
+            catch (Exception ex)
+            {
+                Log.Error("显示桌面整理面板失败", ex);
+            }
         }
 
         private void OnFirstRunTimerTick(object sender, EventArgs e)
@@ -1835,6 +1919,103 @@ namespace SelectionTranslator
             _translationForm.Activate();
         }
 
+        private void OnDesktopResidentClicked(object sender, EventArgs e)
+        {
+            bool resident = _desktopResidentItem.Checked;
+            _config.DesktopPanelResident = resident;
+            try
+            {
+                ConfigStore.Save(_config);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("保存桌面整理常驻设置失败", ex);
+            }
+            DesktopManagerForm.ApplyResidentSetting(resident);
+            // 菜单现在是「点完不收起」的，勾/取消之后得当场把「锁定」那项
+            // 的可用状态改过来，不然要等下次重新右键才更新。
+            if (_desktopLockItem != null && !_desktopLockItem.IsDisposed)
+            {
+                _desktopLockItem.Enabled = resident;
+            }
+        }
+
+        private void OnDesktopLockClicked(object sender, EventArgs e)
+        {
+            bool locked = _desktopLockItem.Checked;
+            _config.DesktopPanelLocked = locked;
+            try
+            {
+                ConfigStore.Save(_config);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("保存桌面助手锁定设置失败", ex);
+            }
+            DesktopManagerForm.ApplyLockSetting(locked);
+        }
+
+        /// <summary>
+        /// 面板自己的菜单改了常驻 / 锁定之后，把 config.json 的真实状态
+        /// 拉回来同步托盘内存配置与勾选状态。
+        /// </summary>
+        private void SyncPanelStateFromStore()
+        {
+            try
+            {
+                AppConfig fresh = ConfigStore.Load();
+                _config.DesktopPanelResident = fresh.DesktopPanelResident;
+                _config.DesktopPanelLocked = fresh.DesktopPanelLocked;
+            }
+            catch (Exception ex)
+            {
+                Log.Error("同步桌面助手配置失败", ex);
+            }
+            if (_desktopResidentItem != null &&
+                !_desktopResidentItem.IsDisposed)
+            {
+                _desktopResidentItem.Checked = _config.DesktopPanelResident;
+            }
+            if (_desktopLockItem != null && !_desktopLockItem.IsDisposed)
+            {
+                _desktopLockItem.Checked = _config.DesktopPanelLocked;
+            }
+        }
+
+        /// <summary>
+        /// 勾选类菜单项点完不要让菜单收起来：用户经常要连着勾两三个开关，
+        /// 每勾一次都得重新右键一下太折腾。点菜单外侧 / Esc / 点普通项
+        /// 照常关闭。
+        ///
+        /// 关键在**按下鼠标**时就记意图，不能等 Click：ToolStripDropDown
+        /// 处理条目点击时是先 `Close(ItemClicked)`、后触发 Click 的，等到
+        /// Click 里再置位，菜单早就关了（实测 Closing 的日志是
+        /// `[ItemClicked/keep=False]`）。
+        /// </summary>
+        private void KeepOpenOnClick(ToolStripMenuItem item)
+        {
+            if (item == null)
+            {
+                return;
+            }
+            item.MouseDown += delegate { _keepMenuOpen = true; };
+        }
+
+        private void OnTrayMenuClosing(
+            object sender, ToolStripDropDownClosingEventArgs e)
+        {
+            if (_keepMenuOpen &&
+                e.CloseReason == ToolStripDropDownCloseReason.ItemClicked)
+            {
+                _keepMenuOpen = false;
+                e.Cancel = true;
+                return;
+            }
+            // 点菜单外侧 / Esc 关掉时把标记清干净，否则下一次点普通项会
+            // 莫名多留一次菜单。
+            _keepMenuOpen = false;
+        }
+
         private void OnSettingsClicked(object sender, EventArgs e)
         {
             ShowSettings();
@@ -1945,7 +2126,29 @@ namespace SelectionTranslator
                 _doubleCtrlMenuItem.Checked =
                     _config.EnableDoubleCtrlHotkey;
             }
+            if (_desktopResidentItem != null &&
+                !_desktopResidentItem.IsDisposed)
+            {
+                _desktopResidentItem.Checked =
+                    _config.DesktopPanelResident;
+            }
+            // 设置里可能改了配色（保存后回读一次，配色总是以配置为准）。
+            try
+            {
+                AppConfig latest = ConfigStore.Load();
+                UiTheme.Configure(
+                    UiTheme.ParseColor(
+                        latest.ThemeBaseColor, UiTheme.DefaultBase),
+                    UiTheme.ParseColor(
+                        latest.ThemeAccentColor, UiTheme.DefaultAccent),
+                    true);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("应用界面配色失败", ex);
+            }
             ApplyTaskbarStats();
+            ApplyDesktopPanel();
             ApplyDoubleCtrlWatcher();
 
             if (_translationForm != null && !_translationForm.IsDisposed)
@@ -2068,6 +2271,43 @@ namespace SelectionTranslator
             ExitApplication();
         }
 
+        /// <summary>当前进程是否已提权（能读卷句柄，MFT 索引才可用）。</summary>
+        internal static bool IsElevated()
+        {
+            try
+            {
+                WindowsIdentity identity = WindowsIdentity.GetCurrent();
+                return new WindowsPrincipal(identity).IsInRole(
+                    WindowsBuiltInRole.Administrator);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 先起一个提权的新实例，成功后再退出自己。用户点了「否」就
+        /// 什么都不做——不能先退出再启动，否则 UAC 一取消程序就没了。
+        /// </summary>
+        private void RestartElevated()
+        {
+            try
+            {
+                ProcessStartInfo info = new ProcessStartInfo();
+                info.FileName = Application.ExecutablePath;
+                info.UseShellExecute = true;
+                info.Verb = "runas";
+                Process.Start(info);
+            }
+            catch (Exception ex)
+            {
+                Log.Info("以管理员身份重启被取消：" + ex.Message);
+                return;
+            }
+            ExitApplication();
+        }
+
         private bool IsOwnPoint(Point point)
         {
             foreach (Form form in Application.OpenForms)
@@ -2167,6 +2407,7 @@ namespace SelectionTranslator
             if (disposing && !_disposed)
             {
                 _disposed = true;
+                DesktopManagerForm.StateChanged -= SyncPanelStateFromStore;
                 _firstRunTimer.Stop();
                 _firstRunTimer.Dispose();
                 _voicePollTimer.Stop();
@@ -2216,5 +2457,6 @@ namespace SelectionTranslator
 
             base.Dispose(disposing);
         }
+
     }
 }

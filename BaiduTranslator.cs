@@ -114,6 +114,20 @@ namespace SelectionTranslator
             AppConfig config,
             string text)
         {
+            return await TranslateAsync(config, text, null, null);
+        }
+
+        /// <summary>
+        /// 指定源语言 / 目标语言翻译。fromLanguage 传 null 或 "auto"
+        /// 表示自动检测；toLanguage 传 null 时按配置里的目标语言走
+        /// （配置为 auto 时仍按「中文→英文，其他→中文」自动定向）。
+        /// </summary>
+        public static async Task<TranslationResult> TranslateAsync(
+            AppConfig config,
+            string text,
+            string fromLanguage,
+            string toLanguage)
+        {
             if (config == null)
             {
                 throw new TranslationException("配置为空", "NO_CONFIG");
@@ -138,7 +152,8 @@ namespace SelectionTranslator
             int byteCount = Encoding.UTF8.GetByteCount(query);
             if (byteCount <= MaxByteLength)
             {
-                return await TranslateChunk(config, query);
+                return await TranslateChunk(
+                    config, query, fromLanguage, toLanguage);
             }
 
             // 超过上限时自动分段翻译，避免直接报错中断。
@@ -150,7 +165,8 @@ namespace SelectionTranslator
             int succeeded = 0;
             for (int i = 0; i < chunks.Count; i++)
             {
-                TranslationResult part = await TranslateChunk(config, chunks[i]);
+                TranslationResult part = await TranslateChunk(
+                    config, chunks[i], fromLanguage, toLanguage);
                 if (succeeded == 0)
                 {
                     from = part.From;
@@ -456,16 +472,45 @@ namespace SelectionTranslator
             AppConfig config,
             string query)
         {
+            return await TranslateChunk(config, query, null, null);
+        }
+
+        /// <summary>
+        /// 翻译单段文本，可指定源语言 / 目标语言（null 表示沿用原逻辑）。
+        /// </summary>
+        private static async Task<TranslationResult> TranslateChunk(
+            AppConfig config,
+            string query,
+            string fromLanguage,
+            string toLanguage)
+        {
             string appId = (config.AppId ?? "").Trim();
             string secret = config.GetSecret();
-            string target = ResolveTarget(query, config.TargetLanguage);
+            string source = string.IsNullOrEmpty(fromLanguage) ||
+                string.Equals(fromLanguage, "auto", StringComparison.OrdinalIgnoreCase)
+                ? "auto"
+                : fromLanguage;
+            string target;
+            if (string.IsNullOrEmpty(toLanguage))
+            {
+                target = ResolveTarget(query, config.TargetLanguage);
+            }
+            else if (string.Equals(
+                toLanguage, "auto", StringComparison.OrdinalIgnoreCase))
+            {
+                target = ResolveTarget(query, "auto");
+            }
+            else
+            {
+                target = toLanguage;
+            }
             string salt = DateTime.UtcNow.Ticks.ToString();
             string sign = BuildSign(appId, query, salt, secret);
 
             Dictionary<string, string> form =
                 new Dictionary<string, string>();
             form["q"] = query;
-            form["from"] = "auto";
+            form["from"] = source;
             form["to"] = target;
             form["appid"] = appId;
             form["salt"] = salt;

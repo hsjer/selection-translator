@@ -8,12 +8,24 @@ namespace SelectionTranslator
 {
     public class AppConfig
     {
-        /// <summary>文件秒搜的默认快捷键。用户明确要求默认 Ctrl+F。</summary>
-        public const string DefaultFileSearchHotkey = "Ctrl+F";
+        /// <summary>
+        /// 文件秒搜的默认快捷键。
+        ///
+        /// 早先默认是 `Ctrl+F`，但 `RegisterHotKey` 是**全局独占**的：只要
+        /// 本程序在跑，Ctrl+F 就在所有程序里被截走——任务管理器点搜索框、
+        /// 浏览器 / Word / 记事本里按查找，弹出来的都是文件秒搜（用户反馈
+        /// 「在任务管理器点搜索就弹出秒搜」就是这个）。所以默认改成
+        /// `Ctrl+Alt+F`，老配置里的 Ctrl+F 会被自动迁移过来。
+        /// </summary>
+        public const string DefaultFileSearchHotkey = "Ctrl+Alt+F";
 
         public string AppId { get; set; }
         public string SecretProtected { get; set; }
         public string TargetLanguage { get; set; }
+        /// <summary>手动翻译窗口上次选的源语言（auto=自动检测）。</summary>
+        public string TranslateFromLang { get; set; }
+        /// <summary>手动翻译窗口上次选的目标语言（auto=按内容自动定向）。</summary>
+        public string TranslateToLang { get; set; }
         public bool EnableRightClick { get; set; }
         public bool EnableClipboardFallback { get; set; }
         public bool ShowBubbleOnSelection { get; set; }
@@ -65,10 +77,62 @@ namespace SelectionTranslator
         /// <summary>打开剪贴板历史窗口的全局快捷键。</summary>
         public string HotkeyClipboardHistory { get; set; }
 
-        /// <summary>打开「文件秒搜」窗口的全局快捷键，默认 Ctrl+F。</summary>
+        /// <summary>打开「文件秒搜」窗口的全局快捷键，默认 Ctrl+Alt+F。</summary>
         public string HotkeyFileSearch { get; set; }
+        /// <summary>
+        /// 文件秒搜快捷键是否已从旧的默认值 `Ctrl+F` 迁到 `Ctrl+Alt+F`。
+        /// 迁移只做一次，之后用户在设置里自己改回什么都尊重。
+        /// </summary>
+        public bool FileSearchHotkeyMigrated { get; set; }
         /// <summary>快速连按两下 Ctrl 打开剪贴板历史（低级键盘钩子）。</summary>
         public bool EnableDoubleCtrlHotkey { get; set; }
+
+        /// <summary>
+        /// 「桌面管理」窗口的透明度，0.3~1.0。默认 0.95，让面板半透明
+        /// 又不至于看不清。序列化缺省会是 0（double 默认值），所以加载时
+        /// 必须兜底，否则窗口会整片透明看不见任何东西。
+        /// </summary>
+        public double DesktopManagerOpacity { get; set; }
+
+        // ---- 界面外观 ----
+        /// <summary>
+        /// 界面底色（"#RRGGBB"）。空串 = 默认深色 #16171A。
+        /// 所有自绘窗口（桌面整理 / 剪贴板 / 文件秒搜 / 软件下载 / 图片
+        /// 查看器…）都从这一个值推出整套配色：底色亮就走浅色方案，
+        /// 底色暗就走深色方案，文字自动取高对比度。
+        /// </summary>
+        public string ThemeBaseColor { get; set; }
+
+        /// <summary>强调色（按钮、选中医、进度条）。空串 = 默认蓝。</summary>
+        public string ThemeAccentColor { get; set; }
+
+        // ---- 桌面整理面板 ----
+        /// <summary>面板是否常驻桌面（不进任务栏、不抢焦点，开机自动出现）。</summary>
+        public bool DesktopPanelResident { get; set; }
+
+        /// <summary>面板上次是不是收起成一条标题栏。</summary>
+        public bool DesktopPanelCollapsed { get; set; }
+
+        /// <summary>
+        /// 锁定面板位置：锁定后拖动标题栏不会挪动面板，避免误拖。
+        /// </summary>
+        public bool DesktopPanelLocked { get; set; }
+
+        /// <summary>面板上次的位置是否有效（新配置为 false，走默认落点）。</summary>
+        public bool DesktopPanelPosSet { get; set; }
+
+        public int DesktopPanelX { get; set; }
+
+        public int DesktopPanelY { get; set; }
+
+        /// <summary>展开状态的宽度（拖左边框调）。0 / 越界时回落到 400。</summary>
+        public int DesktopPanelExpandedWidth { get; set; }
+
+        /// <summary>展开状态的高度（拖上边框调，下边缘不动）。0 / 越界回落 620。</summary>
+        public int DesktopPanelExpandedHeight { get; set; }
+
+        /// <summary>收起后短横条的长度（拖右边框调）。0 / 越界回落 210。</summary>
+        public int DesktopPanelCollapsedWidth { get; set; }
 
         // ---- 软件下载 ----
         /// <summary>
@@ -88,6 +152,8 @@ namespace SelectionTranslator
             AppId = "";
             SecretProtected = "";
             TargetLanguage = "auto";
+            TranslateFromLang = "auto";
+            TranslateToLang = "";
             EnableRightClick = true;
             EnableClipboardFallback = true;
             ShowBubbleOnSelection = true;
@@ -115,6 +181,18 @@ namespace SelectionTranslator
             HotkeyClipboardHistory = "Ctrl+Alt+C";
             HotkeyFileSearch = DefaultFileSearchHotkey;
             EnableDoubleCtrlHotkey = true;
+            DesktopManagerOpacity = 0.95;
+            ThemeBaseColor = "";
+            ThemeAccentColor = "";
+            DesktopPanelResident = false;
+            DesktopPanelCollapsed = false;
+            DesktopPanelLocked = false;
+            DesktopPanelPosSet = false;
+            DesktopPanelX = 0;
+            DesktopPanelY = 0;
+            DesktopPanelExpandedWidth = 400;
+            DesktopPanelExpandedHeight = 620;
+            DesktopPanelCollapsedWidth = 210;
             SoftwareDownloadDirectory = "";
             FirstRunDone = false;
         }
@@ -217,6 +295,23 @@ namespace SelectionTranslator
                 {
                     config.UseTencentOcr = true;
                 }
+                // 老配置没有这三个尺寸字段，反序列化后是 0；一律回落到
+                // 默认形状，别让面板启动变成 0×0。用户拉过的合法尺寸照用。
+                if (config.DesktopPanelExpandedWidth < 300 ||
+                    config.DesktopPanelExpandedWidth > 1600)
+                {
+                    config.DesktopPanelExpandedWidth = 400;
+                }
+                if (config.DesktopPanelExpandedHeight < 220 ||
+                    config.DesktopPanelExpandedHeight > 1600)
+                {
+                    config.DesktopPanelExpandedHeight = 620;
+                }
+                if (config.DesktopPanelCollapsedWidth < 150 ||
+                    config.DesktopPanelCollapsedWidth > 800)
+                {
+                    config.DesktopPanelCollapsedWidth = 210;
+                }
 
                 // 语音识别是后加的功能：旧配置里完全没有这几个字段，
                 // 用 VoiceEngineType 是否存在作为「新版配置」的判据。
@@ -304,13 +399,39 @@ namespace SelectionTranslator
                 }
 
                 // 文件秒搜的快捷键是后加的：老配置里没有这个字段，
-                // 补上默认的 Ctrl+F；有字段但被清空也回到默认。
+                // 补上默认值；有字段但被清空也回到默认。
                 if (!HasFileSearchHotkeySetting(json) ||
                     string.IsNullOrEmpty(
                         (config.HotkeyFileSearch ?? "").Trim()))
                 {
                     config.HotkeyFileSearch =
                         AppConfig.DefaultFileSearchHotkey;
+                }
+
+                // 默认值从 Ctrl+F 换成了 Ctrl+Alt+F。Ctrl+F 在几乎所有
+                // 程序里都是「查找」，被全局热键截走后，任务管理器点搜索
+                // 框、浏览器里找东西都会弹文件秒搜。老配置里还留着旧默认
+                // 值的一次性迁过来；迁移过的（标记已置位）不再动，用户
+                // 想改回 Ctrl+F 由他自己决定。
+                if (!config.FileSearchHotkeyMigrated)
+                {
+                    config.FileSearchHotkeyMigrated = true;
+                    if (string.Equals(
+                            (config.HotkeyFileSearch ?? "").Trim(),
+                            "Ctrl+F", StringComparison.OrdinalIgnoreCase))
+                    {
+                        config.HotkeyFileSearch =
+                            AppConfig.DefaultFileSearchHotkey;
+                    }
+                }
+
+                // 透明度缺省会被反序列化成 0（double 默认），必须兜底成可见值，
+                // 否则「桌面管理」窗口整片透明、什么都看不到。
+                if (!HasDesktopManagerOpacitySetting(json) ||
+                    config.DesktopManagerOpacity <= 0.0 ||
+                    config.DesktopManagerOpacity > 1.0)
+                {
+                    config.DesktopManagerOpacity = 0.95;
                 }
 
                 // 老用户已经有自己的开关状态，别把人家的设置改掉。
@@ -408,6 +529,15 @@ namespace SelectionTranslator
             return json != null &&
                 json.IndexOf(
                     "\"HotkeyFileSearch\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        /// <summary>供自检直接验证老配置迁移逻辑，不依赖真实 config.json。</summary>
+        public static bool HasDesktopManagerOpacitySetting(string json)
+        {
+            return json != null &&
+                json.IndexOf(
+                    "\"DesktopManagerOpacity\"",
                     StringComparison.OrdinalIgnoreCase) >= 0;
         }
 

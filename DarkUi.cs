@@ -12,20 +12,29 @@ namespace SelectionTranslator
     /// </summary>
     internal static class DarkUi
     {
-        public static readonly Color Window = Color.FromArgb(22, 23, 26);
-        public static readonly Color Surface = Color.FromArgb(29, 31, 35);
-        public static readonly Color Card = Color.FromArgb(36, 39, 44);
-        public static readonly Color CardHover = Color.FromArgb(50, 54, 61);
-        public static readonly Color Sunken = Color.FromArgb(24, 26, 30);
-        public static readonly Color Border = Color.FromArgb(57, 61, 69);
-        public static readonly Color BorderSoft = Color.FromArgb(44, 47, 54);
-        public static readonly Color Text = Color.FromArgb(235, 237, 241);
-        public static readonly Color TextDim = Color.FromArgb(151, 157, 167);
-        public static readonly Color TextFaint = Color.FromArgb(103, 109, 119);
-        public static readonly Color Accent = Color.FromArgb(82, 145, 255);
-        public static readonly Color AccentHover = Color.FromArgb(110, 165, 255);
-        public static readonly Color AccentSoft = Color.FromArgb(33, 50, 78);
-        public static readonly Color Danger = Color.FromArgb(240, 106, 106);
+        // 颜色不再写死：全部转发到 UiTheme，用户在「界面外观」里换底色
+        // 或强调色后，所有窗口立刻跟着变（深色 / 浅色都支持）。
+        public static Color Window { get { return UiTheme.Window; } }
+        public static Color Surface { get { return UiTheme.Surface; } }
+        public static Color Card { get { return UiTheme.Card; } }
+        public static Color CardHover { get { return UiTheme.CardHover; } }
+        public static Color Sunken { get { return UiTheme.Sunken; } }
+        public static Color Border { get { return UiTheme.Border; } }
+        public static Color BorderSoft { get { return UiTheme.BorderSoft; } }
+        public static Color Text { get { return UiTheme.Text; } }
+        public static Color TextDim { get { return UiTheme.TextDim; } }
+        public static Color TextFaint { get { return UiTheme.TextFaint; } }
+        public static Color Accent { get { return UiTheme.Accent; } }
+        public static Color AccentHover { get { return UiTheme.AccentHover; } }
+        public static Color AccentPressed { get { return UiTheme.AccentPressed; } }
+        public static Color AccentSoft { get { return UiTheme.AccentSoft; } }
+        public static Color AccentBorder { get { return UiTheme.AccentBorder; } }
+        public static Color AccentInk { get { return UiTheme.AccentInk; } }
+        public static Color OnAccent { get { return UiTheme.OnAccent; } }
+        public static Color Danger { get { return UiTheme.Danger; } }
+        public static Color DangerSoft { get { return UiTheme.DangerSoft; } }
+        public static Color DangerBorder { get { return UiTheme.DangerBorder; } }
+        public static Color DisabledFill { get { return UiTheme.DisabledFill; } }
 
         public static readonly Font FontTitle =
             new Font("Microsoft YaHei UI", 15f, FontStyle.Bold,
@@ -327,10 +336,53 @@ namespace SelectionTranslator
                         g.DrawLine(pen, 4.8f, 4.8f, 13.2f, 13.2f);
                         g.DrawLine(pen, 13.2f, 4.8f, 4.8f, 13.2f);
                         break;
+
+                    case GlyphKind.Grid:
+                    {
+                        float s = 4.4f;
+                        float gap = 1.8f;
+                        float x0 = 2.3f;
+                        float y0 = 2.3f;
+                        DrawGlyphCell(g, pen, x0, y0, s, s);
+                        DrawGlyphCell(g, pen, x0 + s + gap, y0, s, s);
+                        DrawGlyphCell(g, pen, x0, y0 + s + gap, s, s);
+                        DrawGlyphCell(g, pen, x0 + s + gap, y0 + s + gap, s, s);
+                        break;
+                    }
+
+                    case GlyphKind.List:
+                        g.DrawLine(pen, 3f, 5.4f, 15f, 5.4f);
+                        g.DrawLine(pen, 3f, 9f, 15f, 9f);
+                        g.DrawLine(pen, 3f, 12.6f, 15f, 12.6f);
+                        break;
+
+                    case GlyphKind.ChevronUp:
+                        g.DrawLines(pen, new PointF[]
+                        {
+                            P(4.6f, 11.4f), P(9f, 7f), P(13.4f, 11.4f)
+                        });
+                        break;
+
+                    case GlyphKind.ChevronDown:
+                        g.DrawLines(pen, new PointF[]
+                        {
+                            P(4.6f, 7f), P(9f, 11.4f), P(13.4f, 7f)
+                        });
+                        break;
                 }
             }
 
             g.Restore(state);
+        }
+
+        private static void DrawGlyphCell(
+            Graphics g, Pen pen, float x, float y, float w, float h)
+        {
+            using (GraphicsPath path = Rounded(
+                new RectangleF(x, y, w, h), 1.3f))
+            {
+                g.DrawPath(pen, path);
+            }
         }
     }
 
@@ -406,6 +458,23 @@ namespace SelectionTranslator
             set { _radius = value; Invalidate(); }
         }
 
+        /// <summary>
+        /// 可选：宿主窗体提供的「玻璃底板」绘制回调。设置后按钮不再铺
+        /// 自己的 Card / Accent 纯色，背景完全沿用宿主的主题背景（桌面
+        /// 整理面板里就是那块跟着透明度走的半透明底板），只画文字。
+        /// 文字用固定实色，不参与任何 alpha 混合。
+        /// </summary>
+        public Action<Graphics, Control> GlassBackdrop { get; set; }
+
+        /// <summary>
+        /// 玻璃模式下 hover / 按下时叠的中性色。alpha 由宿主按底板透明度
+        /// 给，所以反馈也一起变淡，不会出现一块跟主题无关的实心色块。
+        /// </summary>
+        public Color GlassOverlay { get; set; }
+
+        /// <summary>玻璃模式的文字实色；留空则退回全局文字色。</summary>
+        public Color GlassInk { get; set; }
+
         protected override void OnMouseEnter(EventArgs e)
         {
             _hover = true;
@@ -441,11 +510,55 @@ namespace SelectionTranslator
             base.OnEnabledChanged(e);
         }
 
+        /// <summary>
+        /// 玻璃模式：底色交给宿主，按钮本身只保留一层 hover 反馈和文字。
+        /// 刻意忽略 Primary / Checked / Danger——「颜色统一」就是不让
+        /// 某个按钮再自带一块蓝底或白底。
+        /// </summary>
+        private void PaintGlass(Graphics g)
+        {
+            GlassBackdrop(g, this);
+            if (Enabled && (_hover || _pressed) && GlassOverlay.A > 0)
+            {
+                Color overlay = GlassOverlay;
+                if (_pressed)
+                {
+                    overlay = Color.FromArgb(
+                        Math.Min(255, overlay.A * 2),
+                        overlay.R, overlay.G, overlay.B);
+                }
+                RectangleF box = new RectangleF(
+                    0.5f, 0.5f, Width - 1f, Height - 1f);
+                using (GraphicsPath path = DarkUi.Rounded(box, _radius))
+                using (SolidBrush brush = new SolidBrush(overlay))
+                {
+                    g.FillPath(brush, path);
+                }
+            }
+            if (!string.IsNullOrEmpty(Text))
+            {
+                Rectangle textBox = new Rectangle(
+                    3, 0, Math.Max(1, Width - 6), Height);
+                Color ink = GlassInk.A > 0 ? GlassInk : DarkUi.Text;
+                if (!Enabled)
+                {
+                    ink = Color.FromArgb(110, ink.R, ink.G, ink.B);
+                }
+                DarkUi.Text2(g, Text, Font, ink, textBox,
+                    DarkUi.CenterMiddle | TextFormatFlags.EndEllipsis);
+            }
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            if (GlassBackdrop != null)
+            {
+                PaintGlass(g);
+                return;
+            }
             g.Clear(_surface);
 
             RectangleF box = new RectangleF(
@@ -456,7 +569,7 @@ namespace SelectionTranslator
 
             if (!Enabled)
             {
-                fill = _primary ? Color.FromArgb(44, 55, 72) : DarkUi.Surface;
+                fill = _primary ? DarkUi.DisabledFill : DarkUi.Surface;
                 ink = DarkUi.TextFaint;
             }
             else if (_primary)
@@ -464,21 +577,21 @@ namespace SelectionTranslator
                 fill = _hover ? DarkUi.AccentHover : DarkUi.Accent;
                 if (_pressed)
                 {
-                    fill = Color.FromArgb(66, 124, 226);
+                    fill = DarkUi.AccentPressed;
                 }
-                ink = Color.White;
+                ink = DarkUi.OnAccent;
             }
             else if (_danger && _hover)
             {
-                fill = Color.FromArgb(64, 38, 40);
-                border = Color.FromArgb(140, 66, 68);
+                fill = DarkUi.DangerSoft;
+                border = DarkUi.DangerBorder;
                 ink = DarkUi.Danger;
             }
             else if (_checked)
             {
                 fill = DarkUi.AccentSoft;
-                border = Color.FromArgb(72, 116, 184);
-                ink = Color.FromArgb(226, 236, 252);
+                border = DarkUi.AccentBorder;
+                ink = DarkUi.AccentInk;
             }
             else
             {
@@ -529,7 +642,13 @@ namespace SelectionTranslator
         Minimize,
         Maximize,
         Restore,
-        Close
+        Close,
+        Grid,
+        List,
+        /// <summary>收起（面板缩成一条标题栏）。</summary>
+        ChevronUp,
+        /// <summary>展开（把收起的面板放下来）。</summary>
+        ChevronDown
     }
 
     /// <summary>只画图标的按钮：底部悬浮工具条与标题栏窗口按钮共用。</summary>
@@ -611,6 +730,15 @@ namespace SelectionTranslator
             set { _iconScale = value; Invalidate(); }
         }
 
+        /// <summary>同 FlatButton.GlassBackdrop：背景交给宿主主题底板。</summary>
+        public Action<Graphics, Control> GlassBackdrop { get; set; }
+
+        /// <summary>玻璃模式下 hover / 按下叠的中性色（alpha 随透明度）。</summary>
+        public Color GlassOverlay { get; set; }
+
+        /// <summary>玻璃模式的图标实色；留空则动态取全局文字色。</summary>
+        public Color GlassInk { get; set; }
+
         protected override void OnMouseEnter(EventArgs e)
         {
             _hover = true;
@@ -645,6 +773,11 @@ namespace SelectionTranslator
             Graphics g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            if (GlassBackdrop != null)
+            {
+                PaintGlass(g);
+                return;
+            }
             g.Clear(_surface);
 
             RectangleF box = new RectangleF(
@@ -653,8 +786,8 @@ namespace SelectionTranslator
             if (_hover && Enabled)
             {
                 Color fill = _dangerHover
-                    ? Color.FromArgb(196, 64, 64)
-                    : Color.FromArgb(52, 56, 64);
+                    ? DarkUi.Danger
+                    : DarkUi.CardHover;
                 using (GraphicsPath path = DarkUi.Rounded(box, 7f))
                 using (SolidBrush brush = new SolidBrush(
                     _pressed ? Color.FromArgb(fill.R, fill.G, fill.B) : fill))
@@ -664,6 +797,40 @@ namespace SelectionTranslator
                 ink = _dangerHover ? Color.White : DarkUi.Text;
             }
 
+            Rectangle iconBox = new Rectangle(0, 0, Width, Height);
+            DarkUi.DrawGlyph(g, _kind, iconBox, ink,
+                1.45f * Math.Max(0.8f, _iconScale));
+        }
+
+        /// <summary>
+        /// 玻璃模式：不铺 CardHover 那种独立色块，图标保持固定实色，
+        /// hover 只叠一层跟底板透明度联动的中性色。
+        /// </summary>
+        private void PaintGlass(Graphics g)
+        {
+            GlassBackdrop(g, this);
+            if (Enabled && (_hover || _pressed) && GlassOverlay.A > 0)
+            {
+                Color overlay = GlassOverlay;
+                if (_pressed)
+                {
+                    overlay = Color.FromArgb(
+                        Math.Min(255, overlay.A * 2),
+                        overlay.R, overlay.G, overlay.B);
+                }
+                RectangleF box = new RectangleF(
+                    1.5f, 1.5f, Width - 3f, Height - 3f);
+                using (GraphicsPath path = DarkUi.Rounded(box, 7f))
+                using (SolidBrush brush = new SolidBrush(overlay))
+                {
+                    g.FillPath(brush, path);
+                }
+            }
+            Color ink = GlassInk.A > 0 ? GlassInk : DarkUi.Text;
+            if (!Enabled)
+            {
+                ink = Color.FromArgb(110, ink.R, ink.G, ink.B);
+            }
             Rectangle iconBox = new Rectangle(0, 0, Width, Height);
             DarkUi.DrawGlyph(g, _kind, iconBox, ink,
                 1.45f * Math.Max(0.8f, _iconScale));

@@ -28,6 +28,32 @@ namespace SelectionTranslator
                 return;
             }
 
+            if (Array.IndexOf(args, "--taskbaravoidprobe") >= 0)
+            {
+                SelfTest.RunTaskbarAvoidProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--barzprobe") >= 0)
+            {
+                SelfTest.RunBarZProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--winscan") >= 0)
+            {
+                SelfTest.RunWinScan();
+                return;
+            }
+
+            // 给 --taskbaravoidprobe 当「别的应用」：在指定位置开一个小
+            // 窗口数秒后自动退出（参数：x y w h 秒）。
+            if (Array.IndexOf(args, "--occupant") >= 0)
+            {
+                SelfTest.RunOccupantWindow(args);
+                return;
+            }
+
             if (Array.IndexOf(args, "--statslive") >= 0)
             {
                 SelfTest.RunStatsLiveProbe();
@@ -82,6 +108,24 @@ namespace SelectionTranslator
                 return;
             }
 
+            if (Array.IndexOf(args, "--cacheprobe") >= 0)
+            {
+                SelfTest.RunCacheProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--memprobe") >= 0)
+            {
+                SelfTest.RunMemoryProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--memorysoak") >= 0)
+            {
+                SelfTest.RunMemorySoak();
+                return;
+            }
+
             if (Array.IndexOf(args, "--filesearchpreview") >= 0)
             {
                 SelfTest.RunFileSearchPreview();
@@ -121,6 +165,78 @@ namespace SelectionTranslator
             if (Array.IndexOf(args, "--iconstrip") >= 0)
             {
                 SelfTest.RunIconStripProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--desktopmgrprobe") >= 0)
+            {
+                SelfTest.RunDesktopMgrProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--panellive") >= 0)
+            {
+                SelfTest.RunDesktopPanelLive();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--opacityprobe") >= 0)
+            {
+                SelfTest.RunPanelOpacityProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--menuprobe") >= 0)
+            {
+                SelfTest.RunMenuKeepOpenProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--resizeprobe") >= 0)
+            {
+                SelfTest.RunResizeProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--desktoppin") >= 0)
+            {
+                SelfTest.RunDesktopPin();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--appearancelive") >= 0)
+            {
+                SelfTest.RunAppearanceLive();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--screenshot") >= 0)
+            {
+                SelfTest.RunScreenShot();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--translatepreview") >= 0)
+            {
+                SelfTest.RunTranslatePreview();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--mftemitprobe") >= 0)
+            {
+                SelfTest.RunMftEmitProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--mftprobe") >= 0)
+            {
+                SelfTest.RunMftProbe();
+                return;
+            }
+
+            if (Array.IndexOf(args, "--searchthumblive") >= 0)
+            {
+                SelfTest.RunSearchThumbLive();
                 return;
             }
 

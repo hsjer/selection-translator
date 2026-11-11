@@ -72,6 +72,9 @@ namespace SelectionTranslator
         private const uint SWP_NOMOVE = 0x0002;
         private const uint SWP_NOACTIVATE = 0x0010;
         private const uint SWP_NOOWNERZORDER = 0x0200;
+        private const uint SWP_NOZORDER = 0x0004;
+
+        private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool SetWindowPos(
@@ -84,9 +87,11 @@ namespace SelectionTranslator
             uint flags);
 
         /// <summary>
-        /// 把分层窗口重新放回 topmost 层顶部。点击任务栏后 Explorer 会把
+        /// 把分层窗口放回 topmost 层顶部。点击任务栏后 Explorer 会把
         /// 任务栏提到同样 topmost 的我们之上，状态条文字就被盖住了；
         /// 重新置顶即可恢复，且 SWP_NOACTIVATE 保证不抢焦点、不改位置尺寸。
+        /// 只在「确实被上面某个窗口盖住」时才调用（见 IsBarObscured）——
+        /// 无脑每帧调用会让状态条与别的窗口互抢 Z 序，那才是跳动的来源。
         /// </summary>
         public static void KeepTopMost(IntPtr hWnd)
         {
@@ -96,7 +101,7 @@ namespace SelectionTranslator
             }
             SetWindowPos(
                 hWnd,
-                new IntPtr(-1), // HWND_TOPMOST
+                HWND_TOPMOST,
                 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE |
                 SWP_NOACTIVATE | SWP_NOOWNERZORDER);

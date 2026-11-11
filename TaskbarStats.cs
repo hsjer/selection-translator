@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
+using System.Text;
 using Microsoft.Win32;
 
 namespace SelectionTranslator
@@ -980,6 +981,672 @@ namespace SelectionTranslator
             int y = taskbar.Top +
                 (taskbar.Height - content.Height) / 2;
             return new Point(x, y);
+        }
+
+        // ===== 占用避让 =====
+        // 状态条是贴在任务栏上的透明浮层。若别的应用也在同一段任务栏上
+        // 放了窗口（桌面工具栏 / 悬浮组件 / 某些网速悬浮条等），默认贴托盘
+        // 左侧的位置会被它盖住、文字叠在别人的内容上。落位前先扫一遍任务
+        // 栏带上「别的可见窗口」，把状态条挪到空档里。去挪其它应用的窗口
+        // 太冒进（会打乱用户布局），所以只挪自己。
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct OccRect
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        private delegate bool EnumWindowsCallback(
+            IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern bool EnumWindows(
+            EnumWindowsCallback lpEnumFunc, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern int GetClassName(
+            IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(
+            IntPtr hWnd, out uint lpdwProcessId);
+
+        [DllImport("user32.dll", EntryPoint = "GetWindowRect",
+            SetLastError = true)]
+        private static extern bool NativeGetWindowRect(
+            IntPtr hWnd, out OccRect lpRect);
+
+        private const uint GW_HWNDPREV = 3;
+
+        [DllImport("user32.dll", EntryPoint = "GetWindow")]
+        private static extern IntPtr GetWindow(
+            IntPtr hWnd, uint uCmd);
+
+        [DllImport("user32.dll")]
+        private static extern bool EnumChildWindows(
+            IntPtr parent, EnumWindowsCallback callback, IntPtr lParam);
+
+        [DllImport("user32.dll", EntryPoint = "FindWindow",
+            CharSet = CharSet.Auto)]
+        private static extern IntPtr FindWindowClass(
+            string className, string windowName);
+
+        /// <summary>
+        /// 扫描「与任务栏带重叠、又不是系统任务栏 / 自己进程」的其它可见
+        /// 顶层窗口，返回它们落在任务栏带内的矩形（已夹到带内）。纯系统
+        /// 组件（Shell_TrayWnd / TrayNotifyWnd / Progman / WorkerW 等）与
+        /// 自身进程窗口一律排除，避免把任务栏本体或自己的详情卡片算成冲突。
+        /// </summary>
+        public static List<Rectangle> FindOccupiers(
+            Rectangle taskbar, IntPtr ownHandle)
+        {
+            List<Rectangle> result = new List<Rectangle>();
+            if (taskbar.Width <= 0 || taskbar.Height <= 0)
+            {
+                return result;
+            }
+            int ownPid = GetCurrentProcessId();
+            int bandMinHeight = (int)(taskbar.Height * 0.5);
+            if (bandMinHeight < 1)
+            {
+                bandMinHeight = 1;
+            }
+            EnumWindows((hWnd, lParam) =>
+            {
+                CollectOccupier(
+                    hWnd, taskbar, ownPid, ownHandle,
+                    bandMinHeight, 4, result);
+                return true;
+            }, IntPtr.Zero);
+
+            // 任务栏子窗口必须单独扫一遍：TrafficMonitor、各种网速 /
+            // 硬件监控悬浮条、桌面整理工具的小组件，很多都直接把自己
+            // 嵌成 Shell_TrayWnd 的子窗口（典型是 #32770 对话框）。
+            // EnumWindows 只枚举顶层窗口，永远看不到它们——这正是
+            // 「状态条压在别人字上」的根因：避让逻辑压根不知道有人在。
+            // 子窗口都很矮，门槛放宽到半带高的一半即可。
+            int childMinHeight = bandMinHeight / 2;
+            if (childMinHeight < 6)
+            {
+                childMinHeight = 6;
+            }
+            string[] trayClasses = new string[]
+            {
+                "Shell_TrayWnd", "Shell_SecondaryTrayWnd"
+            };
+            for (int i = 0; i < trayClasses.Length; i++)
+            {
+                IntPtr tray = FindWindowClass(trayClasses[i], null);
+                if (tray == IntPtr.Zero)
+                {
+                    continue;
+                }
+                // 任务栏本体属于 explorer：它的子部件（开始按钮、任务按钮
+                // 条、合成桥……）都是任务栏自己，不能当成「别人占了」。
+                // 第三方小工具的窗口虽然也挂在任务栏下面，但进程不是
+                // explorer——按进程区分比按类名判断更通用，不用维护一份
+                // 系统类名清单，换 Windows 版本也不会漏。
+                uint trayPid;
+                GetWindowThreadProcessId(tray, out trayPid);
+                EnumChildWindows(tray, (hWnd, lParam) =>
+                {
+                    CollectOccupier(
+                        hWnd, taskbar, ownPid, ownHandle,
+                        childMinHeight, 12, (int)trayPid, result);
+                    return true;
+                }, IntPtr.Zero);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// 单个候选窗口是否算「占了任务栏带」：可见、不是系统组件、
+        /// 不是自己进程，且在带里立得住（高度过门槛、宽度不至于太窄）。
+        /// </summary>
+        private static void CollectOccupier(
+            IntPtr hWnd,
+            Rectangle taskbar,
+            int ownPid,
+            IntPtr ownHandle,
+            int minHeight,
+            int minWidth,
+            List<Rectangle> result)
+        {
+            CollectOccupier(
+                hWnd, taskbar, ownPid, ownHandle,
+                minHeight, minWidth, 0, result);
+        }
+
+        private static void CollectOccupier(
+            IntPtr hWnd,
+            Rectangle taskbar,
+            int ownPid,
+            IntPtr ownHandle,
+            int minHeight,
+            int minWidth,
+            int skipPid,
+            List<Rectangle> result)
+        {
+            if (ownHandle != IntPtr.Zero && hWnd == ownHandle)
+            {
+                return;
+            }
+            if (!IsWindowVisible(hWnd) || IsIconic(hWnd))
+            {
+                return;
+            }
+            uint pid;
+            GetWindowThreadProcessId(hWnd, out pid);
+            if (pid == (uint)ownPid ||
+                (skipPid != 0 && pid == (uint)skipPid))
+            {
+                return;
+            }
+            StringBuilder builder = new StringBuilder(256);
+            if (GetClassName(hWnd, builder, builder.Capacity) <= 0)
+            {
+                return;
+            }
+            if (IsShellOrSystemClass(builder.ToString()))
+            {
+                return;
+            }
+            OccRect raw;
+            if (!NativeGetWindowRect(hWnd, out raw) ||
+                raw.Right <= raw.Left ||
+                raw.Bottom <= raw.Top)
+            {
+                return;
+            }
+            Rectangle window = Rectangle.FromLTRB(
+                raw.Left, raw.Top, raw.Right, raw.Bottom);
+            Rectangle inter = Rectangle.Intersect(window, taskbar);
+            // 只在任务栏带里「立住脚」的窗口才算冲突：全屏桌面窗口
+            // 底边最多贴到工作区下沿，高度过不了这一关。
+            if (inter.IsEmpty ||
+                inter.Height < minHeight ||
+                inter.Width < minWidth)
+            {
+                return;
+            }
+            result.Add(inter);
+        }
+
+
+        /// <summary>
+        /// 判断状态条的显示位是不是被别人「真正占据」了：交叠矩形在宽、
+        /// 高两个方向都要达到状态条尺寸的 45% 以上才算，避免把桌面常开
+        /// 的全屏窗口探进任务栏带的几像素边角误判成遮挡。全屏窗口探边
+        /// 被误判的后果很严重——每帧都判「被挡」，于是每帧取消置顶，
+        /// 状态条最终落到全屏窗口下面，用户看到的就是「直接不显示」。
+        /// </summary>
+        public static bool IsBarOverlapped(
+            Rectangle barRect, IntPtr ownHandle)
+        {
+            List<string> ignored = new List<string>();
+            return HasBarOverlappers(barRect, ownHandle, ignored);
+        }
+
+        /// <summary>
+        /// 判断状态条是否真的被压在 Z 序下面：沿 Z 序链从自身往上层走
+        /// （GetWindow GW_HWNDPREV），只要发现一个可见、不属于自己的窗口
+        /// 与状态条矩形有交叠，就说明我们被盖住了。
+        /// 注意方向——只有「排在我们上面」的窗口才会被走到；全屏浏览器
+        /// 之类普通窗口永远在所有 topmost 窗口之下，不会被误判成遮挡，
+        /// 因此不会触发无谓的 SetWindowPos（那正是「点一下来回跳」的来源）。
+        /// 只有任务栏本体（Shell_TrayWnd 也是 topmost）在点击时被 Explorer
+        /// 提到我们之上，才会被这条判据抓到并顶回来。
+        /// </summary>
+        public static bool IsBarObscured(
+            Rectangle barRect, IntPtr ownHandle)
+        {
+            if (barRect.Width <= 0 || barRect.Height <= 0 ||
+                ownHandle == IntPtr.Zero)
+            {
+                return false;
+            }
+            // 从自身往上走：GW_HWNDPREV 返回 Z 序里排在自己前面的窗口。
+            IntPtr above = GetWindow(ownHandle, GW_HWNDPREV);
+            int guard = 0;
+            while (above != IntPtr.Zero && guard < 200)
+            {
+                guard++;
+                if (IsWindowVisible(above) && !IsIconic(above))
+                {
+                    OccRect raw;
+                    if (NativeGetWindowRect(above, out raw) &&
+                        raw.Right > raw.Left &&
+                        raw.Bottom > raw.Top)
+                    {
+                        Rectangle window = Rectangle.FromLTRB(
+                            raw.Left, raw.Top, raw.Right, raw.Bottom);
+                        if (window.IntersectsWith(barRect))
+                        {
+                            return true;
+                        }
+                    }
+                }
+                above = GetWindow(above, GW_HWNDPREV);
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// 返回 Z 序里排在自身之上的可见窗口说明行（诊断用）。
+        /// </summary>
+        public static string DescribeZOrderAbove(IntPtr ownHandle)
+        {
+            List<string> lines = new List<string>();
+            if (ownHandle == IntPtr.Zero)
+            {
+                return "no-handle";
+            }
+            IntPtr above = GetWindow(ownHandle, GW_HWNDPREV);
+            int guard = 0;
+            while (above != IntPtr.Zero && guard < 60)
+            {
+                guard++;
+                string cls = "?";
+                StringBuilder builder = new StringBuilder(256);
+                if (GetClassName(above, builder, builder.Capacity) > 0)
+                {
+                    cls = builder.ToString();
+                }
+                uint pid;
+                GetWindowThreadProcessId(above, out pid);
+                string proc = "?";
+                try
+                {
+                    using (System.Diagnostics.Process process =
+                        System.Diagnostics.Process.GetProcessById(
+                            (int)pid))
+                    {
+                        proc = process.ProcessName;
+                    }
+                }
+                catch
+                {
+                }
+                OccRect raw;
+                string rect = "-";
+                if (NativeGetWindowRect(above, out raw))
+                {
+                    rect = Rectangle.FromLTRB(
+                        raw.Left, raw.Top,
+                        raw.Right, raw.Bottom).ToString();
+                }
+                lines.Add(string.Format(
+                    "above: proc={0} class={1} visible={2} rect={3}",
+                    proc, cls, IsWindowVisible(above), rect));
+                above = GetWindow(above, GW_HWNDPREV);
+            }
+            return string.Join("\r\n", lines.ToArray());
+        }
+
+        /// <summary>
+        /// 诊断版：返回所有与 barRect 有实质性交叠的「非系统 / 非自身
+        /// 进程」顶层窗口说明行（进程名 + class + rect），供 --barzprobe。
+        /// </summary>
+        public static string DescribeBarOverlaps(
+            Rectangle barRect, IntPtr ownHandle)
+        {
+            List<string> lines = new List<string>();
+            bool any = HasBarOverlappers(barRect, ownHandle, lines);
+            string[] items = lines.ToArray();
+            return string.Join("\r\n", items);
+        }
+
+        /// <summary>
+        /// 诊断：列出任务栏带上所有可见、非外壳 / 非自身进程的顶层窗口
+        /// （进程名 + class + rect）。用于排查「状态条为什么没显示」——
+        /// 看带里到底站着哪些别的窗口。
+        /// </summary>
+        public static System.Collections.Generic.List<string>
+            ListBandWindows()
+        {
+            List<string> lines = new List<string>();
+            Rectangle taskbar = TaskbarStatsForm.GetTaskbarRect();
+            if (taskbar.Width <= 0 || taskbar.Height <= 0)
+            {
+                return lines;
+            }
+            int ownPid = GetCurrentProcessId();
+            EnumWindows((hWnd, lParam) =>
+            {
+                if (!IsWindowVisible(hWnd) || IsIconic(hWnd))
+                {
+                    return true;
+                }
+                uint pid;
+                GetWindowThreadProcessId(hWnd, out pid);
+                if (pid == (uint)ownPid)
+                {
+                    return true;
+                }
+                StringBuilder builder = new StringBuilder(256);
+                if (GetClassName(hWnd, builder, builder.Capacity) <= 0)
+                {
+                    return true;
+                }
+                string cls = builder.ToString();
+                if (IsShellOrSystemClass(cls))
+                {
+                    return true;
+                }
+                OccRect raw;
+                if (!NativeGetWindowRect(hWnd, out raw) ||
+                    raw.Right <= raw.Left ||
+                    raw.Bottom <= raw.Top)
+                {
+                    return true;
+                }
+                Rectangle window = Rectangle.FromLTRB(
+                    raw.Left, raw.Top, raw.Right, raw.Bottom);
+                Rectangle inter = Rectangle.Intersect(window, taskbar);
+                if (inter.IsEmpty)
+                {
+                    return true;
+                }
+                string proc = "?";
+                try
+                {
+                    using (System.Diagnostics.Process process =
+                        System.Diagnostics.Process.GetProcessById(
+                            (int)pid))
+                    {
+                        proc = process.ProcessName;
+                    }
+                }
+                catch
+                {
+                }
+                lines.Add(string.Format(
+                    "proc={0} class={1} rect={2} pid={3}",
+                    proc, cls, window, pid));
+                return true;
+            }, IntPtr.Zero);
+            return lines;
+        }
+
+        /// <summary>
+        /// 枚举所有与 barRect 有像素交叠的别的窗口，把「被挡」的尚存信息
+        /// 写进 detail（诊断用），返回是否有交叠。
+        /// </summary>
+        private static bool HasBarOverlappers(
+            Rectangle barRect, IntPtr ownHandle,
+            List<string> detail)
+        {
+            if (barRect.Width <= 0 || barRect.Height <= 0)
+            {
+                return false;
+            }
+            int ownPid = GetCurrentProcessId();
+            bool overlapped = false;
+            EnumWindows((hWnd, lParam) =>
+            {
+                if (ownHandle != IntPtr.Zero && hWnd == ownHandle)
+                {
+                    return true;
+                }
+                if (!IsWindowVisible(hWnd) || IsIconic(hWnd))
+                {
+                    return true;
+                }
+                uint pid;
+                GetWindowThreadProcessId(hWnd, out pid);
+                if (pid == (uint)ownPid)
+                {
+                    return true;
+                }
+                StringBuilder builder = new StringBuilder(256);
+                if (GetClassName(hWnd, builder, builder.Capacity) <= 0)
+                {
+                    return true;
+                }
+                string cls = builder.ToString();
+                if (IsShellOrSystemClass(cls))
+                {
+                    return true;
+                }
+                OccRect raw;
+                if (!NativeGetWindowRect(hWnd, out raw) ||
+                    raw.Right <= raw.Left ||
+                    raw.Bottom <= raw.Top)
+                {
+                    return true;
+                }
+                Rectangle window = Rectangle.FromLTRB(
+                    raw.Left, raw.Top, raw.Right, raw.Bottom);
+                Rectangle inter = Rectangle.Intersect(window, barRect);
+                // 必须「真的盖住状态条」才算被挡：
+                //   · 宽、高都要占到状态条的 45% 以上（面积意义上的大
+                //     面积覆盖），才认为我们的显示位被别人占了；
+                //   · 桌面常开的全屏窗口（浏览器 / Electron 应用）底边
+                //     会探进任务栏带上方几个像素，那只是像素级的边角
+                //     接触，不是遮挡。旧版「2×2px 即算被挡」就把这类
+                //     窗口当成占用者，于是每一帧都判「被挡」→ 取消置顶
+                //     → 状态条落到全屏窗口下面，表现为「直接不显示」。
+                if (!inter.IsEmpty &&
+                    inter.Width * 20 >= barRect.Width * 9 &&
+                    inter.Height * 20 >= barRect.Height * 9)
+                {
+                    overlapped = true;
+                    string proc = "?";
+                    try
+                    {
+                        using (System.Diagnostics.Process process =
+                            System.Diagnostics.Process.GetProcessById(
+                                (int)pid))
+                        {
+                            proc = process.ProcessName;
+                        }
+                    }
+                    catch
+                    {
+                    }
+                    if (detail != null)
+                    {
+                        detail.Add(string.Format(
+                            "proc={0} class={1} rect={2} procPid={3}",
+                            proc, cls, window, pid));
+                    }
+                }
+                return true;
+            }, IntPtr.Zero);
+            return overlapped;
+        }
+
+        private static int GetCurrentProcessId()
+        {
+            using (System.Diagnostics.Process process =
+                System.Diagnostics.Process.GetCurrentProcess())
+            {
+                return process.Id;
+            }
+        }
+
+        private static bool IsShellOrSystemClass(string className)
+        {
+            if (string.IsNullOrEmpty(className))
+            {
+                return true;
+            }
+            if (className.StartsWith(
+                    "Shell_", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            switch (className)
+            {
+                case "TrayNotifyWnd":
+                case "Progman":
+                case "WorkerW":
+                case "DV2ControlHost":
+                // 任务栏自身的子部件：任务按钮条、开始按钮、UI 合成桥。
+                // 它们铺满整条任务栏带，一旦当成「占用者」，状态条会被
+                // 挤到最左边去，属于误伤。
+                case "ReBarWindow32":
+                case "MSTaskSwWClass":
+                case "MSTaskListWClass":
+                case "Start":
+                    return true;
+            }
+            // 开始菜单等系统层（Windows.UI.*）打开时也会短暂出现在带里，
+            // 一并排除，别把它们当成冲突源。
+            if (className.IndexOf(
+                    "Windows.UI", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return true;
+            }
+            return false;
+        }
+
+        private static bool IntersectsAny(
+            Rectangle candidate, IList<Rectangle> occupiers)
+        {
+            if (occupiers == null)
+            {
+                return false;
+            }
+            for (int i = 0; i < occupiers.Count; i++)
+            {
+                if (candidate.IntersectsWith(occupiers[i]))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>公开的交叠判定，供状态条做「位置锚定」。</summary>
+        public static bool OverlapsAny(
+            Rectangle candidate, IList<Rectangle> occupiers)
+        {
+            return IntersectsAny(candidate, occupiers);
+        }
+
+        /// <summary>
+        /// 占用避让的纯函数（便于自检）：给定默认落点与占用矩形列表，在
+        /// 「托盘左侧可用带」里找一个不与任何占用矩形相交的空档；优先离
+        /// 默认位置最近的空档，实在没有才退回默认位置。竖直任务栏（带比
+        /// 宽还高）走不了这套水平区间算法，直接退回默认位置。
+        /// </summary>
+        public static Point AvoidOccupiers(
+            Point basePos,
+            Rectangle taskbar,
+            Rectangle trayNotify,
+            Size content,
+            int margin,
+            IList<Rectangle> occupiers)
+        {
+            Rectangle baseRect = new Rectangle(basePos, content);
+            if (occupiers == null || occupiers.Count == 0 ||
+                !IntersectsAny(baseRect, occupiers))
+            {
+                return basePos;
+            }
+            // 竖直任务栏：本算法基于水平区间，能力之外就别乱动。
+            if (taskbar.Height >= taskbar.Width)
+            {
+                return basePos;
+            }
+
+            int availLeft = taskbar.Left + 4;
+            int availRight = (trayNotify.Width > 40 &&
+                trayNotify.Left > taskbar.Left &&
+                trayNotify.Left <= taskbar.Right)
+                ? trayNotify.Left - margin
+                : taskbar.Right - margin;
+            int maxX = availRight - content.Width;
+            if (maxX < availLeft)
+            {
+                maxX = availLeft;
+            }
+
+            // 占用矩形投影成「可用带内」的水平区间。
+            List<Interval> intervals = new List<Interval>();
+            foreach (Rectangle occ in occupiers)
+            {
+                int l = Math.Max(availLeft, occ.Left);
+                int r = Math.Min(availRight, occ.Right);
+                if (r - l > 0)
+                {
+                    intervals.Add(new Interval(l, r));
+                }
+            }
+            intervals.Sort((a, b) => a.Left.CompareTo(b.Left));
+
+            // 可用带内的空闲区间。
+            List<Interval> free = new List<Interval>();
+            int cursor = availLeft;
+            foreach (Interval o in intervals)
+            {
+                if (o.Left > cursor)
+                {
+                    free.Add(new Interval(cursor, o.Left));
+                }
+                if (o.Right > cursor)
+                {
+                    cursor = o.Right;
+                }
+            }
+            if (cursor < availRight)
+            {
+                free.Add(new Interval(cursor, availRight));
+            }
+
+            // 每个够宽的空闲区间，候选左边缘取「区间右端（贴着下一个占用
+            // 体左边）」和「区间左端」两处，再按离默认位置的距离排序，挑
+            // 第一个不冲突的。
+            List<int> candidates = new List<int>();
+            foreach (Interval f in free)
+            {
+                if (f.Right - f.Left >= content.Width)
+                {
+                    int rightEnd = f.Right - content.Width;
+                    candidates.Add(
+                        rightEnd < f.Left ? f.Left : rightEnd);
+                    candidates.Add(f.Left);
+                }
+            }
+            candidates.Add(basePos.X);
+
+            candidates.Sort((a, b) =>
+                Math.Abs(a - basePos.X).CompareTo(
+                    Math.Abs(b - basePos.X)));
+
+            foreach (int x in candidates)
+            {
+                int cx = Math.Max(availLeft, Math.Min(maxX, x));
+                if (!IntersectsAny(
+                    new Rectangle(
+                        cx, basePos.Y, content.Width, content.Height),
+                    occupiers))
+                {
+                    return new Point(cx, basePos.Y);
+                }
+            }
+            return basePos;
+        }
+
+        private sealed class Interval
+        {
+            public int Left;
+            public int Right;
+            public Interval(int left, int right)
+            {
+                Left = left;
+                Right = right;
+            }
         }
 
         /// <summary>

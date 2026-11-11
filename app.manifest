@@ -4,6 +4,16 @@
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
+        <!--
+          保持 asInvoker：程序有开机自启（HKCU\\Run），一旦改成
+          requireAdministrator，每次开机登录都会先弹一次 UAC，自启
+          体验会直接崩掉。
+
+          文件秒搜的 NTFS MFT 索引需要读卷句柄（FSCTL_ENUM_USN_DATA），
+          只有提权进程能拿到。所以策略是：能读就用 MFT 建索引，读不到
+          就自动退回目录遍历，界面上标出这次用的是哪种；想要极速索引
+          可以从托盘菜单「以管理员身份重启」。
+        -->
         <requestedExecutionLevel level="asInvoker" uiAccess="false" />
       </requestedPrivileges>
     </security>
