@@ -134,6 +134,15 @@ namespace SelectionTranslator
         /// <summary>收起后短横条的长度（拖右边框调）。0 / 越界回落 210。</summary>
         public int DesktopPanelCollapsedWidth { get; set; }
 
+        /// <summary>
+        /// 面板里不显示的桌面文件夹（完整路径，多个用 ; 分隔）。
+        /// 用户自己的资料目录常和分类页签同名（比如桌面上的「文档」），
+        /// 以前按名字一律当旧版分类文件夹跳过、还把它里面的文件塞进
+        /// 文档页签，点「打开所在位置」就跳到那个文件夹去了。现在改成
+        /// 按路径显式屏蔽：只有这里列出的文件夹不显示，别的一概照常。
+        /// </summary>
+        public string DesktopHiddenFolders { get; set; }
+
         // ---- 软件下载 ----
         /// <summary>
         /// 安装包保存目录。空串表示用系统「下载」文件夹（取不到时退回桌面），
@@ -193,6 +202,7 @@ namespace SelectionTranslator
             DesktopPanelExpandedWidth = 400;
             DesktopPanelExpandedHeight = 620;
             DesktopPanelCollapsedWidth = 210;
+            DesktopHiddenFolders = "";
             SoftwareDownloadDirectory = "";
             FirstRunDone = false;
         }

@@ -181,15 +181,11 @@ namespace SelectionTranslator
         internal const string AllCategory = "全部";
 
         /// <summary>
-        /// 旧版本「整理桌面」建出来的五个分类文件夹名。新版只分类不搬家，
-        /// 但为了让被旧版搬进去的文件仍然出现在对应页签里（而不是凭空
-        /// 消失），加载时仍会把它们的顶层内容映射进来。桌面上没有这些
-        /// 文件夹时这段逻辑自动跳过。
+        /// 面板里不显示的桌面文件夹（完整路径，; 分隔），来自配置
+        /// <see cref="AppConfig.DesktopHiddenFolders"/>。按路径而不是按名字，
+        /// 同名但不同位置的文件夹照常显示。
         /// </summary>
-        internal static readonly string[] CategoryFolders =
-        {
-            "文档", "图片", "视频", "压缩", "其它"
-        };
+        private string _hiddenFolders = "";
 
         private static DesktopManagerForm _instance;
 
@@ -462,12 +458,14 @@ namespace SelectionTranslator
                 // 否则文件名会跟着一起糊掉。
                 _bgAlpha = op;
                 _opacityTrack.Value = (int)Math.Round(op * 100.0);
+                _hiddenFolders = config.DesktopHiddenFolders ?? "";
             }
             catch (Exception ex)
             {
                 Log.Error("读取桌面管理透明度失败", ex);
                 _bgAlpha = 0.95;
                 _opacityTrack.Value = 95;
+                _hiddenFolders = "";
             }
             UpdateOpacityValue();
             // 读回用户上次存的透明度后，按钮 hover 浓度也同步一次。
@@ -1930,6 +1928,16 @@ namespace SelectionTranslator
         internal void LoadFromPath(string path)
         {
             _root = path;
+            // 加载的是新目录，上一个目录里选的页签没有意义；重置后
+            // Reload 会用新目录的内容挑第一个非空分类，默认页签才确定。
+            _activeCategory = Categories[0];
+            Reload();
+        }
+
+        /// <summary>自检 / 探针用：指定要屏蔽的文件夹列表（; 分隔的完整路径）。</summary>
+        internal void SetHiddenFoldersForTest(string paths)
+        {
+            _hiddenFolders = paths ?? "";
             Reload();
         }
 
@@ -2146,8 +2154,9 @@ namespace SelectionTranslator
         // ---- 数据加载 ----
 
         /// <summary>
-        /// 加载桌面：顶层条目都进列表（分类文件夹本身跳过，它们的顶层
-        /// 内容会作为各自分类的条目映射进来，兼容旧版搬家结果）。
+        /// 加载桌面：只读顶层条目。旧版会把文件 Move 进「文档/图片/…」
+        /// 分类文件夹，那时还得进去把内容映射回来；新版只分类不搬家，
+        /// 分类目录映射已经彻底断开，不再读任何子目录的内容。
         /// 图标不在这一步取，由 QueueIconLoad 在后台补。加载完按当前
         /// 页签过滤。
         /// </summary>
@@ -2170,32 +2179,14 @@ namespace SelectionTranslator
                         }
                         bool isDir = (info.Attributes & FileAttributes.Directory)
                             != 0;
-                        // 分类文件夹本身不进列表，它的内容按分类单独加载。
-                        if (isDir && IsCategoryFolder(info.Name))
+                        // 用户明确不想在面板里看到桌面上的「文档」文件夹
+                        // （那是他自己的资料目录，不是工具的内部结构），
+                        // 按名字跳过，也不读它里面的内容。
+                        if (isDir && IsMutedFolder(info.FullName))
                         {
                             continue;
                         }
                         next.Add(BuildItem(info, ""));
-                    }
-                    // 兼容旧版：被旧版「整理」搬进分类文件夹的文件也映射
-                    // 进来，别让它们从列表里凭空消失。
-                    foreach (string folder in CategoryFolders)
-                    {
-                        string catDir = Path.Combine(_root, folder);
-                        if (!Directory.Exists(catDir))
-                        {
-                            continue;
-                        }
-                        DirectoryInfo cd = new DirectoryInfo(catDir);
-                        foreach (FileSystemInfo info in
-                            cd.EnumerateFileSystemInfos())
-                        {
-                            if ((info.Attributes & FileAttributes.Hidden) != 0)
-                            {
-                                continue;
-                            }
-                            next.Add(BuildItem(info, folder));
-                        }
                     }
                 }
                 catch (Exception ex)
@@ -2389,9 +2380,47 @@ namespace SelectionTranslator
             return string.Compare(a.Name, b.Name, true);
         }
 
-        private static bool IsCategoryFolder(string name)
+        /// <summary>
+        /// 这个文件夹要不要在面板里藏起来。只看配置里显式列出的完整路径，
+        /// 不按名字判断——用户自己建在桌面上的「文档」「图片」这类同名
+        /// 资料目录应该正常显示，不能被当成工具的内部结构。
+        /// </summary>
+        private bool IsMutedFolder(string fullPath)
         {
-            return Array.IndexOf(CategoryFolders, name) >= 0;
+            if (string.IsNullOrEmpty(_hiddenFolders) || string.IsNullOrEmpty(fullPath))
+            {
+                return false;
+            }
+            string normalized = NormalizePath(fullPath);
+            string[] parts = _hiddenFolders.Split(';');
+            for (int i = 0; i < parts.Length; i++)
+            {
+                string entry = parts[i].Trim();
+                if (entry.Length == 0)
+                {
+                    continue;
+                }
+                if (string.Equals(NormalizePath(entry), normalized,
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static string NormalizePath(string path)
+        {
+            string full;
+            try
+            {
+                full = Path.GetFullPath(path);
+            }
+            catch
+            {
+                full = path;
+            }
+            return full.TrimEnd('\\', '/');
         }
 
         private static bool IsImageExt(string path)

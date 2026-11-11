@@ -3712,10 +3712,26 @@ namespace SelectionTranslator
                 File.WriteAllText(Path.Combine(temp, "杂项.dat"), "other");
 
                 form = new DesktopManagerForm();
+                // 复现用户踩到的坑：桌面根上有个用户自己的真实文件夹，
+                // 名字就叫「文档」。以前会被当成旧版分类文件夹，里面的
+                // 文件被塞进「文档」页签，点「打开所在位置」就跳到那个
+                // 文件夹里去。现在必须完全不当回事。
+                string userDocDir = Path.Combine(temp, "文档");
+                Directory.CreateDirectory(userDocDir);
+                File.WriteAllText(
+                    Path.Combine(userDocDir, "内部资料.docx"), "inner");
+                // 屏幕外的临时目录，别让真实配置里的屏蔽列表掺进来。
+                form.SetHiddenFoldersForTest("");
+
                 form.LoadFromPath(temp);
 
                 Check(output, ref ok, "桌面管理条目数",
-                    form.TotalItemCount.ToString(), "5");
+                    form.TotalItemCount.ToString(), "6");
+                // 同名真实文件夹按普通目录对待，计进「目录」，内部文件不映射。
+                Check(output, ref ok, "同名文件夹算普通目录",
+                    form.CountForCategory("目录").ToString(), "1");
+                Check(output, ref ok, "同名文件夹内部文件不映射",
+                    form.CountForCategory("文档").ToString(), "1");
                 Check(output, ref ok, "默认视图=列表",
                     form.ViewMode.ToString(),
                     DesktopManagerForm.ViewModeKind.List.ToString());
@@ -3739,9 +3755,10 @@ namespace SelectionTranslator
                 // 新版「重新分类」只做展示层分类：绝不移动文件、绝不建文件夹。
                 Check(output, ref ok, "整理后顶层文件数不变",
                     Directory.GetFiles(temp).Length.ToString(), "5");
+                // 临时目录里那个「文档」是探针自己建的（模拟用户真实
+                // 文件夹），所以只检查其余四个分类文件夹没被创建。
                 Check(output, ref ok, "不创建分类文件夹",
-                    (Directory.Exists(Path.Combine(temp, "文档")) ||
-                     Directory.Exists(Path.Combine(temp, "图片")) ||
+                    (Directory.Exists(Path.Combine(temp, "图片")) ||
                      Directory.Exists(Path.Combine(temp, "视频")) ||
                      Directory.Exists(Path.Combine(temp, "压缩")) ||
                      Directory.Exists(Path.Combine(temp, "其它")))
@@ -3751,9 +3768,9 @@ namespace SelectionTranslator
                     File.Exists(Path.Combine(temp, "报告.docx")).ToString(),
                     "True");
 
-                // 分类完页签仍按扩展名分别汇总。
+                // 分类完页签仍按扩展名分别汇总（+1 那个是探针建的「文档」目录）。
                 Check(output, ref ok, "分类后全部条目数",
-                    form.TotalItemCount.ToString(), "5");
+                    form.TotalItemCount.ToString(), "6");
                 Check(output, ref ok, "默认页签=文档",
                     form.ActiveCategory, "文档");
                 // 「全部」聚合页签已去掉：6 格都是实打实的分类。
@@ -3778,14 +3795,28 @@ namespace SelectionTranslator
                 form.SelectCategory("其它");
                 Check(output, ref ok, "页签其它=1",
                     form.ItemCount.ToString(), "1");
-                // 分类文件夹本身不算「目录」页签的条目。
-                Check(output, ref ok, "页签目录=0",
-                    form.CountForCategory("目录").ToString(), "0");
+                // 同名真实文件夹按普通目录算，出现在「目录」页签里。
+                Check(output, ref ok, "页签目录=1",
+                    form.CountForCategory("目录").ToString(), "1");
                 form.SelectCategory("其它");
                 Check(output, ref ok, "切回其它=1",
                     form.ItemCount.ToString(), "1");
                 Check(output, ref ok, "页签计数文档=1",
                     form.CountForCategory("文档").ToString(), "1");
+
+                // 按路径显式屏蔽：把它列进隐藏列表后，目录页签清空，
+                // 但别的条目一个都不能少（屏蔽只针对这一条路径）。
+                form.SetHiddenFoldersForTest(userDocDir);
+                Check(output, ref ok, "屏蔽后目录页签=0",
+                    form.CountForCategory("目录").ToString(), "0");
+                Check(output, ref ok, "屏蔽后其余条目保留",
+                    form.TotalItemCount.ToString(), "5");
+                Check(output, ref ok, "屏蔽后同名字段仍在",
+                    form.CountForCategory("文档").ToString(), "1");
+                // 恢复：清掉屏蔽，目录页签回来。
+                form.SetHiddenFoldersForTest("");
+                Check(output, ref ok, "解除屏蔽后目录页签=1",
+                    form.CountForCategory("目录").ToString(), "1");
 
                 // 渲染冒烟：真的显示一次，确认自绘列表不抛 GDI+ 异常。
                 // 悬停展开改由下面的 HoverTickForTest 手动驱动，避免真实
